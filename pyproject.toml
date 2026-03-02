@@ -8,16 +8,29 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    #    "clarabel>=0.11.1",
+    #    "cvxpy-base>=1.8.0",
+    "numpy>=2.4.2",
+    "plotly>=6.5.2",
+    "polars>=1.37.1",
+    #    "pyarrow>=23.0.0",
+    "pandas>=2.0.0",
+    "pyarrow>=23.0.1",
+    "pydantic>=2.12.5",
+    "scipy>=1.17.0",
+    #    "statsmodels>=0.14.6",
+]
 
 
 [dependency-groups]
 dev = [
     "marimo",
-    "pandas",
-    "numpy",
-    "plotly",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/basanos"]
+
+[tool.deptry]
+# pyarrow is used by polars for to_pandas(); pandas is used in math/taipan.py for EWM correlation
+per_rule_ignores = { "DEP002" = ["pyarrow", "pandas"] }
