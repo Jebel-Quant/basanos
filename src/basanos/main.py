@@ -16,7 +16,3 @@ def say_hello(name: str) -> str:
 def main() -> None:
     """Execute the main function."""
     print(say_hello("World"))
-
-
-if __name__ == "__main__":
-    main()
