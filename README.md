@@ -140,7 +140,7 @@ fig = portfolio.plots.snapshot()                          # NAV + drawdown dashb
 fig = portfolio.plots.lead_lag_ir_plot(start=-10, end=20) # Sharpe across position lags
 fig = portfolio.plots.lagged_performance_plot(lags=[0, 1, 2, 3, 4])
 fig = portfolio.plots.correlation_heatmap()
-fig.show()
+# fig.show()
 ```
 
 ## How It Works
