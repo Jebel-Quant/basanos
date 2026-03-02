@@ -1,4 +1,4 @@
-"""Tests for taipan.math.signal utilities (osc, returns_adjust, shrink2id)."""
+"""Tests for basanos.math.signal utilities (osc, returns_adjust, shrink2id)."""
 
 import numpy as np
 

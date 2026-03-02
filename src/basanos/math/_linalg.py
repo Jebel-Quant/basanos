@@ -1,4 +1,4 @@
-"""Linear algebra helpers used by the Taipan optimizer.
+"""Linear algebra helpers used by the Basanos optimizer.
 
 This private module provides a small set of NumPy-based utilities for
 working with symmetric (correlation-like) matrices in a robust way:

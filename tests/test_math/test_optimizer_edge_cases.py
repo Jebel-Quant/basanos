@@ -1,6 +1,6 @@
-"""Additional edge-case tests for TaipanEngine to improve coverage.
+"""Additional edge-case tests for BasanosEngine to improve coverage.
 
-This module targets branches in TaipanEngine.cash_position that are hard to hit
+This module targets branches in BasanosEngine.cash_position that are hard to hit
 with regular random data, in particular the path where at time i>0 the current
 row has finite prices but all returns for that row are NaN because the previous
 row had only NaNs. This exercises the ``ret_mask.any() == False`` branch that
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import polars as pl
 
-from basanos.math import TaipanConfig, TaipanEngine
+from basanos.math import BasanosConfig, BasanosEngine
 
 
 def test_cash_position_skips_profit_update_when_returns_all_nan():
@@ -40,9 +40,9 @@ def test_cash_position_skips_profit_update_when_returns_all_nan():
     )
 
     # Set corr >= vola to satisfy validator; small values to ensure early availability
-    cfg = TaipanConfig(vola=1, corr=2, clip=3.0, shrink=0.5, aum=1e6)
+    cfg = BasanosConfig(vola=1, corr=2, clip=3.0, shrink=0.5, aum=1e6)
 
-    engine = TaipanEngine(prices=prices, mu=mu, cfg=cfg)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
     cp = engine.cash_position
 
     # Basic schema checks

@@ -1,4 +1,4 @@
-"""Tests for Portfolio.lead_lag_ir_plot in taipan.math.portfolio.
+"""Tests for Portfolio.lead_lag_ir_plot in basanos.analytics.portfolio.
 
 These tests ensure that the bar chart is produced with the expected number
 of bars (lags -10..+19 inclusive), correct labeling, and that selected bar

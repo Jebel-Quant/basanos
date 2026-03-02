@@ -1,4 +1,4 @@
-"""Tests for Portfolio.truncate in taipan.math.portfolio.
+"""Tests for Portfolio.truncate in basanos.analytics.portfolio.
 
 These tests verify that truncation by date bounds returns a new Portfolio with
 filtered data, preserves AUM, and remains usable for downstream computations.

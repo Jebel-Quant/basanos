@@ -1,4 +1,4 @@
-"""Tests for Stats in taipan.quantstats._stats.
+"""Tests for Stats in basanos.analytics._stats.
 
 This module provides comprehensive tests for all methods of the Stats class,
 using small deterministic datasets and explicit expectations. Docstrings are

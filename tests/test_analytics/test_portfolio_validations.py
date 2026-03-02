@@ -1,7 +1,7 @@
 """Validation tests for Portfolio.lag and Portfolio.smoothed_holding.
 
 These tests explicitly exercise input validation branches in
-src/taipan/analytics/portfolio.py to ensure full coverage:
+src/basanos/analytics/portfolio.py to ensure full coverage:
 - Portfolio.lag raises TypeError when n is not an int.
 - Portfolio.smoothed_holding raises ValueError when n < 0.
 - Portfolio.smoothed_holding raises TypeError when n is not an int.

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "basanos"
 version = "0.1.0"
-description = "Add your description here"
+description = "Correlation-aware portfolio optimization and analytics for Python."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -32,5 +32,7 @@ dev = [
 packages = ["src/basanos"]
 
 [tool.deptry]
-# pyarrow is used by polars for to_pandas(); pandas is used in math/taipan.py for EWM correlation
+# Explicit module name map so deptry doesn't need to inspect installed packages
+package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pandas" = "pandas", "pyarrow" = "pyarrow", "pydantic" = "pydantic", "scipy" = "scipy", "marimo" = "marimo" }
+# pyarrow is used by polars for to_pandas(); pandas is used in math/optimizer.py for EWM correlation
 per_rule_ignores = { "DEP002" = ["pyarrow", "pandas"] }

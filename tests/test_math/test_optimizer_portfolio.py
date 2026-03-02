@@ -1,7 +1,7 @@
-"""Tests for TaipanEngine.portfolio and TaipanConfig validation.
+"""Tests for BasanosEngine.portfolio and BasanosConfig validation.
 
-These tests cover the construction of a Portfolio from TaipanEngine as well as
-validation logic in TaipanConfig (corr >= vola). Keeping them lightweight with
+These tests cover the construction of a Portfolio from BasanosEngine as well as
+validation logic in BasanosConfig (corr >= vola). Keeping them lightweight with
 small synthetic datasets ensures determinism and speed.
 """
 
@@ -13,7 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from basanos.math import TaipanConfig, TaipanEngine
+from basanos.math import BasanosConfig, BasanosEngine
 
 
 def _make_prices_mu(n: int = 64) -> tuple[pl.DataFrame, pl.DataFrame]:
@@ -38,8 +38,8 @@ def _make_prices_mu(n: int = 64) -> tuple[pl.DataFrame, pl.DataFrame]:
     return prices, mu
 
 
-def test_taipan_portfolio_builds_portfolio_with_finite_nav_and_positions():
-    """TaipanEngine.portfolio should return a Portfolio with sane outputs.
+def test_basanos_portfolio_builds_portfolio_with_finite_nav_and_positions():
+    """BasanosEngine.portfolio should return a Portfolio with sane outputs.
 
     We verify that:
     - a Portfolio object is returned,
@@ -48,8 +48,8 @@ def test_taipan_portfolio_builds_portfolio_with_finite_nav_and_positions():
     """
     prices, mu = _make_prices_mu(96)
 
-    cfg = TaipanConfig(vola=16, corr=24, clip=3.5, shrink=0.5, aum=1e6)
-    engine = TaipanEngine(prices=prices, cfg=cfg, mu=mu)
+    cfg = BasanosConfig(vola=16, corr=24, clip=3.5, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=prices, cfg=cfg, mu=mu)
 
     assert engine.cfg == cfg
     assert engine.assets == ["A", "B"]
@@ -74,16 +74,16 @@ def test_taipan_portfolio_builds_portfolio_with_finite_nav_and_positions():
     assert nav["NAV_accumulated"].is_finite().all()
 
 
-def test_taipan_config_validator_enforces_corr_ge_vola():
-    """TaipanConfig should raise when corr < vola and accept equal/greater.
+def test_basanos_config_validator_enforces_corr_ge_vola():
+    """BasanosConfig should raise when corr < vola and accept equal/greater.
 
     This covers the Pydantic v2 field_validator that inspects ValidationInfo.
     """
     # Acceptable: corr == vola
-    _ = TaipanConfig(vola=20, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+    _ = BasanosConfig(vola=20, corr=20, clip=3.0, shrink=0.5, aum=1e6)
     # Acceptable: corr > vola
-    _ = TaipanConfig(vola=12, corr=24, clip=2.0, shrink=0.25, aum=1e6)
+    _ = BasanosConfig(vola=12, corr=24, clip=2.0, shrink=0.25, aum=1e6)
 
     # Invalid: corr < vola -> ValueError
     with pytest.raises(ValueError, match=r".*"):
-        _ = TaipanConfig(vola=30, corr=10, clip=4.0, shrink=0.7, aum=1e6)
+        _ = BasanosConfig(vola=30, corr=10, clip=4.0, shrink=0.7, aum=1e6)

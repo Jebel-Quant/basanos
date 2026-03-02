@@ -6,7 +6,7 @@ implementation details in private modules so documentation remains clean
 and links are hierarchical in pdoc.
 
 Public API:
-- basanos.math.taipan
+- basanos.math.optimizer
 
 Private modules (subject to change):
 - basanos.math._linalg
@@ -15,7 +15,7 @@ Private modules (subject to change):
 Usage:
     Prefer importing public classes from this package namespace:
 
-    >>> from basanos.math import TaipanConfig, TaipanEngine  # doctest: +SKIP
+    >>> from basanos.math import BasanosConfig, BasanosEngine  # doctest: +SKIP
 
 Notes:
     These re-exports are stable; private modules are implementation details
@@ -23,5 +23,5 @@ Notes:
 """
 
 # Public re-exports (explicit aliases so linters recognize intent)
-from .taipan import TaipanConfig as TaipanConfig
-from .taipan import TaipanEngine as TaipanEngine
+from .optimizer import BasanosConfig as BasanosConfig
+from .optimizer import BasanosEngine as BasanosEngine

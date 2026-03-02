@@ -1,4 +1,4 @@
-"""Correlation-aware risk position optimizer (Taipan).
+"""Correlation-aware risk position optimizer (Basanos).
 
 This module provides utilities to compute correlation-adjusted risk positions
 from price data and expected-return signals. It relies on volatility-adjusted
@@ -18,7 +18,7 @@ from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id, vol_adj
 
 
-class TaipanConfig(BaseModel):
+class BasanosConfig(BaseModel):
     """Configuration for correlation-aware position optimization."""
 
     vola: int = Field(..., gt=0, description="EWMA lookback for volatility normalization.")
@@ -45,7 +45,7 @@ class TaipanConfig(BaseModel):
 
 
 @dataclasses.dataclass(frozen=True)
-class TaipanEngine:
+class BasanosEngine:
     """Engine to compute correlation matrices and optimize risk positions.
 
     Encapsulates price data and configuration to build EWM-based
@@ -54,7 +54,7 @@ class TaipanEngine:
 
     prices: pl.DataFrame
     mu: pl.DataFrame
-    cfg: TaipanConfig
+    cfg: BasanosConfig
 
     def __post_init__(self) -> None:
         """Validate basic invariants right after initialization.

@@ -1,9 +1,9 @@
-"""Internal signal utilities (private to taipan.math).
+"""Internal signal utilities (private to basanos.math).
 
 This module contains low-level helpers for building signals and
 transformations. It is considered an internal implementation detail of
-``taipan.math``. Do not import this module directly from outside the
-package; instead import the public symbols from ``taipan.math``.
+``basanos.math``. Do not import this module directly from outside the
+package; instead import the public symbols from ``basanos.math``.
 """
 
 from __future__ import annotations

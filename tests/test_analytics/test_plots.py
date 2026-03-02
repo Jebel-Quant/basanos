@@ -1,4 +1,4 @@
-"""Comprehensive tests for taipan.analytics.plots.Plots.
+"""Comprehensive tests for basanos.analytics.plots.Plots.
 
 These tests exercise all plotting methods exposed via the Portfolio.plots
 facade:

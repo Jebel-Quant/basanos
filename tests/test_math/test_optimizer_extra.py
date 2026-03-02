@@ -1,4 +1,4 @@
-"""Additional tests to drive coverage of taipan.math._taipan to 100%.
+"""Additional tests to drive coverage of basanos.math.optimizer to 100%.
 
 These tests focus on constructor validation, helper properties (ret_adj, vola,
 cor), and error paths not exercised by the existing portfolio tests.
@@ -12,7 +12,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from basanos.math import TaipanConfig, TaipanEngine
+from basanos.math import BasanosConfig, BasanosEngine
 
 
 @pytest.fixture
@@ -50,16 +50,16 @@ def small_mu(small_prices: pl.DataFrame) -> pl.DataFrame:
 
 def test_post_init_shape_mismatch_raises(small_prices: pl.DataFrame, small_mu: pl.DataFrame) -> None:
     """Prices and mu must have identical shapes (rows and columns)."""
-    cfg = TaipanConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
     # Drop last row from mu to force a shape mismatch
     mu_bad = small_mu.slice(0, small_mu.height - 1)
     with pytest.raises(ValueError, match=r".*"):
-        _ = TaipanEngine(prices=small_prices, mu=mu_bad, cfg=cfg)
+        _ = BasanosEngine(prices=small_prices, mu=mu_bad, cfg=cfg)
 
 
 def test_post_init_missing_date_raises() -> None:
     """Both prices and mu must contain a 'date' column."""
-    cfg = TaipanConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
     prices_no_date = pl.DataFrame({"A": [1.0, 2.0], "B": [3.0, 4.0]})
     mu_ok = pl.DataFrame(
         {
@@ -69,7 +69,7 @@ def test_post_init_missing_date_raises() -> None:
         }
     )
     with pytest.raises(ValueError, match=r".*"):
-        _ = TaipanEngine(prices=prices_no_date, mu=mu_ok, cfg=cfg)
+        _ = BasanosEngine(prices=prices_no_date, mu=mu_ok, cfg=cfg)
 
     prices_ok = pl.DataFrame(
         {
@@ -80,21 +80,21 @@ def test_post_init_missing_date_raises() -> None:
     )
     mu_no_date = pl.DataFrame({"A": [0.1, 0.2], "B": [0.3, 0.4]})
     with pytest.raises(ValueError, match=r".*"):
-        _ = TaipanEngine(prices=prices_ok, mu=mu_no_date, cfg=cfg)
+        _ = BasanosEngine(prices=prices_ok, mu=mu_no_date, cfg=cfg)
 
 
 def test_post_init_column_mismatch_raises(small_prices: pl.DataFrame, small_mu: pl.DataFrame) -> None:
     """Prices and mu must have identical column sets."""
-    cfg = TaipanConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
     mu_bad_cols = small_mu.rename({"B": "BB"})
     with pytest.raises(ValueError, match=r".*"):
-        _ = TaipanEngine(prices=small_prices, mu=mu_bad_cols, cfg=cfg)
+        _ = BasanosEngine(prices=small_prices, mu=mu_bad_cols, cfg=cfg)
 
 
 def test_ret_adj_and_vola_return_frames_with_asset_columns(small_prices: pl.DataFrame, small_mu: pl.DataFrame) -> None:
     """ret_adj and vola should return DataFrames aligned with asset columns."""
-    cfg = TaipanConfig(vola=3, corr=4, clip=2.5, shrink=0.5, aum=1e6)
-    engine = TaipanEngine(prices=small_prices, mu=small_mu, cfg=cfg)
+    cfg = BasanosConfig(vola=3, corr=4, clip=2.5, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=small_prices, mu=small_mu, cfg=cfg)
 
     ra = engine.ret_adj
     vo = engine.vola
@@ -111,8 +111,8 @@ def test_ret_adj_and_vola_return_frames_with_asset_columns(small_prices: pl.Data
 def test_cor_returns_square_matrices(small_prices: pl.DataFrame, small_mu: pl.DataFrame) -> None:
     """Cor should return a dict of square correlation matrices of size n_assets."""
     # Use a small corr window to ensure availability of finite correlations
-    cfg = TaipanConfig(vola=2, corr=2, clip=2.5, shrink=0.5, aum=1e6)
-    engine = TaipanEngine(prices=small_prices, mu=small_mu, cfg=cfg)
+    cfg = BasanosConfig(vola=2, corr=2, clip=2.5, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=small_prices, mu=small_mu, cfg=cfg)
 
     cor = engine.cor
     assert isinstance(cor, dict)
@@ -157,8 +157,8 @@ def test_cash_position_skips_rows_with_all_nan_prices() -> None:
         }
     )
 
-    cfg = TaipanConfig(vola=3, corr=4, clip=3.0, shrink=0.5, aum=1e6)
-    engine = TaipanEngine(prices=prices, mu=mu, cfg=cfg)
+    cfg = BasanosConfig(vola=3, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
     cp = engine.cash_position
 
     # The NaN row should produce null cash positions for both assets

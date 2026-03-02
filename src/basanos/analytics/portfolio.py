@@ -279,7 +279,7 @@ class Portfolio:
     def stats(self) -> Stats:
         """Return a Stats object built from the portfolio's daily returns.
 
-        Constructs a taipan.quantstats.Data instance from the portfolio
+        Constructs a basanos.analytics.Stats instance from the portfolio
         returns (using the 'date' and 'returns' columns) and exposes its
         Stats facade for computing metrics such as Sharpe, skew, and kurtosis.
         """
@@ -387,7 +387,7 @@ class Portfolio:
         performance curves, and lead/lag IR charts.
 
         Returns:
-            taipan.analytics._plots.Plots: Helper object with plotting methods.
+            basanos.analytics._plots.Plots: Helper object with plotting methods.
         """
         return Plots(self)
 

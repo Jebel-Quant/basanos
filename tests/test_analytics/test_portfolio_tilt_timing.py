@@ -1,4 +1,4 @@
-"""Tests for Portfolio.tilt and Portfolio.timing in taipan.analytics.portfolio.
+"""Tests for Portfolio.tilt and Portfolio.timing in basanos.analytics.portfolio.
 
 These tests verify that:
 - tilt.prices are constructed from mean daily pct_change as (1+r)^t and preserve the date column,

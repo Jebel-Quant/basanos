@@ -1,4 +1,4 @@
-"""Tests for taipan.math.portfolio module."""
+"""Tests for basanos.analytics.portfolio module."""
 
 from datetime import date
 

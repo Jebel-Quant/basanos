@@ -1,4 +1,4 @@
-"""Tests for Portfolio.lagged_performance_plot in taipan.math.portfolio.
+"""Tests for Portfolio.lagged_performance_plot in basanos.analytics.portfolio.
 
 These tests ensure the method returns a Plotly Figure with a line per
 lag (default 0..4), proper naming, and that it serializes without error.

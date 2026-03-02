@@ -1,11 +1,11 @@
-"""Unit tests for taipan.math.taipan.optimize.
+"""Unit tests for basanos.math.optimizer.
 
 These tests validate that the optimizer:
 - returns a Polars DataFrame with the expected schema (date + asset columns),
 - yields finite risk positions after a warmup period when correlations become defined,
 - and produces all-zero positions when the expected returns (mu) are zero.
 
-Tests are skipped if pandas is not available since taipan.optimize relies on
+Tests are skipped if pandas is not available since basanos.optimizer relies on
 pandas' EWM correlation internally.
 """
 
@@ -17,7 +17,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from basanos.math import TaipanConfig, TaipanEngine
+from basanos.math import BasanosConfig, BasanosEngine
 
 
 @pytest.fixture
@@ -79,9 +79,9 @@ def test_optimize_returns_frame_with_expected_schema_and_finite_after_warmup(pri
     """
     n = 120
 
-    cfg = TaipanConfig(vola=16, corr=20, clip=3.5, shrink=0.5, aum=1e6)
+    cfg = BasanosConfig(vola=16, corr=20, clip=3.5, shrink=0.5, aum=1e6)
 
-    cp = TaipanEngine(prices=prices, cfg=cfg, mu=mu).cash_position
+    cp = BasanosEngine(prices=prices, cfg=cfg, mu=mu).cash_position
 
     # Basic type/shape checks
     assert isinstance(cp, pl.DataFrame)
@@ -105,7 +105,7 @@ def test_optimize_with_zero_mu_returns_zero_positions(prices):
     with a zero solution when scaled/normalized appropriately.
     """
     n = 80
-    cfg = TaipanConfig(corr=20, vola=12, clip=4.0, shrink=0.7, aum=1e6)
+    cfg = BasanosConfig(corr=20, vola=12, clip=4.0, shrink=0.7, aum=1e6)
 
     # Zero mu for numeric assets; keep date for alignment
     mu = pl.DataFrame(
@@ -116,7 +116,7 @@ def test_optimize_with_zero_mu_returns_zero_positions(prices):
         }
     )
 
-    cp = TaipanEngine(prices=prices, cfg=cfg, mu=mu).cash_position
+    cp = BasanosEngine(prices=prices, cfg=cfg, mu=mu).cash_position
 
     # After warmup, positions should be exactly zero (within numerical tolerance)
     tail = cp.tail(n - cfg.corr)

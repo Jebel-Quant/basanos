@@ -1,4 +1,4 @@
-"""Tests for Portfolio.lag in taipan.math.portfolio.
+"""Tests for Portfolio.lag in basanos.analytics.portfolio.
 
 These tests verify that lagging cash positions by positive, zero, and negative
 steps behaves as expected and that downstream profit computation remains

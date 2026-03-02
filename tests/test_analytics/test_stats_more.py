@@ -1,4 +1,4 @@
-"""Additional tests for taipan.math.stats.Stats to reach 100% coverage.
+"""Additional tests for basanos.analytics.stats.Stats to reach 100% coverage.
 
 These tests target branches/lines not exercised by the primary test suite:
 - assets property: filters out the 'date' column and non-numeric columns.
