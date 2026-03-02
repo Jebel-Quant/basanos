@@ -1,6 +1,4 @@
-from basanos.main import say_hello, main
-from io import StringIO
-import sys
+from basanos.main import main, say_hello
 
 
 def test_say_hello():
