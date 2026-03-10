@@ -287,6 +287,37 @@ class Stats:
         factor = periods or 1
         return float(res * np.sqrt(factor))
 
+    def summary(self) -> pl.DataFrame:
+        """Return a DataFrame summarising all statistics for each asset.
+
+        Each row corresponds to one statistical metric; each column (beyond
+        the ``metric`` column) corresponds to one asset in the portfolio.
+
+        Returns:
+            pl.DataFrame: A DataFrame with a ``metric`` column followed by one
+            column per asset, containing the computed statistic values.
+
+        """
+        metrics: dict[str, dict[str, float | int | None]] = {
+            "avg_return": self.avg_return(),
+            "avg_win": self.avg_win(),
+            "avg_loss": self.avg_loss(),
+            "best": self.best(),
+            "worst": self.worst(),
+            "volatility": self.volatility(),
+            "sharpe": self.sharpe(),
+            "skew": self.skew(),
+            "kurtosis": self.kurtosis(),
+            "value_at_risk": self.value_at_risk(),
+            "conditional_value_at_risk": self.conditional_value_at_risk(),
+        }
+
+        rows: list[dict[str, object]] = [
+            {"metric": name, **{asset: values[asset] for asset in self.assets}} for name, values in metrics.items()
+        ]
+
+        return pl.DataFrame(rows)
+
     @property
     def periods_per_year(self) -> float:
         """Estimate the number of periods per year from timestamp spacing.
