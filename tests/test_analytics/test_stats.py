@@ -239,3 +239,75 @@ def test_value_at_risk_sigma_parameter_scales_tail(frame):
     var2 = s.value_at_risk(alpha=0.05, sigma=2.0)["A"]
 
     assert var2 < var1  # more negative
+
+
+# --- Summary ---
+
+
+def test_summary_returns_polars_dataframe(frame):
+    """summary() should return a Polars DataFrame."""
+    data = frame.head(20)
+    a = [0.01 * i for i in range(1, 21)]
+    data = data.with_columns(pl.Series("A", a))
+    s = Stats(data)
+
+    result = s.summary()
+
+    assert isinstance(result, pl.DataFrame)
+
+
+def test_summary_has_metric_column_and_asset_columns(frame):
+    """summary() should have a 'metric' column and one column per asset."""
+    data = frame.head(20)
+    a = [0.01 * i for i in range(1, 21)]
+    b = [-0.01 * i for i in range(1, 21)]
+    data = data.with_columns(pl.Series("A", a), pl.Series("B", b))
+    s = Stats(data)
+
+    result = s.summary()
+
+    assert "metric" in result.columns
+    assert "A" in result.columns
+    assert "B" in result.columns
+
+
+def test_summary_metric_names(frame):
+    """summary() should include expected metric names as rows."""
+    data = frame.head(20)
+    a = [0.01 * i for i in range(1, 21)]
+    data = data.with_columns(pl.Series("A", a))
+    s = Stats(data)
+
+    result = s.summary()
+    metric_names = result["metric"].to_list()
+
+    expected = {
+        "avg_return",
+        "avg_win",
+        "avg_loss",
+        "best",
+        "worst",
+        "volatility",
+        "sharpe",
+        "skew",
+        "kurtosis",
+        "value_at_risk",
+        "conditional_value_at_risk",
+    }
+    assert set(metric_names) == expected
+
+
+def test_summary_values_match_individual_methods(frame):
+    """summary() values should match what individual stat methods return."""
+    data = frame.head(20)
+    a = [0.01 * i - 0.1 for i in range(1, 21)]
+    data = data.with_columns(pl.Series("A", a))
+    s = Stats(data)
+
+    result = s.summary()
+    metric_map = dict(zip(result["metric"].to_list(), result["A"].to_list(), strict=False))
+
+    assert metric_map["skew"] == pytest.approx(s.skew()["A"], rel=1e-9)
+    assert metric_map["volatility"] == pytest.approx(s.volatility()["A"], rel=1e-9)
+    assert metric_map["best"] == pytest.approx(s.best()["A"], rel=1e-9)
+    assert metric_map["worst"] == pytest.approx(s.worst()["A"], rel=1e-9)
