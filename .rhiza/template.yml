@@ -1,5 +1,6 @@
 repository: jebel-quant/rhiza
-ref: main
+ref: "v0.8.7"
+
 templates:
 - core
 - tests
