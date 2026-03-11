@@ -9,17 +9,13 @@ description = "Correlation-aware portfolio optimization and analytics for Python
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    #    "clarabel>=0.11.1",
-    #    "cvxpy-base>=1.8.0",
-    "numpy>=2.4.2",
-    "plotly>=6.5.2",
+    "numpy>=2.4",
+    "plotly>=6.6.0",
     "polars>=1.37.1",
-    #    "pyarrow>=23.0.0",
-    "pandas>=2.0.0",
+    "pandas>=3.0.0",
     "pyarrow>=23.0.1",
     "pydantic>=2.12.5",
     "scipy>=1.17.0",
-    #    "statsmodels>=0.14.6",
 ]
 
 
