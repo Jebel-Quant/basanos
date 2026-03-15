@@ -12,6 +12,7 @@ import dataclasses
 import numpy as np
 import polars as pl
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from scipy.signal import lfilter
 
 from ..analytics import Portfolio
 from ._linalg import inv_a_norm, solve
@@ -35,6 +36,10 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
     a result the correlation for a pair is frozen once either asset goes
     missing, exactly mirroring pandas behaviour.
 
+    The EWM recurrence ``s[t] = β·s[t-1] + v[t]`` is an IIR filter and is
+    solved for **all N² pairs simultaneously** via ``scipy.signal.lfilter``
+    — no Python loop over the T timesteps.
+
     Args:
         data: Float array of shape ``(T, N)`` - typically volatility-adjusted
             log returns.
@@ -47,77 +52,67 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
         matrices.  Each matrix is symmetric with diagonal 1.0 (or NaN during
         warm-up).
     """
-    t_len, n_assets = data.shape
+    _t_len, n_assets = data.shape
     beta = com / (1.0 + com)
 
-    result = np.full((t_len, n_assets, n_assets), np.nan)
+    fin = np.isfinite(data)  # (T, N) bool
+    xt_f = np.where(fin, data, 0.0)  # (T, N) float - zeroed where not finite
 
-    # Per-pair running sums.  All decay at every timestep; only update when
-    # BOTH assets are finite (joint observations).
+    # joint_fin[t, i, j] = True iff assets i and j are both finite at t
+    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
+
+    # Build per-pair input sequences for the recurrence s[t] = beta*s[t-1] + v[t].
     #
-    # sx[i, j]  = weighted sum of x_i for pair (i, j)
-    # sx2[i, j] = weighted sum of x_i² for pair (i, j)
-    # sxy[i, j] = weighted sum of x_i·x_j for pair (i, j)
-    # w_sum[i, j]   = sum of weights for pair (i, j)
+    # v_x[t, i, j]  = x_i[t]    where pair (i,j) jointly finite, else 0
+    # v_x2[t, i, j] = x_i[t]^2  where jointly finite, else 0
+    # v_xy[t, i, j] = x_i[t]*x_j[t]  (xt_f is 0 for non-finite, so implicit mask)
+    # v_w[t, i, j]  = 1          where jointly finite, else 0  (weight indicator)
     #
-    # By symmetry: sx.T[i, j] = sx[j, i] = weighted sum of x_j for pair (i, j)
-    #              sx2.T[i, j]             = weighted sum of x_j² for pair (i, j)
-    sx = np.zeros((n_assets, n_assets))
-    sx2 = np.zeros((n_assets, n_assets))
-    sxy = np.zeros((n_assets, n_assets))
-    w_sum = np.zeros((n_assets, n_assets))
-    count = np.zeros((n_assets, n_assets), dtype=np.intp)
+    # By symmetry v_x[t,j,i] carries x_j[t] for pair (i,j), so s_x.swapaxes(1,2)
+    # gives the EWM numerator of x_j without a separate v_y array.
+    v_x = xt_f[:, :, np.newaxis] * joint_fin  # (T, N, N)
+    v_x2 = (xt_f * xt_f)[:, :, np.newaxis] * joint_fin  # (T, N, N)
+    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]  # (T, N, N)
+    v_w = joint_fin.astype(np.float64)  # (T, N, N)
 
-    for t in range(t_len):
-        xt = data[t]
-        fin = np.isfinite(xt)
+    # Solve the IIR recurrence for every (i, j) pair in parallel.
+    # lfilter([1], [1, -beta], v, axis=0) computes s[t] = beta*s[t-1] + v[t].
+    filt_a = np.array([1.0, -beta])
+    s_x = lfilter([1.0], filt_a, v_x, axis=0)  # (T, N, N)
+    s_x2 = lfilter([1.0], filt_a, v_x2, axis=0)  # (T, N, N)
+    s_xy = lfilter([1.0], filt_a, v_xy, axis=0)  # (T, N, N)
+    s_w = lfilter([1.0], filt_a, v_w, axis=0)  # (T, N, N)
 
-        # Decay all sums at every timestep (ignore_na=False)
-        sx *= beta
-        sx2 *= beta
-        sxy *= beta
-        w_sum *= beta
+    # Joint finite observation count per pair at each timestep (for min_periods)
+    count = np.cumsum(joint_fin, axis=0)  # (T, N, N) int64
 
-        # Add jointly-finite observations
-        xt_finite = np.where(fin, xt, 0.0)
-        pair_fin = np.outer(fin, fin)  # (N, N) bool
+    # EWM means: running numerator / running weight denominator.
+    # s_x.swapaxes(1,2)[t,i,j] = s_x[t,j,i] = EWM numerator of x_j for pair (i,j).
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pos_w = s_w > 0
+        ewm_x = np.where(pos_w, s_x / s_w, np.nan)  # EWM(x_i)
+        ewm_y = np.where(pos_w, s_x.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j)
+        ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)  # EWM(x_i^2)
+        ewm_y2 = np.where(pos_w, s_x2.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j^2)
+        ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)  # EWM(x_i*x_j)
 
-        # xi_row[i, j] = xt[i] for all j (row-wise broadcast)
-        xi_row = np.outer(xt_finite, np.ones(n_assets))
+    var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
+    var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
+    denom = np.sqrt(var_x * var_y)
+    cov = ewm_xy - ewm_x * ewm_y
 
-        sx[pair_fin] += xi_row[pair_fin]
-        sx2[pair_fin] += (xi_row * xi_row)[pair_fin]
-        sxy[pair_fin] += (xi_row * xi_row.T)[pair_fin]  # xt[i] * xt[j]
-        w_sum[pair_fin] += 1.0
-        count[pair_fin] += 1
+    with np.errstate(divide="ignore", invalid="ignore"):
+        result = np.where(denom > _MIN_CORR_DENOM, cov / denom, np.nan)
 
-        # Compute EWM means via running-sum / weight-sum ratios.
-        # sx.T / w_sum gives the per-pair EWM of the *column* asset x_j.
-        with np.errstate(divide="ignore", invalid="ignore"):
-            ewm_x = np.where(w_sum > 0, sx / w_sum, np.nan)  # EWM(x_i) for pair (i,j)
-            ewm_y = np.where(w_sum > 0, sx.T / w_sum, np.nan)  # EWM(x_j) for pair (i,j)
-            ewm_x2 = np.where(w_sum > 0, sx2 / w_sum, np.nan)  # EWM(x_i²) for pair (i,j)
-            ewm_y2 = np.where(w_sum > 0, sx2.T / w_sum, np.nan)  # EWM(x_j²) for pair (i,j)
-            ewm_xy = np.where(w_sum > 0, sxy / w_sum, np.nan)  # EWM(x_i·x_j) for pair (i,j)
+    result = np.clip(result, -1.0, 1.0)
 
-        var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
-        var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
-        denom = np.sqrt(var_x * var_y)
-        cov = ewm_xy - ewm_x * ewm_y
+    # Apply min_periods mask for all pairs
+    result[count < min_periods] = np.nan
 
-        with np.errstate(divide="ignore", invalid="ignore"):
-            corr = np.where(denom > _MIN_CORR_DENOM, cov / denom, np.nan)
-
-        corr = np.clip(corr, -1.0, 1.0)
-
-        # Diagonal is exactly 1.0 when the asset has enough observations
-        for i in range(n_assets):
-            corr[i, i] = 1.0 if count[i, i] >= min_periods else np.nan
-
-        # Apply min_periods mask for all pairs
-        corr[count < min_periods] = np.nan
-
-        result[t] = corr
+    # Diagonal is exactly 1.0 where the asset has sufficient observations
+    diag_idx = np.arange(n_assets)
+    diag_count = count[:, diag_idx, diag_idx]  # (T, N)
+    result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
 
     return result
 
