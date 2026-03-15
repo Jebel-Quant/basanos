@@ -2,9 +2,9 @@
 
 This module provides utilities to compute correlation-adjusted risk positions
 from price data and expected-return signals. It relies on volatility-adjusted
-returns to estimate a dynamic correlation matrix (via pandas EWM), applies
-shrinkage towards identity, and solves a normalized linear system per
-timestamp to obtain stable positions.
+returns to estimate a dynamic correlation matrix (via EWM), applies shrinkage
+towards identity, and solves a normalized linear system per timestamp to
+obtain stable positions.
 """
 
 import dataclasses
@@ -16,6 +16,110 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from ..analytics import Portfolio
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id, vol_adj
+
+_MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
+
+
+def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
+    """Compute per-row EWM correlation matrices without pandas.
+
+    Matches ``pandas.DataFrame.ewm(com=com, min_periods=min_periods).corr()``
+    with the default ``adjust=True, ignore_na=False`` settings to within
+    floating-point rounding error.
+
+    All five EWM components used to compute ``corr(i, j)`` — namely
+    ``ewm(x_i)``, ``ewm(x_j)``, ``ewm(x_i²)``, ``ewm(x_j²)``, and
+    ``ewm(x_i·x_j)`` — share the **same joint weight structure**: weights
+    decay at every timestep (``ignore_na=False``) but a new observation is
+    only added at timesteps where *both* ``x_i`` and ``x_j`` are finite.  As
+    a result the correlation for a pair is frozen once either asset goes
+    missing, exactly mirroring pandas behaviour.
+
+    Args:
+        data: Float array of shape ``(T, N)`` - typically volatility-adjusted
+            log returns.
+        com: EWM centre-of-mass (``alpha = 1 / (1 + com)``).
+        min_periods: Minimum number of joint finite observations required
+            before a correlation value is reported; earlier rows are NaN.
+
+    Returns:
+        np.ndarray of shape ``(T, N, N)`` containing the per-row correlation
+        matrices.  Each matrix is symmetric with diagonal 1.0 (or NaN during
+        warm-up).
+    """
+    t_len, n_assets = data.shape
+    beta = com / (1.0 + com)
+
+    result = np.full((t_len, n_assets, n_assets), np.nan)
+
+    # Per-pair running sums.  All decay at every timestep; only update when
+    # BOTH assets are finite (joint observations).
+    #
+    # sx[i, j]  = weighted sum of x_i for pair (i, j)
+    # sx2[i, j] = weighted sum of x_i² for pair (i, j)
+    # sxy[i, j] = weighted sum of x_i·x_j for pair (i, j)
+    # w_sum[i, j]   = sum of weights for pair (i, j)
+    #
+    # By symmetry: sx.T[i, j] = sx[j, i] = weighted sum of x_j for pair (i, j)
+    #              sx2.T[i, j]             = weighted sum of x_j² for pair (i, j)
+    sx = np.zeros((n_assets, n_assets))
+    sx2 = np.zeros((n_assets, n_assets))
+    sxy = np.zeros((n_assets, n_assets))
+    w_sum = np.zeros((n_assets, n_assets))
+    count = np.zeros((n_assets, n_assets), dtype=np.intp)
+
+    for t in range(t_len):
+        xt = data[t]
+        fin = np.isfinite(xt)
+
+        # Decay all sums at every timestep (ignore_na=False)
+        sx *= beta
+        sx2 *= beta
+        sxy *= beta
+        w_sum *= beta
+
+        # Add jointly-finite observations
+        xt_finite = np.where(fin, xt, 0.0)
+        pair_fin = np.outer(fin, fin)  # (N, N) bool
+
+        # xi_row[i, j] = xt[i] for all j (row-wise broadcast)
+        xi_row = np.outer(xt_finite, np.ones(n_assets))
+
+        sx[pair_fin] += xi_row[pair_fin]
+        sx2[pair_fin] += (xi_row * xi_row)[pair_fin]
+        sxy[pair_fin] += (xi_row * xi_row.T)[pair_fin]  # xt[i] * xt[j]
+        w_sum[pair_fin] += 1.0
+        count[pair_fin] += 1
+
+        # Compute EWM means via running-sum / weight-sum ratios.
+        # sx.T / w_sum gives the per-pair EWM of the *column* asset x_j.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            ewm_x = np.where(w_sum > 0, sx / w_sum, np.nan)  # EWM(x_i) for pair (i,j)
+            ewm_y = np.where(w_sum > 0, sx.T / w_sum, np.nan)  # EWM(x_j) for pair (i,j)
+            ewm_x2 = np.where(w_sum > 0, sx2 / w_sum, np.nan)  # EWM(x_i²) for pair (i,j)
+            ewm_y2 = np.where(w_sum > 0, sx2.T / w_sum, np.nan)  # EWM(x_j²) for pair (i,j)
+            ewm_xy = np.where(w_sum > 0, sxy / w_sum, np.nan)  # EWM(x_i·x_j) for pair (i,j)
+
+        var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
+        var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
+        denom = np.sqrt(var_x * var_y)
+        cov = ewm_xy - ewm_x * ewm_y
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            corr = np.where(denom > _MIN_CORR_DENOM, cov / denom, np.nan)
+
+        corr = np.clip(corr, -1.0, 1.0)
+
+        # Diagonal is exactly 1.0 when the asset has enough observations
+        for i in range(n_assets):
+            corr[i, i] = 1.0 if count[i, i] >= min_periods else np.nan
+
+        # Apply min_periods mask for all pairs
+        corr[count < min_periods] = np.nan
+
+        result[t] = corr
+
+    return result
 
 
 class BasanosConfig(BaseModel):
@@ -121,25 +225,20 @@ class BasanosEngine:
 
     @property
     def cor(self) -> dict[object, np.ndarray]:
-        """Compute per-timestamp EWMA correlation matrices.
+        """Compute per-timestamp EWM correlation matrices.
 
         Builds volatility-adjusted returns for all assets, computes an
-        exponentially weighted correlation using pandas (with window
-        ``cfg.corr``), and returns a mapping from each timestamp to the
-        corresponding correlation matrix as a NumPy array.
+        exponentially weighted correlation using a pure NumPy implementation
+        (with window ``cfg.corr``), and returns a mapping from each timestamp
+        to the corresponding correlation matrix as a NumPy array.
 
         Returns:
             dict: Mapping ``date -> np.ndarray`` of shape (n_assets, n_assets).
         """
-        # All numeric columns except the date column are treated as assets.
         index = self.prices["date"]
-
-        # Compute EWM correlation via pandas in steps to keep lines short for linters
-        ret_adj_pd = self.ret_adj.select(self.assets).to_pandas()
-        ewm_corr = ret_adj_pd.ewm(com=self.cfg.corr, min_periods=self.cfg.corr).corr()
-        cor = ewm_corr.reset_index(names=["t", "asset"])  # (t, asset) index -> long-format DataFrame
-
-        return {index[t]: df_t.drop(columns=["t", "asset"]).to_numpy() for t, df_t in cor.groupby("t")}
+        ret_adj_np = self.ret_adj.select(self.assets).to_numpy()
+        tensor = _ewm_corr_numpy(ret_adj_np, com=self.cfg.corr, min_periods=self.cfg.corr)
+        return {index[t]: tensor[t] for t in range(len(index))}
 
     @property
     def cor_tensor(self) -> np.ndarray:

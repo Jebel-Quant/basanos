@@ -543,8 +543,8 @@ class TestCorTensorFlatFile:
     def test_tensor_saves_and_loads_from_flat_file(
         self, tensor_engine: BasanosEngine, resource_dir: pathlib.Path
     ) -> None:
-        """Load the tensor from the committed .npy resource file; values must be identical."""
+        """NumPy EWM implementation must reproduce the reference tensor within 1e-10."""
         tensor = tensor_engine.cor_tensor
         loaded = np.load(resource_dir / "cor_tensor.npy")
         assert loaded.shape == tensor.shape
-        np.testing.assert_allclose(loaded, tensor, rtol=0, atol=1e-12)
+        np.testing.assert_allclose(loaded, tensor, rtol=0, atol=1e-10)
