@@ -142,6 +142,44 @@ class BasanosEngine:
         return {index[t]: df_t.drop(columns=["t", "asset"]).to_numpy() for t, df_t in cor.groupby("t")}
 
     @property
+    def cor_tensor(self) -> np.ndarray:
+        """Return all correlation matrices stacked as a 3-D tensor.
+
+        Converts the per-timestamp correlation dict (see :py:attr:`cor`) into a
+        single contiguous NumPy array so that the full history can be saved to
+        a flat ``.npy`` file with :func:`numpy.save` and reloaded with
+        :func:`numpy.load`.
+
+        Returns:
+            np.ndarray: Array of shape ``(T, N, N)`` where *T* is the number of
+            timestamps and *N* the number of assets.  ``tensor[t]`` is the
+            correlation matrix for the *t*-th date (same ordering as
+            ``self.prices["date"]``).
+
+        Examples:
+            >>> import tempfile, pathlib
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
+            >>> dates = pl.Series("date", list(range(100)))
+            >>> rng0 = np.random.default_rng(0).lognormal(size=100)
+            >>> rng1 = np.random.default_rng(1).lognormal(size=100)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng0, "B": rng1})
+            >>> rng2 = np.random.default_rng(2).normal(size=100)
+            >>> rng3 = np.random.default_rng(3).normal(size=100)
+            >>> mu = pl.DataFrame({"date": dates, "A": rng2, "B": rng3})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> tensor = engine.cor_tensor
+            >>> with tempfile.TemporaryDirectory() as td:
+            ...     path = pathlib.Path(td) / "cor.npy"
+            ...     np.save(path, tensor)
+            ...     loaded = np.load(path)
+            >>> np.testing.assert_array_equal(tensor, loaded)
+        """
+        return np.stack(list(self.cor.values()), axis=0)
+
+    @property
     def cash_position(self) -> pl.DataFrame:
         """Optimize correlation-aware risk positions for each timestamp.
 
