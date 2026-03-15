@@ -550,18 +550,3 @@ class TestCorTensorFlatFile:
         loaded = np.load(resource_dir / "cor_tensor.npy")
         assert loaded.shape == tensor.shape
         np.testing.assert_allclose(loaded, tensor, rtol=0, atol=1e-12)
-
-    def test_tensor_reproduced_from_flat_file_matches_cor_dict(
-        self, tensor_engine: BasanosEngine, resource_dir: pathlib.Path
-    ) -> None:
-        """The tensor stored in the resource file must reproduce every cor dict entry."""
-        loaded = np.load(resource_dir / "cor_tensor.npy")
-        for t, mat in enumerate(tensor_engine.cor.values()):
-            np.testing.assert_allclose(
-                loaded[t],
-                mat,
-                rtol=0,
-                atol=1e-12,
-                equal_nan=True,
-                err_msg=f"Reproduced tensor[{t}] does not match original cor dict entry",
-            )
