@@ -37,6 +37,14 @@ def valid(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
     Raises:
         AssertionError: If the input matrix is not square.
+
+    Examples:
+        >>> import numpy as np
+        >>> mask, sub = valid(np.eye(2))
+        >>> mask.tolist()
+        [True, True]
+        >>> sub.shape
+        (2, 2)
     """
     # make sure matrix  is quadratic
     if matrix.shape[0] != matrix.shape[1]:
@@ -62,6 +70,11 @@ def inv_a_norm(vector: np.ndarray, matrix: np.ndarray | None = None) -> float:
 
     Raises:
         AssertionError: If ``matrix`` is not square or dimensions mismatch.
+
+    Examples:
+        >>> import numpy as np
+        >>> inv_a_norm(np.array([3.0, 4.0]))
+        5.0
     """
     if matrix is None:
         return float(np.linalg.norm(vector[np.isfinite(vector)], 2))
@@ -93,6 +106,11 @@ def solve(matrix: np.ndarray, rhs: np.ndarray) -> np.ndarray:
 
     Raises:
         AssertionError: If matrix is not square or rhs size mismatches.
+
+    Examples:
+        >>> import numpy as np
+        >>> solve(np.eye(2), np.array([1.0, 2.0])).tolist()
+        [1.0, 2.0]
     """
     # make sure matrix is quadratic
     if matrix.shape[0] != matrix.shape[1]:

@@ -19,7 +19,15 @@ from ._signal import shrink2id, vol_adj
 
 
 class BasanosConfig(BaseModel):
-    """Configuration for correlation-aware position optimization."""
+    """Configuration for correlation-aware position optimization.
+
+    Examples:
+        >>> cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
+        >>> cfg.vola
+        32
+        >>> cfg.corr
+        64
+    """
 
     vola: int = Field(..., gt=0, description="EWMA lookback for volatility normalization.")
     corr: int = Field(..., gt=0, description="EWMA lookback for correlation estimation.")

@@ -13,46 +13,6 @@ from ._plots import Plots
 from ._stats import Stats
 
 
-def _compute_daily_profits_portfolio(prices: pl.DataFrame, positions: pl.DataFrame) -> pl.DataFrame:
-    """Compute daily cash profits per asset and preserve non-numeric columns.
-
-    Args:
-        prices: Price levels per asset over time (may include a 'date' column).
-        positions: Cash positions per asset aligned row-wise with ``prices``.
-
-    Returns:
-        pl.DataFrame: A frame containing per-asset daily profit columns and any
-        non-numeric columns from ``prices`` (e.g., 'date').
-    """
-    # Split numeric and non-numeric columns
-    assets = [c for c in prices.columns if prices[c].dtype.is_numeric()]
-
-    # numeric_cols, non_numeric_cols = split_numeric_non_numeric(prices)
-
-    # Compute daily profits per numeric column
-    profits = prices.with_columns(
-        (prices[asset].pct_change().fill_null(0.0) * positions[asset].shift(n=1).fill_null(0.0)).alias(asset)
-        for asset in assets
-    )
-
-    # Ensure there are no Nulls/NaNs/Infs in numeric profit columns
-    # - Fill nulls with 0.0 (should already be handled above, but double-guard)
-    # - Replace non-finite values (NaN/Inf) with 0.0
-    if assets:
-        profits = profits.with_columns(
-            pl.when(pl.col(c).is_finite()).then(pl.col(c)).otherwise(0.0).fill_null(0.0).alias(c) for c in assets
-        )
-        # Guards to guarantee cleanliness
-        for c in assets:
-            s = profits[c]
-            if int(s.null_count()) != 0:
-                raise ValueError  # pragma: no cover
-            if not bool(pl.Series(s).is_finite().all()):
-                raise ValueError  # pragma: no cover
-
-    return profits
-
-
 @dataclasses.dataclass(frozen=True)
 class Portfolio:
     """Store prices, positions, and compute portfolio statistics.
@@ -61,6 +21,15 @@ class Portfolio:
         cashposition: Polars DataFrame of positions per asset over time (includes date column if present).
         prices: Polars DataFrame of prices per asset over time (includes date column if present).
         aum: Assets under management used as base NAV offset.
+
+    Examples:
+        >>> import polars as pl
+        >>> from datetime import date
+        >>> prices = pl.DataFrame({"date": [date(2020, 1, 1), date(2020, 1, 2)], "A": [100.0, 110.0]})
+        >>> pos = pl.DataFrame({"date": [date(2020, 1, 1), date(2020, 1, 2)], "A": [1000.0, 1000.0]})
+        >>> pf = Portfolio(prices=prices, cashposition=pos)
+        >>> pf.assets
+        ['A']
     """
 
     cashposition: pl.DataFrame
@@ -98,6 +67,7 @@ class Portfolio:
         assets = [col for col, dtype in prices.schema.items() if dtype.is_numeric()]
 
         def vol(col_name: str, vola: int) -> pl.Expr:  # pragma: no cover
+            """Return an EWMA volatility expression for the given column and lookback."""
             return pl.col(col_name).pct_change().ewm_std(com=vola - 1, adjust=True, min_samples=vola)
 
         # Join prices to risk_position to compute volatility from price data
@@ -125,13 +95,45 @@ class Portfolio:
 
     @property
     def profits(self) -> pl.DataFrame:
-        """Compute per-asset daily cash profits.
+        """Compute per-asset daily cash profits, preserving non-numeric columns.
 
         Returns:
             pl.DataFrame: Per-asset daily profit series along with any non-numeric
             columns (e.g., 'date').
+
+        Examples:
+            >>> import polars as pl
+            >>> prices = pl.DataFrame({"A": [100.0, 110.0, 105.0]})
+            >>> pos = pl.DataFrame({"A": [1000.0, 1000.0, 1000.0]})
+            >>> pf = Portfolio(prices=prices, cashposition=pos)
+            >>> pf.profits.columns
+            ['A']
         """
-        profits = _compute_daily_profits_portfolio(prices=self.prices, positions=self.cashposition)
+        assets = [c for c in self.prices.columns if self.prices[c].dtype.is_numeric()]
+
+        # Compute daily profits per numeric column
+        profits = self.prices.with_columns(
+            (self.prices[asset].pct_change().fill_null(0.0) * self.cashposition[asset].shift(n=1).fill_null(0.0)).alias(
+                asset
+            )
+            for asset in assets
+        )
+
+        # Ensure there are no Nulls/NaNs/Infs in numeric profit columns
+        # - Fill nulls with 0.0 (should already be handled above, but double-guard)
+        # - Replace non-finite values (NaN/Inf) with 0.0
+        if assets:
+            profits = profits.with_columns(
+                pl.when(pl.col(c).is_finite()).then(pl.col(c)).otherwise(0.0).fill_null(0.0).alias(c) for c in assets
+            )
+            # Guards to guarantee cleanliness
+            for c in assets:
+                s = profits[c]
+                if int(s.null_count()) != 0:
+                    raise ValueError  # pragma: no cover
+                if not bool(pl.Series(s).is_finite().all()):
+                    raise ValueError  # pragma: no cover
+
         return profits
 
     @staticmethod

@@ -3,6 +3,12 @@
 This module defines the Plots facade which renders common portfolio visuals
 such as snapshots, lagged performance curves, smoothed-holdings curves, and
 lead/lag information ratio bar charts. Designed for notebook use.
+
+Examples:
+    >>> import dataclasses
+    >>> from basanos.analytics._plots import Plots
+    >>> dataclasses.is_dataclass(Plots)
+    True
 """
 
 from __future__ import annotations

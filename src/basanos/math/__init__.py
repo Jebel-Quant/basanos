@@ -16,6 +16,9 @@ Usage:
     Prefer importing public classes from this package namespace:
 
     >>> from basanos.math import BasanosConfig, BasanosEngine  # doctest: +SKIP
+    >>> from basanos.math import BasanosConfig, BasanosEngine
+    >>> issubclass(BasanosConfig, object) and issubclass(BasanosEngine, object)
+    True
 
 Notes:
     These re-exports are stable; private modules are implementation details
