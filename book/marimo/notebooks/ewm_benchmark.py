@@ -26,6 +26,7 @@ with app.setup:
     import numpy as np
     import pandas as pd
     import plotly.graph_objects as go
+    import polars as pl
     from plotly.subplots import make_subplots
 
     from basanos.math.optimizer import _ewm_corr_numpy
@@ -402,8 +403,6 @@ def cell_14(bench_results):
         legend={"orientation": "h", "y": 1.12},
         height=400,
     )
-
-    import polars as pl
 
     _tbl = pl.DataFrame(bench_results).select(
         pl.col("size").alias("Size"),
