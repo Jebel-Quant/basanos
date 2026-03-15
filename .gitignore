@@ -18,6 +18,9 @@ _benchmarks
 _jupyter
 _site
 
+# Marimo notebook validation artefacts
+results/
+
 # temp file used by Junie
 .output.txt
 
