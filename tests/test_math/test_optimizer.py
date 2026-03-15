@@ -152,6 +152,54 @@ def test_basanos_config_validator_enforces_corr_ge_vola():
         _ = BasanosConfig(vola=30, corr=10, clip=4.0, shrink=0.7, aum=1e6)
 
 
+def test_basanos_config_new_fields_have_correct_defaults():
+    """New optimizer fields should default to their hardcoded values."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6)
+    assert cfg.profit_variance_init == 1.0
+    assert cfg.profit_variance_decay == 0.99
+    assert cfg.denom_tol == 1e-12
+    assert cfg.position_scale == 1e6
+
+
+def test_basanos_config_new_fields_accept_custom_values():
+    """New optimizer fields should accept valid custom values."""
+    cfg = BasanosConfig(
+        vola=16,
+        corr=32,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        profit_variance_init=2.0,
+        profit_variance_decay=0.95,
+        denom_tol=1e-8,
+        position_scale=1e4,
+    )
+    assert cfg.profit_variance_init == 2.0
+    assert cfg.profit_variance_decay == 0.95
+    assert cfg.denom_tol == 1e-8
+    assert cfg.position_scale == 1e4
+
+
+def test_basanos_config_new_fields_validation():
+    """New optimizer fields should reject invalid values."""
+    base = {"vola": 16, "corr": 32, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, profit_variance_init=-1.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, profit_variance_decay=0.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, profit_variance_decay=1.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, denom_tol=0.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, position_scale=-1.0)
+
+
 # ─── BasanosEngine construction validation ────────────────────────────────────
 
 
