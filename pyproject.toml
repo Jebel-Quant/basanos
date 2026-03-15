@@ -20,6 +20,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "marimo",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -27,4 +29,4 @@ packages = ["src/basanos"]
 
 [tool.deptry]
 # Explicit module name map so deptry doesn't need to inspect installed packages
-package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "marimo" = "marimo" }
+package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow" }
