@@ -2,11 +2,13 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #     "marimo==0.20.4",
-#     "basanos>=0.2.2",
+#     "basanos",
 #     "numpy>=2.0.0",
 #     "polars>=1.0.0",
 #     "plotly>=6.0.0",
 # ]
+# [tool.uv.sources]
+# basanos = { path = "../../..", editable = true }
 # ///
 
 import marimo
