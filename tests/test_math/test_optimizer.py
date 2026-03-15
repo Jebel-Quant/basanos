@@ -4,9 +4,6 @@ These tests validate that the optimizer:
 - returns a Polars DataFrame with the expected schema (date + asset columns),
 - yields finite risk positions after a warmup period when correlations become defined,
 - and produces all-zero positions when the expected returns (mu) are zero.
-
-Tests are skipped if pandas is not available since basanos.optimizer relies on
-pandas' EWM correlation internally.
 """
 
 from __future__ import annotations

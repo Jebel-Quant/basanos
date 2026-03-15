@@ -2,7 +2,7 @@
 
 This module provides utilities to compute correlation-adjusted risk positions
 from price data and expected-return signals. It relies on volatility-adjusted
-returns to estimate a dynamic correlation matrix (via pandas EWM), applies
+returns to estimate a dynamic correlation matrix (via EWMA), applies
 shrinkage towards identity, and solves a normalized linear system per
 timestamp to obtain stable positions.
 """
@@ -16,6 +16,58 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from ..analytics import Portfolio
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id, vol_adj
+
+
+def _ewm_corr_numpy(returns: np.ndarray, com: int) -> np.ndarray:
+    """Compute per-timestamp EWMA correlation matrices using NumPy.
+
+    Uses adjust=True semantics (normalised by cumulative weights) to compute
+    exponentially weighted covariance, then normalises to correlation.
+    Timestamps with fewer than ``com`` observations yield NaN matrices.
+
+    NaN entries in ``returns`` are replaced with zero before accumulation.
+    This matches the behaviour of early-period NaN values produced by
+    ``vol_adj`` (log-return differences) during warmup, where zero
+    contribution is the appropriate neutral substitute.
+
+    Args:
+        returns: Array of shape ``(T, N)`` containing volatility-adjusted returns.
+        com: Centre-of-mass for EWMA decay (``alpha = 1 / (1 + com)``).
+
+    Returns:
+        Array of shape ``(T, N, N)``; NaN-filled for the first ``com - 1`` rows.
+    """
+    n_time, n_assets = returns.shape
+    alpha = 1.0 / (1.0 + com)
+    decay = 1.0 - alpha
+
+    result = np.full((n_time, n_assets, n_assets), np.nan)
+    s1 = np.zeros(n_assets)
+    sxx = np.zeros((n_assets, n_assets))
+    w = 0.0
+
+    for t in range(n_time):
+        x = np.nan_to_num(returns[t], nan=0.0)
+        s1 = decay * s1 + x
+        sxx = decay * sxx + np.outer(x, x)
+        w = decay * w + 1.0
+
+        if t + 1 < com:
+            continue
+
+        mean = s1 / w
+        cov = sxx / w - np.outer(mean, mean)
+
+        var = np.diag(cov)
+        if not np.all(var > 0):
+            continue
+
+        std = np.sqrt(var)
+        cor = cov / np.outer(std, std)
+        np.fill_diagonal(cor, 1.0)
+        result[t] = cor
+
+    return result
 
 
 class BasanosConfig(BaseModel):
@@ -124,22 +176,17 @@ class BasanosEngine:
         """Compute per-timestamp EWMA correlation matrices.
 
         Builds volatility-adjusted returns for all assets, computes an
-        exponentially weighted correlation using pandas (with window
+        exponentially weighted correlation using NumPy (with window
         ``cfg.corr``), and returns a mapping from each timestamp to the
         corresponding correlation matrix as a NumPy array.
 
         Returns:
             dict: Mapping ``date -> np.ndarray`` of shape (n_assets, n_assets).
         """
-        # All numeric columns except the date column are treated as assets.
         index = self.prices["date"]
-
-        # Compute EWM correlation via pandas in steps to keep lines short for linters
-        ret_adj_pd = self.ret_adj.select(self.assets).to_pandas()
-        ewm_corr = ret_adj_pd.ewm(com=self.cfg.corr, min_periods=self.cfg.corr).corr()
-        cor = ewm_corr.reset_index(names=["t", "asset"])  # (t, asset) index -> long-format DataFrame
-
-        return {index[t]: df_t.drop(columns=["t", "asset"]).to_numpy() for t, df_t in cor.groupby("t")}
+        x_adj = self.ret_adj.select(self.assets).to_numpy()
+        cor_3d = _ewm_corr_numpy(x_adj, com=self.cfg.corr)
+        return {index[t]: cor_3d[t] for t in range(len(index))}
 
     @property
     def cash_position(self) -> pl.DataFrame:
