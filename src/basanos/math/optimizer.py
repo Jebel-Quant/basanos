@@ -159,6 +159,17 @@ class BasanosEngine:
         Examples:
             >>> import tempfile, pathlib
             >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
+            >>> dates = pl.Series("date", list(range(100)))
+            >>> rng0 = np.random.default_rng(0).lognormal(size=100)
+            >>> rng1 = np.random.default_rng(1).lognormal(size=100)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng0, "B": rng1})
+            >>> rng2 = np.random.default_rng(2).normal(size=100)
+            >>> rng3 = np.random.default_rng(3).normal(size=100)
+            >>> mu = pl.DataFrame({"date": dates, "A": rng2, "B": rng3})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
             >>> tensor = engine.cor_tensor
             >>> with tempfile.TemporaryDirectory() as td:
             ...     path = pathlib.Path(td) / "cor.npy"
