@@ -135,6 +135,25 @@ class BasanosConfig(BaseModel):
         ..., ge=0.0, le=1.0, description="Shrinkage intensity towards identity (0=no shrinkage, 1=identity)."
     )
     aum: float = Field(..., gt=0.0, description="Assets under management for portfolio scaling.")
+    profit_variance_init: float = Field(
+        default=1.0, gt=0.0, description="Initial value for the profit variance EMA used in position sizing."
+    )
+    profit_variance_decay: float = Field(
+        default=0.99,
+        gt=0.0,
+        lt=1.0,
+        description="EMA decay rate for profit variance (higher = slower adaptation).",
+    )
+    denom_tol: float = Field(
+        default=1e-12,
+        gt=0.0,
+        description="Minimum normalisation denominator; positions are zeroed at or below this value.",
+    )
+    position_scale: float = Field(
+        default=1e6,
+        gt=0.0,
+        description="Multiplicative scaling factor applied to risk positions to obtain cash positions.",
+    )
 
     model_config = {"frozen": True, "extra": "forbid"}
 
@@ -301,8 +320,8 @@ class BasanosEngine:
         cash_pos_np = np.full_like(mu, fill_value=np.nan, dtype=float)
         vola_np = self.vola.select(assets).to_numpy()
 
-        profit_variance = 1.0
-        lamb = 0.99
+        profit_variance = self.cfg.profit_variance_init
+        lamb = self.cfg.profit_variance_decay
 
         for i, t in enumerate(cor.keys()):
             # get the mask of finite prices for this timestamp
@@ -334,7 +353,7 @@ class BasanosEngine:
             # Normalize solution; guard against zero/near-zero norm to avoid NaNs
             denom = inv_a_norm(expected_mu, matrix)
 
-            if denom is None or not np.isfinite(denom) or denom <= 1e-12 or np.allclose(expected_mu, 0.0):
+            if denom is None or not np.isfinite(denom) or denom <= self.cfg.denom_tol or np.allclose(expected_mu, 0.0):
                 pos = np.zeros_like(expected_mu)
             else:
                 pos = solve(matrix, expected_mu) / denom
@@ -359,4 +378,4 @@ class BasanosEngine:
         Returns:
             Portfolio: Instance built from cash positions with AUM scaling.
         """
-        return Portfolio.from_cash_position(self.prices, self.cash_position * 1e6, aum=self.cfg.aum)
+        return Portfolio.from_cash_position(self.prices, self.cash_position * self.cfg.position_scale, aum=self.cfg.aum)
