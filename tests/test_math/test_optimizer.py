@@ -418,8 +418,6 @@ class TestCorMatrixAssetAvailability:
     def test_asset3_and_asset4_rows_are_nan_in_year1(self, cor: dict, cfg: BasanosConfig) -> None:
         """asset_3 and asset_4 have no price data in year 1; rows/cols must be non-finite."""
         year1_post_warmup = [d for d in cor if d.year == 2020][cfg.corr :]
-        if not year1_post_warmup:
-            pytest.skip("Not enough year-1 dates after warmup")
         for d in year1_post_warmup[:10]:
             mat = cor[d]
             assert not np.any(np.isfinite(mat[_IDX_3, :])), f"asset_3 row not all-NaN at {d}"
