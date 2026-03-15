@@ -12,8 +12,6 @@ dependencies = [
     "numpy>=2.4",
     "plotly>=6.6.0",
     "polars>=1.37.1",
-    "pandas>=3.0.0",
-    "pyarrow>=23.0.1",
     "pydantic>=2.12.5",
     "scipy>=1.17.0",
 ]
@@ -22,6 +20,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "marimo",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -29,6 +29,4 @@ packages = ["src/basanos"]
 
 [tool.deptry]
 # Explicit module name map so deptry doesn't need to inspect installed packages
-package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pandas" = "pandas", "pyarrow" = "pyarrow", "pydantic" = "pydantic", "scipy" = "scipy", "marimo" = "marimo" }
-# pyarrow is used by polars for to_pandas(); pandas is used in math/optimizer.py for EWM correlation
-per_rule_ignores = { "DEP002" = ["pyarrow", "pandas"] }
+package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow" }

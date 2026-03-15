@@ -38,10 +38,8 @@ version = "0.2.2"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
-    { name = "pandas" },
     { name = "plotly" },
     { name = "polars" },
-    { name = "pyarrow" },
     { name = "pydantic" },
     { name = "scipy" },
 ]
@@ -49,21 +47,25 @@ dependencies = [
 [package.dev-dependencies]
 dev = [
     { name = "marimo" },
+    { name = "pandas" },
+    { name = "pyarrow" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.4" },
-    { name = "pandas", specifier = ">=3.0.0" },
     { name = "plotly", specifier = ">=6.6.0" },
     { name = "polars", specifier = ">=1.37.1" },
-    { name = "pyarrow", specifier = ">=23.0.1" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "scipy", specifier = ">=1.17.0" },
 ]
 
 [package.metadata.requires-dev]
-dev = [{ name = "marimo" }]
+dev = [
+    { name = "marimo" },
+    { name = "pandas", specifier = ">=2.0" },
+    { name = "pyarrow", specifier = ">=14.0" },
+]
 
 [[package]]
 name = "click"
