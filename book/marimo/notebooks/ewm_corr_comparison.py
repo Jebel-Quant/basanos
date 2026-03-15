@@ -176,46 +176,27 @@ def cell_08():
 
 @app.cell
 def cell_09(com_slider, ret_adj):
-    """Run both implementations and measure timing."""
-    import time
-
+    """Run both implementations and compute correlation cubes for comparison."""
     _com = com_slider.value
     _x = ret_adj.select(["A", "B", "C"]).to_numpy()
 
     # NumPy implementation
-    _t0 = time.perf_counter()
     cor_numpy = _ewm_corr_numpy(_x, com=_com)
-    elapsed_numpy = time.perf_counter() - _t0
 
     # Pandas implementation (original approach)
-    _t0 = time.perf_counter()
     _ret_pd = pd.DataFrame(_x, columns=["A", "B", "C"])
     _ewm_corr = _ret_pd.ewm(com=_com, min_periods=_com).corr()
     _cor_long = _ewm_corr.reset_index(names=["t", "asset"])
-    cor_pandas_dict = {t: df_t.drop(columns=["t", "asset"]).to_numpy() for t, df_t in _cor_long.groupby("t")}
-    elapsed_pandas = time.perf_counter() - _t0
+    _cor_pandas_dict = {t: df_t.drop(columns=["t", "asset"]).to_numpy() for t, df_t in _cor_long.groupby("t")}
 
     # Convert pandas dict to (T, N, N) array aligned with the numpy output
     _n_time = len(_x)
     _n_assets = 3
     cor_pandas = np.full((_n_time, _n_assets, _n_assets), np.nan)
-    for _t_key, _mat in cor_pandas_dict.items():
+    for _t_key, _mat in _cor_pandas_dict.items():
         cor_pandas[_t_key] = _mat
 
-    mo.callout(
-        mo.md(
-            f"""
-            **Timings** (com={_com}, T=200, N=3)
-
-            | Implementation | Wall time |
-            |---|---|
-            | NumPy | `{elapsed_numpy * 1000:.2f} ms` |
-            | Pandas | `{elapsed_pandas * 1000:.2f} ms` |
-            """
-        ),
-        kind="info",
-    )
-    return cor_numpy, cor_pandas, elapsed_numpy, elapsed_pandas
+    return cor_numpy, cor_pandas
 
 
 @app.cell
@@ -347,6 +328,208 @@ def cell_15():
 
 
 @app.cell
+def cell_bench_intro():
+    """Introduce the benchmark section."""
+    mo.md(
+        r"""
+        ## ⏱️ Benchmark
+
+        Which implementation is faster, and by how much?
+
+        The cells below sweep across portfolio sizes **N** (number of assets)
+        and sequence lengths **T** (number of timesteps), running each
+        implementation **20 times** and recording the **minimum** wall time —
+        the minimum is robust to OS scheduling noise and gives the closest
+        estimate of true compute cost.
+
+        | Sweep | Fixed parameter |
+        |---|---|
+        | Vary N (3 → 50), fixed T = 500 | shows how both scale with portfolio size |
+        | Vary T (100 → 5 000), fixed N = 10 | shows linear scaling with history length |
+        """
+    )
+
+
+@app.cell
+def cell_bench_run():
+    """Run benchmark sweep: vary N with fixed T, and vary T with fixed N."""
+    import timeit
+
+    _repeats = 20
+    _com_bench = 20
+
+    _ns = [3, 5, 10, 20, 30, 50]
+    _t_fixed = 500
+    _np_by_n: list[float] = []
+    _pd_by_n: list[float] = []
+
+    for _n in _ns:
+        # Fixed seed ensures both implementations always receive the same data,
+        # making the comparison fair regardless of loop order.
+        _rng_b = np.random.default_rng(0)
+        _x_b = _rng_b.normal(0, 1, (_t_fixed, _n))
+        _cols_b = [f"X{i}" for i in range(_n)]
+        _df_b = pd.DataFrame(_x_b, columns=_cols_b)
+
+        _np_by_n.append(
+            min(
+                timeit.repeat(
+                    lambda x=_x_b, c=_com_bench: _ewm_corr_numpy(x, com=c),
+                    number=1,
+                    repeat=_repeats,
+                )
+            )
+            * 1000
+        )
+
+        def _run_pd_n(df=_df_b, c=_com_bench):
+            _e = df.ewm(com=c, min_periods=c).corr()
+            _r = _e.reset_index(names=["t", "asset"])
+            return {t: g.drop(columns=["t", "asset"]).to_numpy() for t, g in _r.groupby("t")}
+
+        _pd_by_n.append(min(timeit.repeat(_run_pd_n, number=1, repeat=_repeats)) * 1000)
+
+    _ts = [100, 500, 1000, 2000, 5000]
+    _n_fixed = 10
+    _np_by_t: list[float] = []
+    _pd_by_t: list[float] = []
+
+    for _t in _ts:
+        # Fixed seed so both implementations see the same data at each T value.
+        _rng_b = np.random.default_rng(0)
+        _x_b = _rng_b.normal(0, 1, (_t, _n_fixed))
+        _cols_b = [f"X{i}" for i in range(_n_fixed)]
+        _df_b = pd.DataFrame(_x_b, columns=_cols_b)
+
+        _np_by_t.append(
+            min(
+                timeit.repeat(
+                    lambda x=_x_b, c=_com_bench: _ewm_corr_numpy(x, com=c),
+                    number=1,
+                    repeat=_repeats,
+                )
+            )
+            * 1000
+        )
+
+        def _run_pd_t(df=_df_b, c=_com_bench):
+            _e = df.ewm(com=c, min_periods=c).corr()
+            _r = _e.reset_index(names=["t", "asset"])
+            return {t: g.drop(columns=["t", "asset"]).to_numpy() for t, g in _r.groupby("t")}
+
+        _pd_by_t.append(min(timeit.repeat(_run_pd_t, number=1, repeat=_repeats)) * 1000)
+
+    bench = {
+        "ns": _ns,
+        "np_by_n": _np_by_n,
+        "pd_by_n": _pd_by_n,
+        "ts": _ts,
+        "np_by_t": _np_by_t,
+        "pd_by_t": _pd_by_t,
+    }
+    return (bench,)
+
+
+@app.cell
+def cell_bench_chart(bench):
+    """Plot benchmark results: scaling with N and T, plus speedup ratios."""
+    from plotly.subplots import make_subplots
+
+    _ns = bench["ns"]
+    _np_n = bench["np_by_n"]
+    _pd_n = bench["pd_by_n"]
+    _speedup_n = [p / n for p, n in zip(_pd_n, _np_n, strict=True)]
+
+    _ts = bench["ts"]
+    _np_t = bench["np_by_t"]
+    _pd_t = bench["pd_by_t"]
+    _speedup_t = [p / n for p, n in zip(_pd_t, _np_t, strict=True)]
+
+    _fig = make_subplots(
+        rows=2,
+        cols=2,
+        subplot_titles=[
+            "Time vs N assets (T = 500)",
+            "Speedup vs N assets",
+            "Time vs T timesteps (N = 10)",
+            "Speedup vs T timesteps",
+        ],
+        vertical_spacing=0.18,
+        horizontal_spacing=0.12,
+    )
+
+    _nx = [str(n) for n in _ns]
+    _tx = [str(t) for t in _ts]
+    _np_col = "#2FA4A9"
+    _pd_col = "#E06C4B"
+    _su_col = "#6A9FD8"
+
+    # Row 1: vary N
+    _fig.add_trace(go.Bar(name="NumPy", x=_nx, y=_np_n, marker_color=_np_col, legendgroup="np"), row=1, col=1)
+    _fig.add_trace(go.Bar(name="Pandas", x=_nx, y=_pd_n, marker_color=_pd_col, legendgroup="pd"), row=1, col=1)
+    _fig.add_trace(
+        go.Bar(name="Speedup ×", x=_nx, y=_speedup_n, marker_color=_su_col, showlegend=True, legendgroup="su"),
+        row=1,
+        col=2,
+    )
+    _fig.add_hline(y=1.0, line_dash="dot", line_color="gray", row=1, col=2)
+
+    # Row 2: vary T
+    _fig.add_trace(go.Bar(x=_tx, y=_np_t, marker_color=_np_col, showlegend=False, legendgroup="np"), row=2, col=1)
+    _fig.add_trace(go.Bar(x=_tx, y=_pd_t, marker_color=_pd_col, showlegend=False, legendgroup="pd"), row=2, col=1)
+    _fig.add_trace(
+        go.Bar(x=_tx, y=_speedup_t, marker_color=_su_col, showlegend=False, legendgroup="su"),
+        row=2,
+        col=2,
+    )
+    _fig.add_hline(y=1.0, line_dash="dot", line_color="gray", row=2, col=2)
+
+    _fig.update_layout(
+        barmode="group",
+        template="plotly_white",
+        height=600,
+        legend={"orientation": "h", "y": -0.08},
+    )
+    _fig.update_yaxes(title_text="Time (ms)", row=1, col=1)
+    _fig.update_yaxes(title_text="Pandas / NumPy ×", row=1, col=2)
+    _fig.update_yaxes(title_text="Time (ms)", row=2, col=1)
+    _fig.update_yaxes(title_text="Pandas / NumPy ×", row=2, col=2)
+    _fig.update_xaxes(title_text="N (assets)", row=1, col=1)
+    _fig.update_xaxes(title_text="N (assets)", row=1, col=2)
+    _fig.update_xaxes(title_text="T (timesteps)", row=2, col=1)
+    _fig.update_xaxes(title_text="T (timesteps)", row=2, col=2)
+
+    mo.ui.plotly(_fig)
+
+
+@app.cell
+def cell_bench_table(bench):
+    """Show benchmark results as tables."""
+    _rows_n = [
+        {"N (assets)": n, "NumPy (ms)": f"{np:.2f}", "Pandas (ms)": f"{pd:.2f}", "Speedup ×": f"{pd / np:.1f}x"}
+        for n, np, pd in zip(bench["ns"], bench["np_by_n"], bench["pd_by_n"], strict=True)
+    ]
+    _rows_t = [
+        {"T (timesteps)": t, "NumPy (ms)": f"{np:.2f}", "Pandas (ms)": f"{pd:.2f}", "Speedup ×": f"{pd / np:.1f}x"}
+        for t, np, pd in zip(bench["ts"], bench["np_by_t"], bench["pd_by_t"], strict=True)
+    ]
+    mo.vstack(
+        [
+            mo.md("### Scaling with N (T = 500, 20 repeats, min time)"),
+            mo.ui.table(_rows_n),
+            mo.md("### Scaling with T (N = 10, 20 repeats, min time)"),
+            mo.ui.table(_rows_t),
+        ]
+    )
+
+
+@app.cell
+def cell_15b():
+    """Render separator before conclusion."""
+    mo.md("---")
+
+
+@app.cell
 def cell_16():
     """Render the conclusion."""
     mo.md(
@@ -354,8 +537,9 @@ def cell_16():
         ## 🎉 Conclusion
 
         The NumPy implementation reproduces the Pandas EWMA correlation output
-        to **machine-precision accuracy** (max Δ < 10⁻¹⁰), confirming that the
-        removal of `pandas` and `pyarrow` as runtime dependencies is safe.
+        to **machine-precision accuracy** (max Δ < 10⁻¹⁰), and is consistently
+        **faster** — especially at larger portfolio sizes — because it avoids
+        the overhead of intermediate DataFrame and MultiIndex construction.
 
         Key properties of the NumPy implementation:
 
