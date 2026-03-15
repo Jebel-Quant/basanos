@@ -115,6 +115,7 @@ class Portfolio:
         assets = [col for col, dtype in prices.schema.items() if dtype.is_numeric()]
 
         def vol(col_name: str, vola: int) -> pl.Expr:  # pragma: no cover
+            """Return an EWMA volatility expression for the given column and lookback."""
             return pl.col(col_name).pct_change().ewm_std(com=vola - 1, adjust=True, min_samples=vola)
 
         # Join prices to risk_position to compute volatility from price data

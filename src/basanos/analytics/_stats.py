@@ -91,11 +91,13 @@ class Stats:
 
     @staticmethod
     def _mean_positive_expr(series: pl.Series) -> float:
+        """Return the mean of strictly positive values, or 0.0 if none exist."""
         result = series.filter(series > 0).mean()
         return _to_float(result)
 
     @staticmethod
     def _mean_negative_expr(series: pl.Series) -> float:
+        """Return the mean of strictly negative values, or 0.0 if none exist."""
         result = series.filter(series < 0).mean()
         return _to_float(result)
 
@@ -113,6 +115,7 @@ class Stats:
 
         @wraps(func)
         def wrapper(self: "Stats", *args: object, **kwargs: object) -> dict[str, float | int | None]:
+            """Apply the wrapped stat function to each asset column and return results as a dict."""
             return {asset: func(self, self.data[asset], *args, **kwargs) for asset in self.assets}
 
         return wrapper
