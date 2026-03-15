@@ -23,19 +23,21 @@ def _ewm_corr_numpy(returns: np.ndarray, com: int) -> np.ndarray:
 
     Uses adjust=True semantics (normalised by cumulative weights) to compute
     exponentially weighted covariance, then normalises to correlation.
-    Timestamps with fewer than ``com`` observations yield NaN matrices.
+    Timestamps with fewer than ``com`` valid (non-NaN) observations yield NaN
+    matrices.
 
-    NaN entries in ``returns`` are replaced with zero before accumulation.
-    This matches the behaviour of early-period NaN values produced by
-    ``vol_adj`` (log-return differences) during warmup, where zero
-    contribution is the appropriate neutral substitute.
+    Rows containing any NaN are skipped: the accumulated state is not updated
+    and the row does not count toward the ``com`` minimum-observations
+    threshold. This matches the pairwise behaviour of
+    ``pandas.DataFrame.ewm(min_periods=com).corr()``.
 
     Args:
         returns: Array of shape ``(T, N)`` containing volatility-adjusted returns.
         com: Centre-of-mass for EWMA decay (``alpha = 1 / (1 + com)``).
 
     Returns:
-        Array of shape ``(T, N, N)``; NaN-filled for the first ``com - 1`` rows.
+        Array of shape ``(T, N, N)``; NaN-filled until ``com`` valid rows have
+        been observed.
     """
     n_time, n_assets = returns.shape
     alpha = 1.0 / (1.0 + com)
@@ -45,14 +47,19 @@ def _ewm_corr_numpy(returns: np.ndarray, com: int) -> np.ndarray:
     s1 = np.zeros(n_assets)
     sxx = np.zeros((n_assets, n_assets))
     w = 0.0
+    n_valid = 0
 
     for t in range(n_time):
-        x = np.nan_to_num(returns[t], nan=0.0)
+        if np.any(np.isnan(returns[t])):
+            continue
+
+        x = returns[t]
         s1 = decay * s1 + x
         sxx = decay * sxx + np.outer(x, x)
         w = decay * w + 1.0
+        n_valid += 1
 
-        if t + 1 < com:
+        if n_valid < com:
             continue
 
         mean = s1 / w
