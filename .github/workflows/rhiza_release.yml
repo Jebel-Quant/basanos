@@ -122,7 +122,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v7.5.0
         with:
-          version: "0.10.9"
+          version: "0.10.10"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
@@ -232,15 +232,14 @@ jobs:
         continue-on-error: true
 
       - name: Create GitHub Release with artifacts
-        uses: ncipollo/release-action@v1.20.0
+        uses: softprops/action-gh-release@v2.5.0
         with:
-          tag: ${{ needs.tag.outputs.tag }}
+          tag_name: ${{ needs.tag.outputs.tag }}
           name: ${{ needs.tag.outputs.tag }}
-          generateReleaseNotes: true
+          generate_release_notes: true
           draft: true
-          allowUpdates: true
-          omitBodyDuringUpdate: true
-          artifacts: "sbom/*"
+          files: |
+            sbom/*
 
   # Decide at step-level whether to publish
   pypi:
@@ -444,21 +443,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Publish Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.tag.outputs.tag }}
-          DEVCONTAINER_MSG: ${{ steps.devcontainer_link.outputs.message }}
-          PYPI_MSG: ${{ steps.pypi_link.outputs.message }}
-        run: |
-          # Get existing auto-generated release notes (gracefully handle missing release)
-          EXISTING=$(gh release view "$TAG" --json body --jq '.body // ""' 2>/dev/null || echo "")
-
-          # Append links to release body
-          {
-            printf '%s' "$EXISTING"
-            [ -n "$DEVCONTAINER_MSG" ] && printf '\n\n%s' "$DEVCONTAINER_MSG"
-            [ -n "$PYPI_MSG" ] && printf '\n\n%s' "$PYPI_MSG"
-          } > /tmp/notes.md
-
-          gh release edit "$TAG" --draft=false --notes-file /tmp/notes.md
+        uses: softprops/action-gh-release@v2.5.0
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          draft: false
+          append_body: true
+          body: |
+            ${{ steps.devcontainer_link.outputs.message }}
+            ${{ steps.pypi_link.outputs.message }}
 
