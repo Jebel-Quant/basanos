@@ -16,6 +16,9 @@ Usage:
     Prefer importing the public classes from this package namespace:
 
     >>> from basanos.analytics import Portfolio  # doctest: +SKIP
+    >>> from basanos.analytics import Portfolio
+    >>> issubclass(Portfolio, object)
+    True
 
 Notes:
     Direct imports from private modules are discouraged as they may change

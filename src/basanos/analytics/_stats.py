@@ -17,7 +17,14 @@ from scipy.stats import norm
 
 
 def _to_float(value: object) -> float:
-    """Safely convert a Polars aggregation result to float."""
+    """Safely convert a Polars aggregation result to float.
+
+    Examples:
+        >>> _to_float(2.0)
+        2.0
+        >>> _to_float(None)
+        0.0
+    """
     if value is None:
         return 0.0
     if isinstance(value, timedelta):
@@ -52,6 +59,16 @@ class Stats:
     Attributes:
         data: The _Data object containing returns data.
 
+    Examples:
+        >>> import polars as pl
+        >>> from datetime import date
+        >>> data = pl.DataFrame({
+        ...     "date": [date(2020, 1, 1), date(2020, 1, 2), date(2020, 1, 3)],
+        ...     "returns": [0.01, -0.02, 0.03],
+        ... })
+        >>> stats = Stats(data=data)
+        >>> stats.assets
+        ['returns']
     """
 
     data: pl.DataFrame

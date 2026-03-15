@@ -23,6 +23,14 @@ def _compute_daily_profits_portfolio(prices: pl.DataFrame, positions: pl.DataFra
     Returns:
         pl.DataFrame: A frame containing per-asset daily profit columns and any
         non-numeric columns from ``prices`` (e.g., 'date').
+
+    Examples:
+        >>> import polars as pl
+        >>> prices = pl.DataFrame({"A": [100.0, 110.0, 105.0]})
+        >>> positions = pl.DataFrame({"A": [1000.0, 1000.0, 1000.0]})
+        >>> profits = _compute_daily_profits_portfolio(prices, positions)
+        >>> profits.columns
+        ['A']
     """
     # Split numeric and non-numeric columns
     assets = [c for c in prices.columns if prices[c].dtype.is_numeric()]
@@ -61,6 +69,15 @@ class Portfolio:
         cashposition: Polars DataFrame of positions per asset over time (includes date column if present).
         prices: Polars DataFrame of prices per asset over time (includes date column if present).
         aum: Assets under management used as base NAV offset.
+
+    Examples:
+        >>> import polars as pl
+        >>> from datetime import date
+        >>> prices = pl.DataFrame({"date": [date(2020, 1, 1), date(2020, 1, 2)], "A": [100.0, 110.0]})
+        >>> pos = pl.DataFrame({"date": [date(2020, 1, 1), date(2020, 1, 2)], "A": [1000.0, 1000.0]})
+        >>> pf = Portfolio(prices=prices, cashposition=pos)
+        >>> pf.assets
+        ['A']
     """
 
     cashposition: pl.DataFrame

@@ -22,6 +22,11 @@ def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
 
     Returns:
         The shrunk matrix with the same shape as ``matrix``.
+
+    Examples:
+        >>> import numpy as np
+        >>> shrink2id(np.array([[2.0, 0.0], [0.0, 2.0]]), lamb=0.0).tolist()
+        [[1.0, 0.0], [0.0, 1.0]]
     """
     return matrix * lamb + (1 - lamb) * np.eye(N=matrix.shape[0])
 
@@ -40,6 +45,13 @@ def vol_adj(x: pl.Expr, vola: int, clip: float, min_samples: int = 1) -> pl.Expr
 
     Returns:
         A Polars expression with standardized and clipped log returns.
+
+    Examples:
+        >>> import polars as pl
+        >>> df = pl.DataFrame({"p": [1.0, 1.1, 1.05, 1.15, 1.2]})
+        >>> result = df.select(vol_adj(pl.col("p"), vola=2, clip=3.0))
+        >>> result.shape
+        (5, 1)
     """
     # compute the log returns
     log_returns = x.log().diff()
