@@ -16,6 +16,8 @@ produces NaN positions precisely where prices are absent.
 
 from __future__ import annotations
 
+import pathlib
+import tempfile
 from datetime import date
 
 import numpy as np
@@ -298,3 +300,62 @@ class TestCashPositionWithStaggeredAssets:
         warmup = cfg.corr + cfg.vola
         tail_vals = cash_pos["asset_2"].to_numpy()[warmup:]
         assert np.all(np.isfinite(tail_vals)), "asset_2 has non-finite positions after warmup"
+
+
+# ---------------------------------------------------------------------------
+# Tensor / flat-file round-trip tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def tensor_engine(prices: pl.DataFrame, mu: pl.DataFrame, cfg: BasanosConfig) -> BasanosEngine:
+    """A single BasanosEngine instance shared across the tensor test class."""
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+
+class TestCorTensorFlatFile:
+    """Store all correlation matrices in a tensor and round-trip via a flat file."""
+
+    def test_tensor_shape_and_type(self, tensor_engine: BasanosEngine, prices: pl.DataFrame) -> None:
+        """cor_tensor should return a 3-D NumPy ndarray of shape (T, N, N)."""
+        tensor = tensor_engine.cor_tensor
+        n_assets = len(tensor_engine.assets)
+        assert isinstance(tensor, np.ndarray)
+        assert tensor.ndim == 3
+        assert tensor.shape == (prices.height, n_assets, n_assets)
+
+    def test_tensor_slices_match_cor_dict(self, tensor_engine: BasanosEngine) -> None:
+        """Each slice tensor[t] must equal the corresponding matrix in cor."""
+        tensor = tensor_engine.cor_tensor
+        for t, mat in enumerate(tensor_engine.cor.values()):
+            np.testing.assert_array_equal(
+                tensor[t],
+                mat,
+                err_msg=f"tensor[{t}] does not match cor dict entry at index {t}",
+            )
+
+    def test_tensor_saves_and_loads_from_flat_file(self, tensor_engine: BasanosEngine) -> None:
+        """Save the tensor to a .npy flat file and reload it; values must be identical."""
+        tensor = tensor_engine.cor_tensor
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "cor_tensor.npy"
+            np.save(path, tensor)
+            loaded = np.load(path)
+
+        assert loaded.shape == tensor.shape
+        np.testing.assert_array_equal(loaded, tensor)
+
+    def test_tensor_reproduced_from_flat_file_matches_cor_dict(self, tensor_engine: BasanosEngine) -> None:
+        """After a save/load round-trip the tensor must reproduce every cor dict entry."""
+        tensor = tensor_engine.cor_tensor
+        with tempfile.TemporaryDirectory() as td:
+            path = pathlib.Path(td) / "cor_tensor.npy"
+            np.save(path, tensor)
+            loaded = np.load(path)
+
+        for t, mat in enumerate(tensor_engine.cor.values()):
+            np.testing.assert_array_equal(
+                loaded[t],
+                mat,
+                err_msg=f"Reproduced tensor[{t}] does not match original cor dict entry",
+            )
