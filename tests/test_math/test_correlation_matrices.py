@@ -17,7 +17,6 @@ produces NaN positions precisely where prices are absent.
 from __future__ import annotations
 
 import pathlib
-import tempfile
 from datetime import date
 
 import numpy as np
@@ -334,24 +333,21 @@ class TestCorTensorFlatFile:
                 err_msg=f"tensor[{t}] does not match cor dict entry at index {t}",
             )
 
-    def test_tensor_saves_and_loads_from_flat_file(self, tensor_engine: BasanosEngine) -> None:
-        """Save the tensor to a .npy flat file and reload it; values must be identical."""
+    def test_tensor_saves_and_loads_from_flat_file(
+        self, tensor_engine: BasanosEngine, resource_dir: pathlib.Path
+    ) -> None:
+        """Load the tensor from the committed .npy resource file; values must be identical."""
         tensor = tensor_engine.cor_tensor
-        with tempfile.TemporaryDirectory() as td:
-            path = pathlib.Path(td) / "cor_tensor.npy"
-            np.save(path, tensor)
-            loaded = np.load(path)
+        loaded = np.load(resource_dir / "cor_tensor.npy")
 
         assert loaded.shape == tensor.shape
         np.testing.assert_array_equal(loaded, tensor)
 
-    def test_tensor_reproduced_from_flat_file_matches_cor_dict(self, tensor_engine: BasanosEngine) -> None:
-        """After a save/load round-trip the tensor must reproduce every cor dict entry."""
-        tensor = tensor_engine.cor_tensor
-        with tempfile.TemporaryDirectory() as td:
-            path = pathlib.Path(td) / "cor_tensor.npy"
-            np.save(path, tensor)
-            loaded = np.load(path)
+    def test_tensor_reproduced_from_flat_file_matches_cor_dict(
+        self, tensor_engine: BasanosEngine, resource_dir: pathlib.Path
+    ) -> None:
+        """The tensor stored in the resource file must reproduce every cor dict entry."""
+        loaded = np.load(resource_dir / "cor_tensor.npy")
 
         for t, mat in enumerate(tensor_engine.cor.values()):
             np.testing.assert_array_equal(
