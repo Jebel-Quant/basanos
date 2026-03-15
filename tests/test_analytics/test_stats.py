@@ -1,31 +1,25 @@
-"""Tests for Stats in basanos.analytics._stats.
-
-This module provides comprehensive tests for all methods of the Stats class,
-using small deterministic datasets and explicit expectations. Docstrings are
-included to satisfy pydocstyle.
-"""
+"""Tests for basanos.analytics._stats (Stats class)."""
 
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import numpy as np
 import polars as pl
 import pytest
 
-from basanos.analytics._stats import Stats
+from basanos.analytics._stats import Stats, _to_float, _to_float_or_none
+
+# ─── Fixtures ────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
 def dates() -> list[datetime]:
     """Return a list of consecutive daily datetimes used as a test index."""
-    start = "2020-01-01"
-    days = 200
-    dt0 = datetime.fromisoformat(start)
-    dates = [dt0 + timedelta(days=i) for i in range(days)]
-    return dates
+    dt0 = datetime.fromisoformat("2020-01-01")
+    return [dt0 + timedelta(days=i) for i in range(200)]
 
 
 @pytest.fixture
@@ -34,31 +28,117 @@ def frame(dates: list[datetime]) -> pl.DataFrame:
     return pl.DataFrame({"date": dates})
 
 
+def _make_daily_frame(days: int = 10) -> pl.DataFrame:
+    """Build a simple DataFrame with a daily 'date' column and one numeric asset."""
+    start = date(2020, 1, 1)
+    end = start + timedelta(days=days - 1)
+    dates = pl.date_range(start=start, end=end, interval="1d", eager=True)
+    a = pl.Series("A", [float(i) for i in range(days)], dtype=pl.Float64)
+    return pl.DataFrame({"date": dates, "A": a, "label": ["x"] * days})
+
+
+# ─── Initialisation ───────────────────────────────────────────────────────────
+
+
+def test_stats_init_raises_typeerror_when_not_dataframe():
+    """Passing a non-DataFrame to Stats should raise TypeError in __post_init__."""
+    with pytest.raises(TypeError):
+        _ = Stats(data={"date": [1, 2, 3], "A": [0.1, 0.2, 0.3]})
+
+
+def test_stats_init_raises_valueerror_on_empty_dataframe():
+    """Passing an empty DataFrame should raise ValueError in __post_init__."""
+    empty_df = pl.DataFrame(
+        {
+            "date": pl.Series("date", [], dtype=pl.Datetime("ns")),
+            "A": pl.Series("A", [], dtype=pl.Float64),
+        }
+    )
+    with pytest.raises(ValueError, match=r".*"):
+        _ = Stats(data=empty_df)
+
+
+# ─── Assets property and periods_per_year ────────────────────────────────────
+
+
+def test_assets_property_filters_date_and_non_numeric():
+    """Assets should include only numeric columns and exclude 'date' and strings."""
+    df = _make_daily_frame(5)
+    s = Stats(df)
+    assert s.assets == ["A"]
+
+
+def test_periods_per_year_estimation_for_daily_index():
+    """periods_per_year should be approximately 365 for daily timestamps."""
+    df = _make_daily_frame(8)
+    s = Stats(df)
+    ppy = s.periods_per_year
+    assert math.isfinite(ppy)
+    assert abs(ppy - 365.0) < 1e-6
+
+
+def test_periods_per_year_single_row_uses_fallback():
+    """Single-row frame: diff is empty → mean is None → fallback to 86400 s → 365 days/year."""
+    df = pl.DataFrame(
+        {
+            "date": pl.date_range(start=date(2020, 1, 1), end=date(2020, 1, 1), interval="1d", eager=True),
+            "A": [1.0],
+        }
+    )
+    s = Stats(df)
+    assert math.isclose(s.periods_per_year, 365.0, rel_tol=1e-12)
+
+
+def test_periods_per_year_numeric_first_column_uses_to_float():
+    """Numeric first column: mean_diff is a float → elif branch executed."""
+    df = pl.DataFrame({"steps": [1, 2, 3], "A": [1.0, 2.0, 3.0]})
+    s = Stats(df)
+    expected = 365.0 * 24.0 * 3600.0
+    assert math.isclose(s.periods_per_year, expected, rel_tol=1e-12)
+
+
+# ─── Private helper functions ─────────────────────────────────────────────────
+
+
+def test_to_float_none_returns_zero():
+    """_to_float(None) should return 0.0."""
+    assert _to_float(None) == 0.0
+
+
+def test_to_float_timedelta_returns_total_seconds():
+    """_to_float(timedelta) should return total_seconds() as float."""
+    assert _to_float(timedelta(seconds=42)) == 42.0
+
+
+def test_to_float_or_none_none_returns_none():
+    """_to_float_or_none(None) should return None."""
+    assert _to_float_or_none(None) is None
+
+
+def test_to_float_or_none_timedelta_returns_total_seconds():
+    """_to_float_or_none(timedelta) should return total_seconds() as float."""
+    assert _to_float_or_none(timedelta(seconds=7)) == 7.0
+
+
+# ─── Skew ─────────────────────────────────────────────────────────────────────
+
+
 def test_skew_symmetric_zero(frame):
     """Symmetric distribution around zero should have skew approximately zero."""
-    data = frame.head(8)
-    a = [-3.0, -1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 3.0]
-    data = data.with_columns(pl.Series("A", a))
+    data = frame.head(8).with_columns(pl.Series("A", [-3.0, -1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 3.0]))
     s = Stats(data)
-
     result = s.skew()
-
     assert set(result.keys()) == {"A"}
     assert math.isclose(result["A"], 0.0, abs_tol=1e-12, rel_tol=1e-9)
 
 
 def test_skew_positive_and_negative_signs(frame):
     """Positively skewed data yields positive skew; negatively skewed yields negative skew."""
-    data = frame.head(6)
-
-    a = [-0.5, -0.2, -0.1, 0.0, 0.0, 3.0]
-    b = [0.5, 0.2, 0.1, 0.0, 0.0, -3.0]
-
-    data = data.with_columns(pl.Series("A", a), pl.Series("B", b))
-
-    s = Stats(data)
-    out = s.skew()
-
+    data = frame.head(6).with_columns(
+        pl.Series("A", [-0.5, -0.2, -0.1, 0.0, 0.0, 3.0]),
+        pl.Series("B", [0.5, 0.2, 0.1, 0.0, 0.0, -3.0]),
+    )
+    out = Stats(data).skew()
     assert out["A"] > 0
     assert out["B"] < 0
     assert math.isclose(abs(out["A"]), abs(out["B"]), rel_tol=0.25)
@@ -66,14 +146,8 @@ def test_skew_positive_and_negative_signs(frame):
 
 def test_skew_ignores_nulls_and_returns_dict(frame):
     """Skew should ignore nulls and return a mapping of asset->float values."""
-    data = frame.head(7)
-    a = [None, 0.0, 0.1, None, -0.1, 0.2, -0.2]
-
-    data = data.with_columns(pl.Series("A", a))
-    s = Stats(data)
-
-    res: dict[str, Any] = s.skew()
-
+    data = frame.head(7).with_columns(pl.Series("A", [None, 0.0, 0.1, None, -0.1, 0.2, -0.2]))
+    res: dict[str, Any] = Stats(data).skew()
     assert isinstance(res, dict)
     assert set(res) == {"A"}
     assert isinstance(res["A"], float)
@@ -81,191 +155,149 @@ def test_skew_ignores_nulls_and_returns_dict(frame):
     assert res["A"] == pytest.approx(0.0, abs=1e-12)
 
 
+# ─── Kurtosis ─────────────────────────────────────────────────────────────────
+
+
 def test_kurtosis_heavy_and_flat_signs(frame):
     """Kurtosis should be positive for heavy tails and negative for flat/uniform-like data."""
-    data = frame.head(10)
-
-    a = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 0.0]
-    b = [-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0]
-
-    data = data.with_columns(pl.Series("A", a), pl.Series("B", b))
-    s = Stats(data)
-
-    out = s.kurtosis()
-
+    data = frame.head(10).with_columns(
+        pl.Series("A", [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 10.0, -10.0, 0.0]),
+        pl.Series("B", [-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0]),
+    )
+    out = Stats(data).kurtosis()
     assert out["A"] > 0
     assert out["B"] < 0
 
 
 def test_kurtosis_ignores_nulls_and_returns_dict(frame):
     """Kurtosis should ignore nulls and return a mapping of asset->float values."""
-    data = frame.head(8)
-    a = [None, -1.0, 0.0, 1.0, None, -2.0, 2.0, 0.0]
-
-    data = data.with_columns(pl.Series("A", a))
-    s = Stats(data)
-
-    res = s.kurtosis()
-
+    data = frame.head(8).with_columns(pl.Series("A", [None, -1.0, 0.0, 1.0, None, -2.0, 2.0, 0.0]))
+    res = Stats(data).kurtosis()
     assert isinstance(res, dict)
     assert set(res.keys()) == {"A"}
     assert isinstance(res["A"], float)
     assert math.isfinite(res["A"])
 
 
+# ─── Returns (avg / win / loss) ───────────────────────────────────────────────
+
+
 def test_avg_return_win_loss(frame):
     """avg_return ignores zeros/nulls; avg_win/loss compute means of positive/negative subsets."""
-    data = frame.head(6)
     a = [0.1, 0.0, -0.2, None, 0.3, -0.4]
+    data = frame.head(6).with_columns(pl.Series("A", a))
     rets = pl.DataFrame({"A": a})
-    data = data.with_columns(pl.Series("A", a))
     s = Stats(data)
 
-    out_avg = s.avg_return()
-    out_win = s.avg_win()
-    out_loss = s.avg_loss()
-
-    expected_avg = rets["A"].filter(rets["A"].is_not_null() & (rets["A"] != 0)).mean()
-    expected_win = rets["A"].filter(rets["A"] > 0).mean()
-    expected_loss = rets["A"].filter(rets["A"] < 0).mean()
-
-    assert out_avg["A"] == expected_avg
-    assert out_win["A"] == expected_win
-    assert out_loss["A"] == expected_loss
+    assert s.avg_return()["A"] == rets["A"].filter(rets["A"].is_not_null() & (rets["A"] != 0)).mean()
+    assert s.avg_win()["A"] == rets["A"].filter(rets["A"] > 0).mean()
+    assert s.avg_loss()["A"] == rets["A"].filter(rets["A"] < 0).mean()
 
 
-# --- Volatility and Sharpe ---
+# ─── Volatility and Sharpe ────────────────────────────────────────────────────
 
 
 def test_volatility_paths(frame):
     """Volatility should annualize by sqrt(periods) when requested and accept custom periods."""
-    data = frame.head(5)
     a = [0.01, 0.02, 0.00, -0.01, 0.03]
-    rets = pl.DataFrame({"A": a})
-    data = data.with_columns(pl.Series("A", a))
+    data = frame.head(5).with_columns(pl.Series("A", a))
+    base_std = float(pl.DataFrame({"A": a})["A"].std())
     s = Stats(data)
 
-    base_std = float(rets["A"].std())
-    out_no = s.volatility(annualize=False)
-    assert math.isclose(out_no["A"], base_std, rel_tol=1e-12, abs_tol=1e-12)
-
-    out_252 = s.volatility(periods=252, annualize=True)
-    assert math.isclose(out_252["A"], base_std * math.sqrt(252), rel_tol=1e-12, abs_tol=1e-12)
-
-    out_60 = s.volatility(periods=60, annualize=True)
-    assert math.isclose(out_60["A"], base_std * math.sqrt(60), rel_tol=1e-12, abs_tol=1e-12)
+    assert math.isclose(s.volatility(annualize=False)["A"], base_std, rel_tol=1e-12, abs_tol=1e-12)
+    assert math.isclose(
+        s.volatility(periods=252, annualize=True)["A"], base_std * math.sqrt(252), rel_tol=1e-12, abs_tol=1e-12
+    )
+    assert math.isclose(
+        s.volatility(periods=60, annualize=True)["A"], base_std * math.sqrt(60), rel_tol=1e-12, abs_tol=1e-12
+    )
 
 
-def test_sharpe_simple(frame):
-    """Sharpe equals mean/std (ddof=1) scaled by sqrt(periods)."""
-    data = frame.head(5)
-    a = [0.01, 0.02, 0.00, -0.01, 0.03]
-    rets = pl.DataFrame({"A": a})
-    data = data.with_columns(pl.Series("A", a))
-    s = Stats(data)
-
-    mean = float(rets["A"].mean())
-    std_sample = float(rets["A"].std(ddof=1))
-    expected = mean / std_sample  # with periods=1
-
-    out = s.sharpe(periods=1)
-    assert math.isclose(out["A"], expected, rel_tol=1e-12, abs_tol=1e-12)
-
-
-# --- Risk (VaR / CVaR) ---
-
-
-def test_var_and_cvar_properties(frame):
-    """VaR(alpha) should be more negative than mean; CVaR should be <= VaR for normal-like data."""
-    data = frame.head(200)
-    # Create roughly normal-like returns around 0 with small variance
-    # Use a deterministic sequence scaled down
-    base = np.linspace(-3, 3, num=200)
-    a = (base / 100.0).tolist()
-    pl.DataFrame({"A": a})
-    data = data.with_columns(pl.Series("A", a))
-    s = Stats(data)
-
-    var = s.value_at_risk(alpha=0.05)["A"]
-    cvar = s.conditional_value_at_risk(alpha=0.05)["A"]
-
-    # VaR should be near left-tail quantile (negative)
-    assert var < 0
-    # CVaR is the average of the tail <= VaR, thus even more negative or equal
-    assert cvar <= var
-
-
-# --- Win rate, best/worst, exposure ---
+def test_volatility_uses_default_periods_per_year_when_none():
+    """volatility() without periods should scale by sqrt(periods_per_year)."""
+    df = _make_daily_frame(12)
+    s = Stats(df)
+    base_std = float(df["A"].std())
+    expected = base_std * math.sqrt(s.periods_per_year)
+    assert abs(s.volatility()["A"] - expected) < 1e-12
 
 
 def test_volatility_invalid_periods_raises_typeerror(frame):
     """Passing a non-numeric periods value to volatility should raise TypeError."""
-    data = frame.head(5)
-    rets = pl.DataFrame({"A": [0.01, 0.02, 0.00, -0.01, 0.03]})
-    data = data.with_columns(pl.Series("A", rets["A"]))
-    s = Stats(data)
-
+    data = frame.head(5).with_columns(pl.Series("A", [0.01, 0.02, 0.00, -0.01, 0.03]))
     with pytest.raises(TypeError):
-        # periods is a string, which should trigger the explicit type check
-        s.volatility(periods="252")
+        Stats(data).volatility(periods="252")
 
 
-def test_best_and_worst_handles_nulls_and_returns_extremes(frame):
-    """best() returns the max and worst() returns the min, ignoring nulls."""
-    data = frame.head(6)
-    a = [None, -1.0, 0.0, 2.5, None, -3.0]
-    b = [0.1, 0.2, 0.3, 0.0, -0.1, None]
-    pl.DataFrame({"A": a, "B": b})
-    data = data.with_columns(pl.Series("A", a), pl.Series("B", b))
+def test_sharpe_simple(frame):
+    """Sharpe equals mean/std (ddof=1) scaled by sqrt(periods)."""
+    a = [0.01, 0.02, 0.00, -0.01, 0.03]
+    data = frame.head(5).with_columns(pl.Series("A", a))
+    rets = pl.DataFrame({"A": a})
+    mean = float(rets["A"].mean())
+    std_sample = float(rets["A"].std(ddof=1))
+    expected = mean / std_sample
+
+    out = Stats(data).sharpe(periods=1)
+    assert math.isclose(out["A"], expected, rel_tol=1e-12, abs_tol=1e-12)
+
+
+# ─── Risk (VaR / CVaR) ────────────────────────────────────────────────────────
+
+
+def test_var_and_cvar_properties(frame):
+    """VaR(alpha) should be more negative than mean; CVaR should be <= VaR for normal-like data."""
+    a = (np.linspace(-3, 3, num=200) / 100.0).tolist()
+    data = frame.head(200).with_columns(pl.Series("A", a))
     s = Stats(data)
 
-    best = s.best()
-    worst = s.worst()
-
-    assert best == {"A": 2.5, "B": 0.3}
-    assert worst == {"A": -3.0, "B": -0.1}
+    var = s.value_at_risk(alpha=0.05)["A"]
+    cvar = s.conditional_value_at_risk(alpha=0.05)["A"]
+    assert var < 0
+    assert cvar <= var
 
 
 def test_value_at_risk_sigma_parameter_scales_tail(frame):
     """Increasing sigma should make VaR more negative (further into the tail)."""
-    data = frame.head(200)
-
-    base = np.linspace(-3, 3, num=200)
-    a = (base / 100.0).tolist()
-    data = data.with_columns(pl.Series("A", a))
+    a = (np.linspace(-3, 3, num=200) / 100.0).tolist()
+    data = frame.head(200).with_columns(pl.Series("A", a))
     s = Stats(data)
 
     var1 = s.value_at_risk(alpha=0.05, sigma=1.0)["A"]
     var2 = s.value_at_risk(alpha=0.05, sigma=2.0)["A"]
+    assert var2 < var1
 
-    assert var2 < var1  # more negative
+
+# ─── Best / Worst ─────────────────────────────────────────────────────────────
 
 
-# --- Summary ---
+def test_best_and_worst_handles_nulls_and_returns_extremes(frame):
+    """best() returns the max and worst() returns the min, ignoring nulls."""
+    data = frame.head(6).with_columns(
+        pl.Series("A", [None, -1.0, 0.0, 2.5, None, -3.0]),
+        pl.Series("B", [0.1, 0.2, 0.3, 0.0, -0.1, None]),
+    )
+    s = Stats(data)
+    assert s.best() == {"A": 2.5, "B": 0.3}
+    assert s.worst() == {"A": -3.0, "B": -0.1}
+
+
+# ─── Summary ──────────────────────────────────────────────────────────────────
 
 
 def test_summary_returns_polars_dataframe(frame):
     """summary() should return a Polars DataFrame."""
-    data = frame.head(20)
-    a = [0.01 * i for i in range(1, 21)]
-    data = data.with_columns(pl.Series("A", a))
-    s = Stats(data)
-
-    result = s.summary()
-
-    assert isinstance(result, pl.DataFrame)
+    data = frame.head(20).with_columns(pl.Series("A", [0.01 * i for i in range(1, 21)]))
+    assert isinstance(Stats(data).summary(), pl.DataFrame)
 
 
 def test_summary_has_metric_column_and_asset_columns(frame):
     """summary() should have a 'metric' column and one column per asset."""
-    data = frame.head(20)
-    a = [0.01 * i for i in range(1, 21)]
-    b = [-0.01 * i for i in range(1, 21)]
-    data = data.with_columns(pl.Series("A", a), pl.Series("B", b))
-    s = Stats(data)
-
-    result = s.summary()
-
+    data = frame.head(20).with_columns(
+        pl.Series("A", [0.01 * i for i in range(1, 21)]),
+        pl.Series("B", [-0.01 * i for i in range(1, 21)]),
+    )
+    result = Stats(data).summary()
     assert "metric" in result.columns
     assert "A" in result.columns
     assert "B" in result.columns
@@ -273,14 +305,8 @@ def test_summary_has_metric_column_and_asset_columns(frame):
 
 def test_summary_metric_names(frame):
     """summary() should include expected metric names as rows."""
-    data = frame.head(20)
-    a = [0.01 * i for i in range(1, 21)]
-    data = data.with_columns(pl.Series("A", a))
-    s = Stats(data)
-
-    result = s.summary()
-    metric_names = result["metric"].to_list()
-
+    data = frame.head(20).with_columns(pl.Series("A", [0.01 * i for i in range(1, 21)]))
+    metric_names = Stats(data).summary()["metric"].to_list()
     expected = {
         "avg_return",
         "avg_win",
@@ -299,11 +325,9 @@ def test_summary_metric_names(frame):
 
 def test_summary_values_match_individual_methods(frame):
     """summary() values should match what individual stat methods return."""
-    data = frame.head(20)
     a = [0.01 * i - 0.1 for i in range(1, 21)]
-    data = data.with_columns(pl.Series("A", a))
+    data = frame.head(20).with_columns(pl.Series("A", a))
     s = Stats(data)
-
     result = s.summary()
     metric_map = dict(zip(result["metric"].to_list(), result["A"].to_list(), strict=False))
 
