@@ -311,8 +311,6 @@ def cell_12():
 @app.cell
 def cell_13():
     """Run timing benchmarks across five data sizes and return the results list."""
-    import polars as pl
-
     _sizes = [
         (500, 4, "T=500, N=4"),
         (1461, 4, "T=1461, N=4"),
