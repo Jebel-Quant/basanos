@@ -29,9 +29,9 @@ with app.setup:
     import polars as pl
     from plotly.subplots import make_subplots
 
-    from basanos.math.optimizer import _ewm_corr_numpy
+    from basanos.math.optimizer import _ewm_corr_numpy as ewm_corr_numpy
 
-    def _ewm_corr_pandas(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
+    def ewm_corr_pandas(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
         """Original EWM correlation via pandas (pre-migration implementation).
 
         Converts the numpy input to a pandas DataFrame, uses pandas' built-in
@@ -193,8 +193,8 @@ def cell_07(com_slider, n_slider, t_slider):
 @app.cell
 def cell_08(com, test_data):
     """Run both implementations on the test data and return their 3-D tensors."""
-    pd_result = _ewm_corr_pandas(test_data, com, com)
-    np_result = _ewm_corr_numpy(test_data, com, com)
+    pd_result = ewm_corr_pandas(test_data, com, com)
+    np_result = ewm_corr_numpy(test_data, com, com)
     return np_result, pd_result
 
 
@@ -330,7 +330,7 @@ def cell_13():
         _t_pd_core = (
             min(
                 timeit.repeat(
-                    lambda d=_data_np: _ewm_corr_pandas(d, _com, _com),
+                    lambda d=_data_np: ewm_corr_pandas(d, _com, _com),
                     number=1,
                     repeat=_repeats,
                 )
@@ -343,7 +343,7 @@ def cell_13():
         _t_pd_full = (
             min(
                 timeit.repeat(
-                    lambda df=_pl_df: _ewm_corr_pandas(df.to_numpy(), _com, _com),
+                    lambda df=_pl_df: ewm_corr_pandas(df.to_numpy(), _com, _com),
                     number=1,
                     repeat=_repeats,
                 )
@@ -355,7 +355,7 @@ def cell_13():
         _t_np = (
             min(
                 timeit.repeat(
-                    lambda d=_data_np: _ewm_corr_numpy(d, _com, _com),
+                    lambda d=_data_np: ewm_corr_numpy(d, _com, _com),
                     number=1,
                     repeat=_repeats,
                 )
