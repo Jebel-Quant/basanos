@@ -116,7 +116,7 @@ class MissingDateColumnError(BasanosError, ValueError):
 
     def __init__(self, frame_name: str) -> None:
         """Initialize with the name of the frame that is missing the column."""
-        super().__init__(f"'{frame_name}' requires a 'date' column.")
+        super().__init__(f"DataFrame '{frame_name}' is missing the required 'date' column.")
         self.frame_name = frame_name
 
 
