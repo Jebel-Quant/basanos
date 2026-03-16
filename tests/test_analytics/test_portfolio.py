@@ -595,7 +595,7 @@ def test_truncate_integer_indexed_raises_on_non_int_end(int_portfolio):
 
 def test_monthly_raises_without_date_column(int_portfolio):
     """Portfolio.monthly raises MissingDateColumnError when no 'date' column is present."""
-    with pytest.raises(MissingDateColumnError, match="requires a 'date' column"):
+    with pytest.raises(MissingDateColumnError, match="missing the required 'date' column"):
         _ = int_portfolio.monthly
 
 
