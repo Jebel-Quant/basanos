@@ -498,3 +498,106 @@ def test_monthly_structure_and_end_of_month_dates(monthly_portfolio):
     assert list(monthly["month"]) == [1, 2, 3]
     assert list(monthly["month_name"]) == ["Jan", "Feb", "Mar"]
     assert monthly["returns"].is_finite().all()
+
+
+# ─── Integer-indexed (no date column) portfolios ─────────────────────────────
+
+
+@pytest.fixture
+def int_portfolio():
+    """A small Portfolio with no 'date' column (integer-indexed rows)."""
+    n = 6
+    return Portfolio.from_cash_position(
+        prices=pl.DataFrame(
+            {
+                "A": pl.Series([100.0 + 10.0 * i for i in range(n)], dtype=pl.Float64),
+                "B": pl.Series([200.0 - 5.0 * i for i in range(n)], dtype=pl.Float64),
+            }
+        ),
+        cash_position=pl.DataFrame(
+            {
+                "A": pl.Series([1000.0] * n, dtype=pl.Float64),
+                "B": pl.Series([500.0] * n, dtype=pl.Float64),
+            }
+        ),
+        aum=1e6,
+    )
+
+
+def test_truncate_integer_indexed_both_bounds(int_portfolio):
+    """truncate(start, end) on integer-indexed portfolio slices rows inclusively."""
+    pf_t = int_portfolio.truncate(start=1, end=3)
+    assert isinstance(pf_t, Portfolio)
+    assert pf_t.prices.height == 3
+    assert pf_t.cashposition.height == 3
+    assert pf_t.aum == int_portfolio.aum
+    _ = pf_t.profit
+
+
+def test_truncate_integer_indexed_start_only(int_portfolio):
+    """truncate(start=n) on integer-indexed portfolio returns rows from n onward."""
+    pf_s = int_portfolio.truncate(start=2)
+    assert pf_s.prices.height == 4  # rows 2,3,4,5
+    _ = pf_s.profit
+
+
+def test_truncate_integer_indexed_end_only(int_portfolio):
+    """truncate(end=n) on integer-indexed portfolio returns rows up to n inclusive."""
+    pf_e = int_portfolio.truncate(end=2)
+    assert pf_e.prices.height == 3  # rows 0,1,2
+    _ = pf_e.profit
+
+
+def test_truncate_integer_indexed_no_bounds_returns_full(int_portfolio):
+    """truncate() with no bounds on integer-indexed portfolio returns all rows."""
+    pf_all = int_portfolio.truncate()
+    assert pf_all.prices.height == int_portfolio.prices.height
+
+
+def test_truncate_integer_indexed_raises_on_non_int_start(int_portfolio):
+    """Truncate with non-integer start on integer-indexed portfolio raises TypeError."""
+    with pytest.raises(TypeError):
+        int_portfolio.truncate(start="2020-01-01")
+
+
+def test_truncate_integer_indexed_raises_on_non_int_end(int_portfolio):
+    """Truncate with non-integer end on integer-indexed portfolio raises TypeError."""
+    with pytest.raises(TypeError):
+        int_portfolio.truncate(end=3.5)
+
+
+def test_monthly_raises_without_date_column(int_portfolio):
+    """Portfolio.monthly raises ValueError when no 'date' column is present."""
+    with pytest.raises(ValueError, match=r".*"):
+        _ = int_portfolio.monthly
+
+
+def test_all_works_without_date_column(int_portfolio):
+    """Portfolio.all returns a DataFrame with expected columns for integer-indexed data."""
+    result = int_portfolio.all
+    assert "NAV_accumulated" in result.columns
+    assert "NAV_compounded" in result.columns
+    assert "drawdown" in result.columns
+    assert "date" not in result.columns
+    assert result.height == int_portfolio.prices.height
+
+
+def test_stats_works_without_date_column(int_portfolio):
+    """Portfolio.stats returns a Stats object for integer-indexed portfolios."""
+    stats = int_portfolio.stats
+    sharpe = stats.sharpe()["returns"]
+    assert np.isfinite(sharpe)
+
+
+def test_tilt_timing_decomp_works_without_date_column(int_portfolio):
+    """tilt_timing_decomp returns portfolio/tilt/timing columns for integer-indexed data."""
+    decomp = int_portfolio.tilt_timing_decomp
+    assert "portfolio" in decomp.columns
+    assert "tilt" in decomp.columns
+    assert "timing" in decomp.columns
+    assert "date" not in decomp.columns
+    assert decomp.height == int_portfolio.prices.height
+    # Numerical check: portfolio NAV ≈ tilt NAV + timing NAV - aum (decomposition identity)
+    # portfolio = tilt_nav + timing_nav - aum because tilt and timing both start at aum
+    expected_portfolio = decomp["tilt"].to_numpy() + decomp["timing"].to_numpy() - int_portfolio.aum
+    assert np.allclose(decomp["portfolio"].to_numpy(), expected_portfolio, rtol=1e-10, atol=1e-6)
