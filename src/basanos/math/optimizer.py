@@ -16,6 +16,14 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from scipy.signal import lfilter
 
 from ..analytics import Portfolio
+from ..exceptions import (
+    ColumnMismatchError,
+    ExcessiveNullsError,
+    MissingDateColumnError,
+    MonotonicPricesError,
+    NonPositivePricesError,
+    ShapeMismatchError,
+)
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id, vol_adj
 
@@ -252,26 +260,25 @@ class BasanosEngine:
         """
         # ensure 'date' column exists in prices before any other validation
         if "date" not in self.prices.columns:
-            raise ValueError
+            raise MissingDateColumnError("prices")
 
         # ensure 'date' column exists in mu as well (kept for symmetry and downstream assumptions)
         if "date" not in self.mu.columns:
-            raise ValueError
+            raise MissingDateColumnError("mu")
 
         # check that prices and mu have the same shape
         if self.prices.shape != self.mu.shape:
-            raise ValueError
+            raise ShapeMismatchError(self.prices.shape, self.mu.shape)
 
         # check that the columns of prices and mu are identical
         if not set(self.prices.columns) == set(self.mu.columns):
-            raise ValueError
+            raise ColumnMismatchError(self.prices.columns, self.mu.columns)
 
         # check for non-positive prices: log returns require strictly positive prices
         for asset in self.assets:
             col = self.prices[asset].drop_nulls()
             if col.len() > 0 and (col <= 0).any():
-                msg = f"Asset '{asset}' contains non-positive prices; strictly positive values are required."
-                raise ValueError(msg)
+                raise NonPositivePricesError(asset)
 
         # check for excessive NaN values: more than _MAX_NAN_FRACTION null in any asset column
         n_rows = self.prices.height
@@ -279,11 +286,7 @@ class BasanosEngine:
             for asset in self.assets:
                 nan_frac = self.prices[asset].null_count() / n_rows
                 if nan_frac > _MAX_NAN_FRACTION:
-                    msg = (
-                        f"Asset '{asset}' has {nan_frac:.0%} null values, "
-                        f"exceeding the maximum allowed fraction of {_MAX_NAN_FRACTION:.0%}."
-                    )
-                    raise ValueError(msg)
+                    raise ExcessiveNullsError(asset, nan_frac, _MAX_NAN_FRACTION)
 
         # check for monotonic price series: a strictly non-decreasing or non-increasing
         # series has no variance in its return sign, indicating malformed or synthetic data
@@ -292,11 +295,7 @@ class BasanosEngine:
             if col.len() > 2:
                 diffs = col.diff().drop_nulls()
                 if (diffs >= 0).all() or (diffs <= 0).all():
-                    msg = (
-                        f"Asset '{asset}' has monotonic prices "
-                        "(all non-decreasing or all non-increasing), indicating malformed or synthetic data."
-                    )
-                    raise ValueError(msg)
+                    raise MonotonicPricesError(asset)
 
     @property
     def assets(self) -> list[str]:

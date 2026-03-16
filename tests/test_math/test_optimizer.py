@@ -10,6 +10,14 @@ import numpy as np
 import polars as pl
 import pytest
 
+from basanos.exceptions import (
+    ColumnMismatchError,
+    ExcessiveNullsError,
+    MissingDateColumnError,
+    MonotonicPricesError,
+    NonPositivePricesError,
+    ShapeMismatchError,
+)
 from basanos.math import BasanosConfig, BasanosEngine
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -207,8 +215,10 @@ def test_basanos_config_new_fields_validation():
 def test_post_init_shape_mismatch_raises(small_prices: pl.DataFrame, small_mu: pl.DataFrame) -> None:
     """Prices and mu must have identical shapes (rows and columns)."""
     cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
-    with pytest.raises(ValueError, match=r".*"):
+    with pytest.raises(ShapeMismatchError) as exc_info:
         _ = BasanosEngine(prices=small_prices, mu=small_mu.slice(0, small_mu.height - 1), cfg=cfg)
+    assert exc_info.value.prices_shape == small_prices.shape
+    assert exc_info.value.mu_shape == small_mu.slice(0, small_mu.height - 1).shape
 
 
 def test_post_init_missing_date_raises() -> None:
@@ -222,8 +232,9 @@ def test_post_init_missing_date_raises() -> None:
             "B": [0.3, 0.4],
         }
     )
-    with pytest.raises(ValueError, match=r".*"):
+    with pytest.raises(MissingDateColumnError) as exc_info:
         _ = BasanosEngine(prices=prices_no_date, mu=mu_ok, cfg=cfg)
+    assert exc_info.value.frame_name == "prices"
 
     prices_ok = pl.DataFrame(
         {
@@ -232,15 +243,18 @@ def test_post_init_missing_date_raises() -> None:
             "B": [3.0, 4.0],
         }
     )
-    with pytest.raises(ValueError, match=r".*"):
+    with pytest.raises(MissingDateColumnError) as exc_info:
         _ = BasanosEngine(prices=prices_ok, mu=pl.DataFrame({"A": [0.1, 0.2], "B": [0.3, 0.4]}), cfg=cfg)
+    assert exc_info.value.frame_name == "mu"
 
 
 def test_post_init_column_mismatch_raises(small_prices: pl.DataFrame, small_mu: pl.DataFrame) -> None:
     """Prices and mu must have identical column sets."""
     cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
-    with pytest.raises(ValueError, match=r".*"):
+    with pytest.raises(ColumnMismatchError) as exc_info:
         _ = BasanosEngine(prices=small_prices, mu=small_mu.rename({"B": "BB"}), cfg=cfg)
+    assert "B" in exc_info.value.prices_columns
+    assert "BB" in exc_info.value.mu_columns
 
 
 def test_post_init_nonpositive_prices_raises(small_mu: pl.DataFrame) -> None:
@@ -251,21 +265,23 @@ def test_post_init_nonpositive_prices_raises(small_mu: pl.DataFrame) -> None:
     # price of zero
     a_zero = pl.Series([100.0, 101.5, 0.0, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64)
     b_ok = pl.Series([200.0, 203.1, 198.5, 206.4, 203.7, 209.2, 204.6, 212.3, 207.8, 214.5], dtype=pl.Float64)
-    with pytest.raises(ValueError, match="non-positive prices"):
+    with pytest.raises(NonPositivePricesError) as exc_info:
         _ = BasanosEngine(
             prices=pl.DataFrame({"date": dates, "A": a_zero, "B": b_ok}),
             mu=small_mu,
             cfg=cfg,
         )
+    assert exc_info.value.asset == "A"
 
     # negative price
     a_neg = pl.Series([100.0, 101.5, -5.0, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64)
-    with pytest.raises(ValueError, match="non-positive prices"):
+    with pytest.raises(NonPositivePricesError) as exc_info:
         _ = BasanosEngine(
             prices=pl.DataFrame({"date": dates, "A": a_neg, "B": b_ok}),
             mu=small_mu,
             cfg=cfg,
         )
+    assert exc_info.value.asset == "A"
 
     # null values should be ignored; only non-null values are checked
     a_with_null = pl.Series([100.0, None, 99.8, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64)
@@ -294,12 +310,15 @@ def test_post_init_excessive_nan_raises(small_mu: pl.DataFrame) -> None:
 
     # 10 out of 10 values are null (100% nulls → over threshold)
     a_all_null = pl.Series([None] * n, dtype=pl.Float64)
-    with pytest.raises(ValueError, match="null values"):
+    with pytest.raises(ExcessiveNullsError) as exc_info:
         _ = BasanosEngine(
             prices=pl.DataFrame({"date": dates, "A": a_all_null, "B": b_ok}),
             mu=small_mu,
             cfg=cfg,
         )
+    assert exc_info.value.asset == "A"
+    assert exc_info.value.null_fraction == pytest.approx(1.0)
+    assert exc_info.value.max_fraction == pytest.approx(0.9)
 
 
 def test_post_init_monotonic_prices_raises(small_mu: pl.DataFrame) -> None:
@@ -311,30 +330,33 @@ def test_post_init_monotonic_prices_raises(small_mu: pl.DataFrame) -> None:
 
     # strictly increasing prices
     a_increasing = pl.Series([100.0 + i for i in range(n)], dtype=pl.Float64)
-    with pytest.raises(ValueError, match="monotonic prices"):
+    with pytest.raises(MonotonicPricesError) as exc_info:
         _ = BasanosEngine(
             prices=pl.DataFrame({"date": dates, "A": a_increasing, "B": b_ok}),
             mu=small_mu,
             cfg=cfg,
         )
+    assert exc_info.value.asset == "A"
 
     # strictly decreasing prices
     a_decreasing = pl.Series([100.0 - i for i in range(n)], dtype=pl.Float64)
-    with pytest.raises(ValueError, match="monotonic prices"):
+    with pytest.raises(MonotonicPricesError) as exc_info:
         _ = BasanosEngine(
             prices=pl.DataFrame({"date": dates, "A": a_decreasing, "B": b_ok}),
             mu=small_mu,
             cfg=cfg,
         )
+    assert exc_info.value.asset == "A"
 
     # constant prices
     a_constant = pl.Series([100.0] * n, dtype=pl.Float64)
-    with pytest.raises(ValueError, match="monotonic prices"):
+    with pytest.raises(MonotonicPricesError) as exc_info:
         _ = BasanosEngine(
             prices=pl.DataFrame({"date": dates, "A": a_constant, "B": b_ok}),
             mu=small_mu,
             cfg=cfg,
         )
+    assert exc_info.value.asset == "A"
 
     # non-monotonic prices should pass
     a_ok = pl.Series([100.0, 101.5, 99.8, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64)
