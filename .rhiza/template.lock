@@ -6,6 +6,7 @@ include: []
 exclude:
 - test/benchmarks
 - .github/workflows/rhiza_benchmarks.yml
+- book/marimo/notebooks/rhiza.py
 templates:
 - core
 - tests
@@ -13,6 +14,7 @@ templates:
 - marimo
 - presentation
 - github
+- legal
 files:
 - .editorconfig
 - .github/actions/configure-git-auth/README.md
@@ -105,7 +107,14 @@ files:
 - .rhiza/tests/sync/test_rhiza_version.py
 - .rhiza/tests/test_utils.py
 - .rhiza/tests/utils/test_git_repo_fixture.py
+- CODE_OF_CONDUCT.md
+- CONTRIBUTING.md
+- LICENSE
 - Makefile
+<<<<<<< HEAD
+=======
+- SECURITY.md
+>>>>>>> cb2acf7 (bring in legal stuff)
 - docs/ARCHITECTURE.md
 - docs/BOOK.md
 - docs/CUSTOMIZATION.md
@@ -120,5 +129,5 @@ files:
 - ruff.toml
 - tests/benchmarks/conftest.py
 - tests/benchmarks/test_benchmarks.py
-synced_at: '2026-03-15T07:01:39Z'
+synced_at: '2026-03-16T06:36:38Z'
 strategy: merge
