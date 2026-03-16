@@ -426,7 +426,8 @@ class BasanosEngine:
                 ret_mask = np.isfinite(returns_num[i]) & mask
                 # Profit at time i comes from yesterday's cash position applied to today's returns
                 if ret_mask.any():
-                    cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
+                    with np.errstate(invalid="ignore"):
+                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
                     lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
                     rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
                     profit = lhs @ rhs
@@ -444,11 +445,15 @@ class BasanosEngine:
             # get the expected-return vector for this timestamp
             expected_mu = np.nan_to_num(mu[i][mask])
 
-            # Normalize solution; guard against zero/near-zero norm to avoid NaNs
-            denom = inv_a_norm(expected_mu, matrix)
+            # Short-circuit when signal is zero - no position needed, skip norm computation
+            if np.allclose(expected_mu, 0.0):
+                pos = np.zeros_like(expected_mu)
+            else:
+                # Normalize solution; guard against zero/near-zero norm to avoid NaNs.
+                # inv_a_norm returns float(np.nan) when no valid entries exist (never None).
+                denom = inv_a_norm(expected_mu, matrix)
 
-            if denom is None or not np.isfinite(denom) or denom <= self.cfg.denom_tol or np.allclose(expected_mu, 0.0):
-                if not np.allclose(expected_mu, 0.0):
+                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
                     _logger.warning(
                         "Positions zeroed at t=%s: normalisation denominator is degenerate "
                         "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
@@ -456,12 +461,13 @@ class BasanosEngine:
                         denom,
                         self.cfg.denom_tol,
                     )
-                pos = np.zeros_like(expected_mu)
-            else:
-                pos = solve(matrix, expected_mu) / denom
+                    pos = np.zeros_like(expected_mu)
+                else:
+                    pos = solve(matrix, expected_mu) / denom
 
             risk_pos_np[i, mask] = pos / profit_variance
-            cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
+            with np.errstate(invalid="ignore"):
+                cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
 
         # Build Polars DataFrame for risk positions (numeric columns only)
         cash_position = self.prices.with_columns(
