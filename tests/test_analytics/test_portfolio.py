@@ -200,15 +200,17 @@ def test_from_riskposition_returns_portfolio_and_cashposition_shape():
         assert c in pf.cashposition.columns
 
 
-def test_sharpe_zero_std_returns_zero():
-    """Sharpe should return 0.0 when NAV differences have zero std (flat NAV)."""
+def test_sharpe_zero_std_returns_nan():
+    """Sharpe should return NaN when NAV differences have zero std (flat NAV)."""
+    import math
+
     dates = pl.date_range(start=date(2020, 1, 1), end=date(2020, 1, 5), interval="1d", eager=True).cast(pl.Date)
     prices = pl.DataFrame({"date": dates, "A": pl.Series([100.0] * len(dates), dtype=pl.Float64)})
     positions = pl.DataFrame({"date": dates, "A": pl.Series([0.0] * len(dates), dtype=pl.Float64)})
 
     pf = Portfolio(prices=prices, cashposition=positions)
-    with pytest.raises(ZeroDivisionError):
-        pf.stats.sharpe()["returns"]
+    result = pf.stats.sharpe()["returns"]
+    assert math.isnan(result)
 
 
 def test_compute_daily_profits_replaces_nonfinite_with_zero():

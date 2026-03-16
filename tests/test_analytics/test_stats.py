@@ -242,6 +242,13 @@ def test_sharpe_simple(frame):
     assert math.isclose(out["A"], expected, rel_tol=1e-12, abs_tol=1e-12)
 
 
+def test_sharpe_zero_volatility_returns_nan(frame):
+    """Sharpe should return NaN when the series has zero volatility (constant returns)."""
+    data = frame.head(5).with_columns(pl.Series("A", [0.01, 0.01, 0.01, 0.01, 0.01]))
+    result = Stats(data).sharpe(periods=1)
+    assert math.isnan(result["A"])
+
+
 # ─── Risk (VaR / CVaR) ────────────────────────────────────────────────────────
 
 
