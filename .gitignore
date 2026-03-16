@@ -20,6 +20,8 @@ _site
 
 # Marimo notebook validation artefacts
 results/
+# …but keep committed benchmark baseline results
+!benchmarks/results/
 
 # temp file used by Junie
 .output.txt
