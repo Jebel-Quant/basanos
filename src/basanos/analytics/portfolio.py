@@ -23,6 +23,7 @@ class Portfolio:
         prices: Polars DataFrame of prices per asset over time (includes date column if present).
         aum: Assets under management used as base NAV offset.
 
+
     Examples:
         >>> import polars as pl
         >>> from datetime import date

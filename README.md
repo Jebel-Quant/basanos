@@ -18,6 +18,26 @@
 
 Basanos computes **correlation-adjusted risk positions** from price data and expected-return signals. It estimates time-varying EWMA correlations, applies shrinkage towards the identity matrix, and solves a normalized linear system per timestamp to produce stable, scale-invariant positions — implementing a first hurdle for expected returns.
 
+## Idea
+
+Most systematic strategies produce a raw signal vector μ — one number per asset indicating how bullish or bearish the model is. The naive approach is to size each position in proportion to its signal. The problem: correlated assets will receive large, overlapping bets in the same direction, concentrating risk rather than diversifying it.
+
+Basanos treats position sizing as a **linear system**:
+
+```
+C · x = μ
+```
+
+where C is the (shrunk, time-varying) correlation matrix and μ is the signal. Solving for x inverts the correlation structure — assets that share a lot of co-movement with the rest of the portfolio receive smaller positions, while idiosyncratic assets can carry more. The result is a set of *risk positions* that express the full information in the signal while respecting the portfolio's correlation geometry.
+
+Three design choices keep the output stable and usable in practice:
+
+1. **EWMA estimates** — both volatility and correlations are computed as exponentially weighted moving averages, so the optimizer adapts to changing regimes without requiring a fixed lookback window.
+2. **Identity shrinkage** — the estimated correlation matrix is blended toward the identity matrix. This regularises the solve, guards against noise in the off-diagonal entries, and prevents numerically extreme positions when the sample is small relative to the number of assets.
+3. **Scale invariance** — positions are normalised by the inverse-matrix norm of μ, so doubling the signal magnitude does not double the position. Sizing is driven instead by a running estimate of realised profit variance, which scales risk up in good regimes and down in bad ones.
+
+The output of the solve is a *risk position* (units of volatility). Dividing by per-asset EWMA volatility converts it into a *cash position* — how many dollars to hold in each asset.
+
 ## Table of Contents
 
 - [Features](#features)
