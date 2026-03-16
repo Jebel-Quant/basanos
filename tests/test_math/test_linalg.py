@@ -10,6 +10,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from basanos.exceptions import (
+    DimensionMismatchError,
+    NonSquareMatrixError,
+    SingularMatrixError,
+)
 from basanos.math._linalg import inv_a_norm, solve, valid
 
 
@@ -17,34 +22,35 @@ def test_non_quadratic() -> None:
     """Test that functions properly reject non-square matrices.
 
     This test verifies that all linear algebra functions that require square matrices
-    (valid, a_norm, inv_a_norm, solve) correctly raise AssertionError when provided
-    with non-square matrices.
+    (valid, a_norm, inv_a_norm, solve) correctly raise NonSquareMatrixError when
+    provided with non-square matrices, and that the error message contains the shape.
 
     Each function is tested with a non-square matrix input to ensure proper validation.
     """
-    with pytest.raises(AssertionError):
+    with pytest.raises(NonSquareMatrixError, match=r"shape \(1, 2\)"):
         valid(np.array([[2.0, 1.0]]))
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(NonSquareMatrixError, match=r"shape \(1, 2\)"):
         inv_a_norm(vector=np.array([2.0, 1.0]), matrix=np.array([[2.0, 1.0]]))
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(NonSquareMatrixError, match=r"shape \(1, 2\)"):
         solve(matrix=np.array([[2.0, 1.0]]), rhs=np.array([2.0, 1.0]))
 
 
 def test_mismatch() -> None:
     """Test that functions properly reject mismatched dimensions.
 
-    This test verifies that linear algebra functions correctly raise AssertionError
-    when the dimensions of the matrix and vector don't match (e.g., when a 1x1 matrix
-    is used with a 2-element vector).
+    This test verifies that linear algebra functions correctly raise
+    DimensionMismatchError when the dimensions of the matrix and vector don't match
+    (e.g., when a 1x1 matrix is used with a 2-element vector), and that the message
+    contains the offending sizes.
 
     Each function is tested with mismatched dimensions to ensure proper validation.
     """
-    with pytest.raises(AssertionError):
+    with pytest.raises(DimensionMismatchError, match=r"length 2.*dimension 1"):
         inv_a_norm(vector=np.array([1.0, 2.0]), matrix=np.array([[1.0]]))
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(DimensionMismatchError, match=r"length 2.*dimension 1"):
         solve(matrix=np.array([[1.0]]), rhs=np.array([1.0, 2.0]))
 
 
@@ -138,3 +144,75 @@ def test_solve() -> None:
     x = solve(matrix=matrix, rhs=rhs)
 
     np.testing.assert_array_equal(matrix @ x, rhs)
+
+
+def test_singular_matrix_solve() -> None:
+    """Test that solve raises SingularMatrixError for a singular matrix.
+
+    This test verifies that the solve function raises a SingularMatrixError with
+    a descriptive message when the matrix is singular (non-invertible).
+    """
+    singular = np.array([[1.0, 1.0], [1.0, 1.0]])
+    rhs = np.array([1.0, 2.0])
+    with pytest.raises(SingularMatrixError, match="singular"):
+        solve(matrix=singular, rhs=rhs)
+
+
+def test_singular_matrix_inv_a_norm() -> None:
+    """Test that inv_a_norm raises SingularMatrixError for a singular matrix.
+
+    This test verifies that the inv_a_norm function raises a SingularMatrixError
+    with a descriptive message when the metric matrix is singular.
+    """
+    singular = np.array([[1.0, 1.0], [1.0, 1.0]])
+    v = np.array([1.0, 2.0])
+    with pytest.raises(SingularMatrixError, match="singular"):
+        inv_a_norm(vector=v, matrix=singular)
+
+
+def test_exception_hierarchy() -> None:
+    """Test that custom exceptions inherit from BasanosError and ValueError.
+
+    Verifies the intended inheritance hierarchy so callers can catch either
+    the full family (BasanosError) or the standard ValueError family.
+    """
+    from basanos.exceptions import BasanosError
+
+    assert issubclass(NonSquareMatrixError, BasanosError)
+    assert issubclass(NonSquareMatrixError, ValueError)
+    assert issubclass(DimensionMismatchError, BasanosError)
+    assert issubclass(DimensionMismatchError, ValueError)
+    assert issubclass(SingularMatrixError, BasanosError)
+    assert issubclass(SingularMatrixError, ValueError)
+
+
+def test_non_square_matrix_error_attributes() -> None:
+    """Test that NonSquareMatrixError stores the offending dimensions."""
+    exc = NonSquareMatrixError(3, 2)
+    assert exc.rows == 3
+    assert exc.cols == 2
+    assert "3" in str(exc)
+    assert "2" in str(exc)
+
+
+def test_dimension_mismatch_error_attributes() -> None:
+    """Test that DimensionMismatchError stores the offending sizes."""
+    exc = DimensionMismatchError(5, 3)
+    assert exc.vector_size == 5
+    assert exc.matrix_size == 3
+    assert "5" in str(exc)
+    assert "3" in str(exc)
+
+
+def test_insufficient_data_error() -> None:
+    """Test InsufficientDataError with and without a detail message."""
+    from basanos.exceptions import BasanosError, InsufficientDataError
+
+    exc_default = InsufficientDataError()
+    assert "Insufficient" in str(exc_default)
+    assert issubclass(InsufficientDataError, BasanosError)
+    assert issubclass(InsufficientDataError, ValueError)
+
+    detail = "All diagonal entries are non-finite."
+    exc_detail = InsufficientDataError(detail)
+    assert str(exc_detail) == detail
