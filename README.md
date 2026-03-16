@@ -20,7 +20,7 @@ Basanos computes **correlation-adjusted risk positions** from price data and exp
 
 ## Idea
 
-Most systematic strategies produce a raw signal vector μ — one number per asset indicating how bullish or bearish the model is. The naive approach is to size each position in proportion to its signal. The problem: correlated assets will receive large, overlapping bets in the same direction, concentrating risk rather than diversifying it.
+Most systematic strategies produce a raw signal vector μ — one number per asset indicating how bullish or bearish the model is. Sizing each position in direct proportion to its signal ignores the fact that correlated assets will receive large, overlapping bets in the same direction, concentrating risk rather than diversifying it.
 
 Basanos treats position sizing as a **linear system**:
 
@@ -33,7 +33,7 @@ where C is the (shrunk, time-varying) correlation matrix and μ is the signal. S
 Three design choices keep the output stable and usable in practice:
 
 1. **EWMA estimates** — both volatility and correlations are computed as exponentially weighted moving averages, so the optimizer adapts to changing regimes without requiring a fixed lookback window.
-2. **Identity shrinkage** — the estimated correlation matrix is blended toward the identity matrix. This regularises the solve, guards against noise in the off-diagonal entries, and prevents numerically extreme positions when the sample is small relative to the number of assets.
+2. **Identity shrinkage** — the estimated correlation matrix is blended toward the identity matrix. This regularises the solve, guards against noise in the off-diagonal entries, and prevents numerically extreme positions when the sample is small relative to the number of assets. Setting `cfg.shrink = 0` (full shrinkage, C = I) is a meaningful corner case: the system reduces to `x = μ`, i.e. signal-proportional sizing — which is also the solution a Markowitz optimizer produces when all assets are treated as uncorrelated.
 3. **Scale invariance** — positions are normalised by the inverse-matrix norm of μ, so doubling the signal magnitude does not double the position. Sizing is driven instead by a running estimate of realised profit variance, which scales risk up in good regimes and down in bad ones.
 
 The output of the solve is a *risk position* (units of volatility). Dividing by per-asset EWMA volatility converts it into a *cash position* — how many dollars to hold in each asset.
