@@ -253,10 +253,15 @@ class Stats:
 
         var = norm.ppf(alpha, mu, sigma)
 
-        # Compute mean of returns less than or equal to VaR
+        # Compute mean of returns less than or equal to VaR.
+        # Return NaN when no empirical observations fall below the parametric
+        # VaR threshold (empty filter), rather than the misleading 0.0 that
+        # _to_float(None) would otherwise produce.
         mask = cast(Iterable[bool], series < var)
-        result = series.filter(mask).mean()
-        return _to_float(result)
+        filtered = series.filter(mask)
+        if filtered.is_empty():
+            return float("nan")
+        return _to_float(filtered.mean())
 
     @columnwise_stat
     def best(self, series: pl.Series) -> float | None:
@@ -298,11 +303,16 @@ class Stats:
         """
         periods = periods or self.periods_per_year
 
+        mean_val = _to_float(series.mean())
         divisor = _to_float(series.std(ddof=1))
-        if divisor == 0.0:
+
+        # Treat as zero-variance if divisor is zero or indistinguishable from
+        # floating-point noise (i.e. smaller than 10x machine epsilon x |mean|).
+        _eps = np.finfo(np.float64).eps
+        if divisor <= _eps * max(abs(mean_val), _eps) * 10:
             return float("nan")
 
-        res = _to_float(series.mean()) / divisor
+        res = mean_val / divisor
         factor = periods or 1
         return float(res * np.sqrt(factor))
 
