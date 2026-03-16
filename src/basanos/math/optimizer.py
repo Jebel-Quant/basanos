@@ -5,6 +5,59 @@ from price data and expected-return signals. It relies on volatility-adjusted
 returns to estimate a dynamic correlation matrix (via EWM), applies shrinkage
 towards identity, and solves a normalized linear system per timestamp to
 obtain stable positions.
+
+Performance characteristics
+---------------------------
+Let *N* be the number of assets and *T* the number of timestamps.
+
+**Computational complexity**
+
++----------------------------------+------------------+--------------------------------------+
+| Operation                        | Complexity       | Bottleneck                           |
++==================================+==================+======================================+
+| EWM volatility (``ret_adj``,     | O(T·N)           | Linear in both T and N; negligible   |
+| ``vola``)                        |                  |                                      |
++----------------------------------+------------------+--------------------------------------+
+| EWM correlation (``cor``)        | O(T·N²)          | ``lfilter`` over all N² asset pairs  |
+|                                  |                  | simultaneously                       |
++----------------------------------+------------------+--------------------------------------+
+| Linear solve per timestamp       | O(N³)            | Cholesky / LU per row in             |
+| (``cash_position``)              | * T solves       | ``cash_position``                    |
++----------------------------------+------------------+--------------------------------------+
+
+**Memory usage** (peak, approximate)
+
+``_ewm_corr_numpy`` allocates roughly **14 float64 arrays** of shape
+``(T, N, N)`` at peak (input sequences, IIR filter outputs, EWM components,
+and the result tensor).  Peak RAM ≈ **112 * T * N²** bytes.  Typical
+working sizes on a 16 GB machine:
+
++--------+--------------------------+------------------------------------+
+| N      | T (daily rows)           | Peak memory (approx.)              |
++========+==========================+====================================+
+| 50     | 252 (~1 yr)              | ~70 MB                             |
++--------+--------------------------+------------------------------------+
+| 100    | 252 (~1 yr)              | ~280 MB                            |
++--------+--------------------------+------------------------------------+
+| 100    | 2 520 (~10 yr)           | ~2.8 GB                            |
++--------+--------------------------+------------------------------------+
+| 200    | 2 520 (~10 yr)           | ~11 GB                             |
++--------+--------------------------+------------------------------------+
+| 500    | 2 520 (~10 yr)           | ~70 GB ⚠ exceeds typical RAM       |
++--------+--------------------------+------------------------------------+
+
+**Practical limits (daily data)**
+
+* **≤ 150 assets, ≤ 5 years** — well within reach on an 8 GB laptop.
+* **≤ 250 assets, ≤ 10 years** — requires ~11-12 GB; feasible on a 16 GB
+  workstation.
+* **> 500 assets with multi-year history** — peak memory exceeds 16 GB;
+  reduce the time range or switch to a chunked / streaming approach.
+* **> 1 000 assets** — the O(N³) per-solve cost alone makes real-time
+  optimization impractical even with adequate RAM.
+
+See ``BENCHMARKS.md`` for measured wall-clock timings across representative
+dataset sizes.
 """
 
 import dataclasses
@@ -63,6 +116,17 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
         np.ndarray of shape ``(T, N, N)`` containing the per-row correlation
         matrices.  Each matrix is symmetric with diagonal 1.0 (or NaN during
         warm-up).
+
+    Performance:
+        **Time** — O(T·N²): ``lfilter`` processes all N² pairs simultaneously,
+        so wall-clock time scales linearly with both T and N².
+
+        **Memory** — approximately 14 float64 arrays of shape ``(T, N, N)``
+        exist at peak, giving roughly ``112 * T * N²`` bytes.  For 100 assets
+        over 2 520 trading days (~10 years) that is ≈ 2.8 GB; for 500 assets
+        the same period requires ≈ 70 GB, which exceeds typical workstation
+        RAM.  Reduce T or N before calling this function when working with
+        large universes.
     """
     _t_len, n_assets = data.shape
     beta = com / (1.0 + com)
@@ -401,6 +465,13 @@ class BasanosEngine:
 
         Returns:
             dict: Mapping ``date -> np.ndarray`` of shape (n_assets, n_assets).
+
+        Performance:
+            Delegates to :func:`_ewm_corr_numpy`, which is O(T·N²) in both
+            time and memory.  The returned dict holds *T* references into the
+            result tensor (one N*N view per date); no extra copies are made.
+            For large *N* or *T*, prefer ``cor_tensor`` to keep a single
+            contiguous array rather than building a Python dict.
         """
         index = self.prices["date"]
         ret_adj_np = self.ret_adj.select(self.assets).to_numpy()
@@ -458,6 +529,16 @@ class BasanosEngine:
         Returns:
             pl.DataFrame: DataFrame with columns ['date'] + asset names containing
             the per-timestamp cash positions (risk divided by EWMA volatility).
+
+        Performance:
+            Dominant cost is ``self.cor`` (O(T·N²) time, O(T·N²) memory — see
+            :func:`_ewm_corr_numpy`).  The per-timestamp linear solve via
+            Cholesky / LU decomposition adds O(N³) per row for a total solve
+            cost of O(T·N³).  For *N* = 100 and *T* = 2 520 (~10 years daily)
+            the solve contributes approximately 2.52 * 10^9 floating-point
+            operations (upper bound; Cholesky is N³/3 + O(N²)); at *N* = 1 000
+            this rises to roughly 2.52 * 10^12, making the per-row solve the
+            dominant compute bottleneck for large universes.
         """
         # compute the correlation matrices
         cor = self.cor
