@@ -38,6 +38,8 @@ Three design choices keep the output stable and usable in practice:
 
 The output of the solve is a *risk position* (units of volatility). Dividing by per-asset EWMA volatility converts it into a *cash position* — how many dollars to hold in each asset.
 
+**Why not just run a full optimizer?** The primary use case for basanos is **signal assessment**, not production execution. A fully constrained Markowitz optimizer — with turnover limits, sector caps, leverage constraints, and factor neutrality targets — will bend positions away from what the signal actually implies. The resulting P&L reflects the interaction of the signal with all those constraints, making it hard to tell whether the underlying signal has edge. Basanos deliberately avoids hard constraints to give the signal room to express itself cleanly. By orthogonalizing μ to known risk factors before passing it in, you can further isolate the pure alpha component and measure how much of the return comes from the signal itself versus incidental factor exposures. This makes it a natural *first hurdle*: a signal that cannot generate a reasonable Sharpe through this minimal framework is unlikely to survive the additional friction of a production optimizer.
+
 ## Table of Contents
 
 - [Features](#features)
