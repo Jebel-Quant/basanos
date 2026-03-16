@@ -232,6 +232,21 @@ class IntegerIndexBoundError(BasanosError, TypeError):
         self.actual_type = actual_type
 
 
+class IllConditionedMatrixWarning(UserWarning):
+    """Issued when a matrix has a condition number that exceeds a configured threshold.
+
+    A high condition number indicates the matrix is nearly singular, and
+    linear-algebra operations on it may produce numerically unreliable results.
+
+    Examples:
+        >>> import warnings
+        >>> with warnings.catch_warnings(record=True) as w:
+        ...     warnings.simplefilter("always")
+        ...     warnings.warn("condition number 1e13", IllConditionedMatrixWarning)
+        ...     assert len(w) == 1
+    """
+
+
 class MonotonicPricesError(BasanosError, ValueError):
     """Raised when an asset's price series is strictly monotonic.
 
