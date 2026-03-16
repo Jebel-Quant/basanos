@@ -21,6 +21,7 @@ import polars.testing as pt
 import pytest
 
 from basanos.analytics import Portfolio
+from basanos.exceptions import IntegerIndexBoundError, MissingDateColumnError
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -581,20 +582,20 @@ def test_truncate_integer_indexed_no_bounds_returns_full(int_portfolio):
 
 
 def test_truncate_integer_indexed_raises_on_non_int_start(int_portfolio):
-    """Truncate with non-integer start on integer-indexed portfolio raises TypeError."""
-    with pytest.raises(TypeError):
+    """Truncate with non-integer start on integer-indexed portfolio raises IntegerIndexBoundError."""
+    with pytest.raises(IntegerIndexBoundError, match="start must be an integer"):
         int_portfolio.truncate(start="2020-01-01")
 
 
 def test_truncate_integer_indexed_raises_on_non_int_end(int_portfolio):
-    """Truncate with non-integer end on integer-indexed portfolio raises TypeError."""
-    with pytest.raises(TypeError):
+    """Truncate with non-integer end on integer-indexed portfolio raises IntegerIndexBoundError."""
+    with pytest.raises(IntegerIndexBoundError, match="end must be an integer"):
         int_portfolio.truncate(end=3.5)
 
 
 def test_monthly_raises_without_date_column(int_portfolio):
-    """Portfolio.monthly raises ValueError when no 'date' column is present."""
-    with pytest.raises(ValueError, match=r".*"):
+    """Portfolio.monthly raises MissingDateColumnError when no 'date' column is present."""
+    with pytest.raises(MissingDateColumnError, match="missing the required 'date' column"):
         _ = int_portfolio.monthly
 
 
