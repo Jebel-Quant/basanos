@@ -19,6 +19,7 @@ from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id, vol_adj
 
 _MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
+_MAX_NAN_FRACTION: float = 0.9  # raise if more than this fraction of prices in any asset column are null
 
 
 def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
@@ -187,6 +188,9 @@ class BasanosEngine:
 
         Ensures both ``prices`` and ``mu`` contain a ``'date'`` column and
         share identical shapes/columns, which downstream computations rely on.
+        Also checks for data quality issues that would cause silent failures
+        downstream: non-positive prices, excessive NaN values, and monotonic
+        (non-varying) price series.
         """
         # ensure 'date' column exists in prices before any other validation
         if "date" not in self.prices.columns:
@@ -203,6 +207,38 @@ class BasanosEngine:
         # check that the columns of prices and mu are identical
         if not set(self.prices.columns) == set(self.mu.columns):
             raise ValueError
+
+        # check for non-positive prices: log returns require strictly positive prices
+        for asset in self.assets:
+            col = self.prices[asset].drop_nulls()
+            if col.len() > 0 and (col <= 0).any():
+                msg = f"Asset '{asset}' contains non-positive prices; strictly positive values are required."
+                raise ValueError(msg)
+
+        # check for excessive NaN values: more than _MAX_NAN_FRACTION null in any asset column
+        n_rows = self.prices.height
+        if n_rows > 0:
+            for asset in self.assets:
+                nan_frac = self.prices[asset].null_count() / n_rows
+                if nan_frac > _MAX_NAN_FRACTION:
+                    msg = (
+                        f"Asset '{asset}' has {nan_frac:.0%} null values, "
+                        f"exceeding the maximum allowed fraction of {_MAX_NAN_FRACTION:.0%}."
+                    )
+                    raise ValueError(msg)
+
+        # check for monotonic price series: a strictly non-decreasing or non-increasing
+        # series has no variance in its return sign, indicating malformed or synthetic data
+        for asset in self.assets:
+            col = self.prices[asset].drop_nulls()
+            if col.len() > 2:
+                diffs = col.diff().drop_nulls()
+                if (diffs >= 0).all() or (diffs <= 0).all():
+                    msg = (
+                        f"Asset '{asset}' has monotonic prices "
+                        "(all non-decreasing or all non-increasing), indicating malformed or synthetic data."
+                    )
+                    raise ValueError(msg)
 
     @property
     def assets(self) -> list[str]:
