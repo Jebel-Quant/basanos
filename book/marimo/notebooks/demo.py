@@ -233,7 +233,7 @@ def cell_11():
         2. **Correlation estimation** — an EWMA correlation matrix is computed
            and shrunk towards the identity matrix:
 
-           $$C_\text{shrunk} = (1 - \text{shrink}) \cdot C_\text{EWMA} + \text{shrink} \cdot I$$
+           $$C_\text{shrunk} = \lambda \cdot C_\text{EWMA} + (1 - \lambda) \cdot I, \quad \lambda = \text{cfg.shrink}$$
 
         3. **Position solving** — for each timestamp, solve $C_\text{shrunk} \cdot x = \mu$
            and normalize by the inverse-matrix norm of $\mu$. Positions are then scaled

@@ -149,17 +149,85 @@ The optimizer implements a three-step pipeline per timestamp:
 
 1. **Volatility adjustment** — Log returns are normalized by an EWMA volatility estimate and clipped at `cfg.clip` standard deviations to limit the influence of outliers.
 
-2. **Correlation estimation** — An EWMA correlation matrix is computed from the vol-adjusted returns using a lookback of `cfg.corr` days. The matrix is shrunk toward the identity matrix with intensity `cfg.shrink`:
+2. **Correlation estimation** — An EWMA correlation matrix is computed from the vol-adjusted returns using a lookback of `cfg.corr` days. The matrix is shrunk toward the identity matrix with retention weight `cfg.shrink` (λ):
 
    ```
-   C_shrunk = (1 - shrink) · C_ewma + shrink · I
+   C_shrunk = λ · C_ewma + (1 − λ) · I
    ```
 
-   Shrinkage stabilizes the matrix when assets are few or the lookback is short.
+   where λ = `cfg.shrink`. `λ = 1.0` uses the raw EWMA matrix; `λ = 0.0` replaces it with the identity (treating all assets as uncorrelated). See [Shrinkage Methodology](#shrinkage-methodology) below for guidance on choosing λ.
 
 3. **Position solving** — For each timestamp, the system `C_shrunk · x = mu` is solved for `x` (the risk position vector). The solution is normalized by the inverse-matrix norm of `mu`, making positions scale-invariant with respect to signal magnitude. Positions are further scaled by a running profit-variance estimate to adapt risk dynamically.
 
 Cash positions are obtained by dividing risk positions by per-asset EWMA volatility.
+
+## Shrinkage Methodology
+
+### Why shrink?
+
+Sample correlation matrices estimated from *T* observations of *n* assets are
+poorly conditioned when *n* is large relative to *T* — the classical
+*curse of dimensionality*. The Marchenko–Pastur law shows that extreme
+eigenvalues of the sample matrix are severely biased (small eigenvalues are
+deflated, large ones are inflated), making the matrix difficult to invert
+reliably. Linear shrinkage toward the identity corrects this by pulling all
+eigenvalues toward a common value, improving the numerical condition of the
+matrix and reducing out-of-sample estimation error.
+
+Basanos uses **convex linear shrinkage** (Ledoit & Wolf, 2004):
+
+```
+C_shrunk = λ · C_ewma + (1 − λ) · I_n
+```
+
+This is a special case of the general Ledoit–Wolf framework where the
+shrinkage target is the identity matrix and the retention weight λ is
+treated as a user-controlled hyperparameter. Unlike the analytically optimal
+Ledoit–Wolf or Oracle Approximating Shrinkage (OAS) estimators, Basanos uses
+a fixed λ — appropriate for *regularising a linear solver* rather than
+*estimating a covariance matrix*, where practical stability often matters
+more than minimum Frobenius loss.
+
+### How to choose `cfg.shrink` (= λ)
+
+The key quantity is the **concentration ratio** *n / T*, where *n* = number
+of assets and *T* = `cfg.corr` (the EWMA lookback).
+
+| Regime | n / T ratio | Suggested λ | Rationale |
+|--------|------------|-------------|-----------|
+| Many assets, short lookback | > 0.5 | 0.3 – 0.5 | High noise; strong regularisation |
+| Moderate assets and lookback | 0.1 – 0.5 | 0.5 – 0.7 | Balanced |
+| Few assets, long lookback | < 0.1 | 0.7 – 0.9 | Well-conditioned sample; light regularisation |
+
+A useful heuristic starting point is **λ ≈ 1 − n / (2·T)** (where *n* = number
+of assets and *T* = `cfg.corr`), which approximates the Ledoit–Wolf optimal
+intensity. Always validate on held-out data.
+
+**Sensitivity notes:**
+
+- Below λ ≈ 0.3 the matrix can become nearly singular for small portfolios
+  (e.g., n > 10 with `corr` < 50), leading to numerically unstable positions.
+- Above λ ≈ 0.8 the off-diagonal correlations are so heavily damped that the
+  optimizer behaves almost as if all assets were independent.
+- Shrinkage is most influential in the range λ ∈ [0.3, 0.8].
+
+### Interactive demonstration
+
+The `book/marimo/notebooks/shrinkage_guide.py` notebook shows the empirical
+effect of different shrinkage levels on portfolio Sharpe ratio and position
+stability for a realistic synthetic dataset.
+
+### References
+
+- Ledoit, O., & Wolf, M. (2004). *A well-conditioned estimator for
+  large-dimensional covariance matrices.* Journal of Multivariate Analysis,
+  88(2), 365–411. https://doi.org/10.1016/S0047-259X(03)00096-4
+- Chen, Y., Wiesel, A., Eldar, Y. C., & Hero, A. O. (2010). *Shrinkage
+  algorithms for MMSE covariance estimation.* IEEE Transactions on Signal
+  Processing, 58(10), 5016–5029. https://doi.org/10.1109/TSP.2010.2053029
+- Stein, C. (1956). *Inadmissibility of the usual estimator for the mean of a
+  multivariate normal distribution.* Proceedings of the Third Berkeley
+  Symposium, 1, 197–206.
 
 ## API Reference
 
