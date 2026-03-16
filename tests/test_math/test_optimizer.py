@@ -854,3 +854,248 @@ class TestCorTensorFlatFile:
         loaded = np.load(resource_dir / "cor_tensor.npy")
         assert loaded.shape == tensor.shape
         np.testing.assert_allclose(loaded, tensor, rtol=0, atol=1e-10)
+
+
+# ─── Profit variance EMA mechanism ───────────────────────────────────────────
+
+
+class TestProfitVarianceEMA:
+    """Dedicated tests for the profit variance EMA update mechanism.
+
+    The adaptive position-sizing logic in ``cash_position`` maintains a running
+    variance estimate via an EMA:
+
+        pv[t] = λ·pv[t-1] + (1-λ)·profit[t]²
+
+    where ``profit[t] = cash_position[t-1] @ returns[t]`` uses *yesterday's*
+    cash position (lagged). Positions are then scaled as:
+
+        risk_pos[t] = solved_pos[t] / pv[t]
+
+    These tests validate the EMA initialisation, the update formula, and the
+    effect of the decay parameter on position magnitude.
+    """
+
+    @pytest.fixture
+    def pv_prices(self) -> pl.DataFrame:
+        """30-day, 2-asset non-monotonic price series for EMA tests."""
+        n = 30
+        start = date(2020, 1, 1)
+        dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+        rng = np.random.default_rng(99)
+        return pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series(100.0 + np.cumsum(rng.normal(0.0, 0.5, n)), dtype=pl.Float64),
+                "B": pl.Series(200.0 + np.cumsum(rng.normal(0.0, 0.7, n)), dtype=pl.Float64),
+            }
+        )
+
+    @pytest.fixture
+    def pv_mu(self, pv_prices: pl.DataFrame) -> pl.DataFrame:
+        """Bounded sinusoidal mu aligned with pv_prices."""
+        n = pv_prices.height
+        theta = np.linspace(0.0, 2.0 * np.pi, num=n)
+        return pl.DataFrame(
+            {
+                "date": pv_prices["date"],
+                "A": pl.Series(np.tanh(np.sin(theta)), dtype=pl.Float64),
+                "B": pl.Series(np.tanh(np.cos(theta)), dtype=pl.Float64),
+            }
+        )
+
+    def test_profit_variance_init_exactly_scales_first_valid_positions(
+        self, pv_prices: pl.DataFrame, pv_mu: pl.DataFrame
+    ) -> None:
+        """Position at the warmup boundary is inversely proportional to profit_variance_init.
+
+        Before any valid (non-NaN) positions exist, all realized profits are zero because
+        pre-warmup positions are NaN (→ ``nan_to_num`` → 0). The EMA therefore degenerates
+        to ``pv[k] = λ^k · pv_init`` for both configs, preserving the exact ratio of their
+        init values. At the warmup boundary, both configs face the same solved position
+        (identical μ and Σ), scaled only by their respective pv values, so the ratio of
+        positions must equal the inverse ratio of the inits.
+        """
+        vola, corr = 4, 8
+        base = {"vola": vola, "corr": corr, "clip": 3.0, "shrink": 0.5, "aum": 1e6, "profit_variance_decay": 0.99}
+        cp_1 = BasanosEngine(
+            prices=pv_prices, mu=pv_mu, cfg=BasanosConfig(**base, profit_variance_init=1.0)
+        ).cash_position
+        cp_4 = BasanosEngine(
+            prices=pv_prices, mu=pv_mu, cfg=BasanosConfig(**base, profit_variance_init=4.0)
+        ).cash_position
+
+        a1 = cp_1["A"].to_numpy()
+        a4 = cp_4["A"].to_numpy()
+
+        first_valid = next(
+            (i for i in range(len(a1)) if np.isfinite(a1[i]) and np.isfinite(a4[i]) and a1[i] != 0.0),
+            None,
+        )
+        assert first_valid is not None, "No valid (finite, non-zero) positions found after warmup"
+        ratio = a1[first_valid] / a4[first_valid]
+        assert abs(ratio - 4.0) < 1e-10, f"Expected exact ratio 4.0 at warmup boundary, got {ratio}"
+
+    def test_profit_variance_ema_updates_break_proportionality_after_warmup(
+        self, pv_prices: pl.DataFrame, pv_mu: pl.DataFrame
+    ) -> None:
+        """After the first non-NaN positions, real profits enter the EMA and break the exact init ratio.
+
+        At the warmup boundary the two configs produce positions in exact proportion to their
+        inits. One step later, yesterday's positions differ between the two configs, so the
+        realized profits—and therefore the EMA updates—are different. This confirms that the
+        EMA is actually being updated from real P&L data, not merely decaying from init.
+        """
+        vola, corr = 4, 8
+        n = pv_prices.height
+        base = {"vola": vola, "corr": corr, "clip": 3.0, "shrink": 0.5, "aum": 1e6, "profit_variance_decay": 0.99}
+        cp_1 = BasanosEngine(
+            prices=pv_prices, mu=pv_mu, cfg=BasanosConfig(**base, profit_variance_init=1.0)
+        ).cash_position
+        cp_4 = BasanosEngine(
+            prices=pv_prices, mu=pv_mu, cfg=BasanosConfig(**base, profit_variance_init=4.0)
+        ).cash_position
+
+        a1 = cp_1["A"].to_numpy()
+        a4 = cp_4["A"].to_numpy()
+
+        first_valid = next(
+            (i for i in range(len(a1)) if np.isfinite(a1[i]) and np.isfinite(a4[i]) and a1[i] != 0.0),
+            None,
+        )
+        assert first_valid is not None, "No valid (finite, non-zero) positions found after warmup"
+        later_valids = [
+            i for i in range(first_valid + 1, n) if np.isfinite(a1[i]) and np.isfinite(a4[i]) and a1[i] != 0.0
+        ]
+        assert later_valids, "Need at least 2 valid positions after warmup"
+
+        # After one EMA update from a real profit, the pv values for the two configs
+        # are no longer in exact proportion, so the position ratio must deviate from 4.0.
+        second_valid = later_valids[0]
+        ratio_second = a1[second_valid] / a4[second_valid]
+        assert abs(ratio_second - 4.0) > 1e-12, (
+            f"EMA did not update from realized profits: ratio at step {second_valid} is still {ratio_second}"
+        )
+
+    def test_profit_variance_fast_decay_produces_larger_initial_positions_than_slow_decay(
+        self, pv_prices: pl.DataFrame, pv_mu: pl.DataFrame
+    ) -> None:
+        """At the warmup boundary, fast-decaying pv is smaller and therefore positions are larger.
+
+        With fast decay (small λ), pv decays quickly during the warmup period
+        (``pv[W] = λ^W · init`` → 0 for small λ), producing large positions. With slow
+        decay (large λ close to 1), pv barely changes from init and positions are smaller.
+        The ratio of absolute positions at the warmup boundary should reflect the ratio of
+        the pv values, which can be computed analytically as ``(λ_fast / λ_slow)^W``.
+        """
+        vola, corr = 4, 8
+        lamb_fast, lamb_slow = 0.01, 0.999
+        base = {"vola": vola, "corr": corr, "clip": 3.0, "shrink": 0.5, "aum": 1e6, "profit_variance_init": 1.0}
+        cp_fast = BasanosEngine(
+            prices=pv_prices, mu=pv_mu, cfg=BasanosConfig(**base, profit_variance_decay=lamb_fast)
+        ).cash_position
+        cp_slow = BasanosEngine(
+            prices=pv_prices, mu=pv_mu, cfg=BasanosConfig(**base, profit_variance_decay=lamb_slow)
+        ).cash_position
+
+        a_fast = cp_fast["A"].to_numpy()
+        a_slow = cp_slow["A"].to_numpy()
+
+        first_valid = next(
+            (i for i in range(len(a_fast)) if np.isfinite(a_fast[i]) and np.isfinite(a_slow[i]) and a_fast[i] != 0.0),
+            None,
+        )
+        assert first_valid is not None, "No valid (finite, non-zero) positions found after warmup"
+        # Fast-decaying pv is much smaller → much larger absolute positions.
+        assert abs(a_fast[first_valid]) > abs(a_slow[first_valid]), (
+            "Expected fast-decay config to produce larger initial positions (lower pv) than slow-decay config"
+        )
+        # Quantitative check: pv_fast[W] = lamb_fast^W, pv_slow[W] = lamb_slow^W, so the
+        # ratio of positions ≈ pv_slow[W] / pv_fast[W] = (lamb_slow / lamb_fast)^W.
+        # With W = corr = 8, lamb_slow / lamb_fast = 0.999 / 0.01 = 99.9, so
+        # ratio ≈ 99.9^8 ≈ 9.2e15.  Conservatively we require a ratio of at least 1e10.
+        ratio_abs = abs(a_fast[first_valid]) / abs(a_slow[first_valid])
+        assert ratio_abs > 1e10, f"Expected ratio > 1e10, got {ratio_abs}"
+
+    def test_profit_variance_ema_formula_manual_verification(
+        self, pv_prices: pl.DataFrame, pv_mu: pl.DataFrame
+    ) -> None:
+        """Manually simulate the EMA and verify that positions are self-consistent.
+
+        Given the engine's ``cash_position`` output, we can re-derive the pv trajectory
+        using the same EMA formula, feeding the engine's own outputs back as the lagged
+        cash positions:
+
+            pv[t] = λ·pv[t-1] + (1-λ)·(cash_pos[t-1] @ returns[t])²
+
+        The "solved position" underlying any cash position is:
+
+            solved_pos[t] = cash_pos[t] · vola[t] · pv[t]
+
+        Because both engines face the same linear system (μ and Σ are identical for both
+        configs), their solved positions must agree at every timestamp. Verifying this
+        self-consistency simultaneously checks the EMA formula, the lagged-position update,
+        and the position scaling.
+        """
+        vola, corr = 4, 8
+        base = {"vola": vola, "corr": corr, "clip": 3.0, "shrink": 0.5, "aum": 1e6, "profit_variance_decay": 0.9}
+
+        engine_1 = BasanosEngine(prices=pv_prices, mu=pv_mu, cfg=BasanosConfig(**base, profit_variance_init=1.0))
+        engine_2 = BasanosEngine(prices=pv_prices, mu=pv_mu, cfg=BasanosConfig(**base, profit_variance_init=2.0))
+
+        cp1 = engine_1.cash_position
+        cp2 = engine_2.cash_position
+
+        assets = engine_1.assets
+        prices_np = pv_prices.select(assets).to_numpy()
+        returns_np = np.zeros_like(prices_np, dtype=float)
+        returns_np[1:] = prices_np[1:] / prices_np[:-1] - 1.0
+
+        cash1 = cp1.select(assets).to_numpy()
+        cash2 = cp2.select(assets).to_numpy()
+        vola_np = engine_1.vola.select(assets).to_numpy()
+
+        def _simulate_pv(cash_pos: np.ndarray, init: float, lamb: float) -> list[float]:
+            """Re-run the EMA formula using actual engine outputs as the lagged positions."""
+            pv = init
+            pv_seq = [pv]
+            for i in range(1, len(prices_np)):
+                mask = np.isfinite(prices_np[i])
+                ret_mask = np.isfinite(returns_np[i]) & mask
+                if ret_mask.any():
+                    lhs = np.nan_to_num(cash_pos[i - 1, ret_mask], nan=0.0)
+                    rhs = np.nan_to_num(returns_np[i, ret_mask], nan=0.0)
+                    profit = lhs @ rhs
+                    pv = lamb * pv + (1 - lamb) * profit**2
+                pv_seq.append(pv)
+            return pv_seq
+
+        lamb = 0.9
+        pv1 = _simulate_pv(cash1, 1.0, lamb)
+        pv2 = _simulate_pv(cash2, 2.0, lamb)
+
+        # At each valid step: cash_pos[t] · vola[t] · pv[t] = solved_pos[t].
+        # Both engines solve the same linear system, so solved_pos must agree.
+        valid_idxs = [
+            i
+            for i in range(corr, pv_prices.height)
+            if (
+                np.isfinite(cash1[i, 0])
+                and np.isfinite(cash2[i, 0])
+                and abs(cash1[i, 0]) > 1e-15
+                and abs(cash2[i, 0]) > 1e-15
+                and np.isfinite(vola_np[i, 0])
+                and vola_np[i, 0] > 0
+            )
+        ]
+        assert valid_idxs, "Need at least one valid index after warmup"
+
+        for idx in valid_idxs:
+            solved_1 = cash1[idx, 0] * vola_np[idx, 0] * pv1[idx]
+            solved_2 = cash2[idx, 0] * vola_np[idx, 0] * pv2[idx]
+            np.testing.assert_allclose(
+                solved_1,
+                solved_2,
+                rtol=1e-10,
+                err_msg=f"Solved positions diverge at index {idx}: engine_1={solved_1}, engine_2={solved_2}",
+            )
