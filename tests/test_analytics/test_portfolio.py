@@ -1,4 +1,14 @@
-"""Tests for basanos.analytics.portfolio module."""
+"""Tests for basanos.analytics.portfolio module.
+
+This module verifies the Portfolio dataclass end-to-end: construction and
+validation (from_cash_position, from_risk_position, __post_init__ guards),
+derived series (profits, NAV, drawdown, highwater, returns), decomposition
+(tilt / timing), aggregation (monthly), positional transforms (lag,
+smoothed_holding, truncate), and the stats / plots facades.
+
+Integer-indexed (date-free) portfolios are exercised alongside the standard
+date-indexed variants so that the date-column branch never silently breaks.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +27,13 @@ from basanos.analytics import Portfolio
 
 @pytest.fixture
 def prices():
-    """Create sample prices for testing."""
+    """Three-day, two-asset price frame with exact geometric ratios.
+
+    Asset A: 100 → 110 → 121 (10 % gain each day).
+    Asset B: 200 → 180 → 198 (−10 % then +10 %).
+    Chosen so that expected profit values are small integers, making manual
+    verification of downstream assertions straightforward.
+    """
     return pl.DataFrame(
         {
             "date": pl.date_range(start=date(2020, 1, 1), end=date(2020, 1, 3), interval="1d", eager=True).cast(
@@ -31,7 +47,13 @@ def prices():
 
 @pytest.fixture
 def positions():
-    """Create sample positions for testing."""
+    """Three-day cash-position frame aligned with the prices fixture.
+
+    Asset A: 1 000 units held throughout.
+    Asset B: 0 on day 1, 500 from day 2 onward.
+    The zero position on day 1 ensures the B contribution to daily profit is
+    zero on that day, allowing exact integer assertions in the core tests.
+    """
     return pl.DataFrame(
         {
             "date": pl.date_range(start=date(2020, 1, 1), end=date(2020, 1, 3), interval="1d", eager=True).cast(
@@ -389,7 +411,11 @@ def test_lag_zero_returns_same_portfolio_object_or_equal_data(portfolio):
 
 
 def test_lag_raises_typeerror_for_non_int(portfolio):
-    """Passing a non-int to lag should raise TypeError."""
+    """Passing a non-integer value to lag() should raise TypeError.
+
+    Floats are rejected even when they represent whole numbers (e.g., 1.5)
+    to prevent silent truncation from masking logic errors in calling code.
+    """
     with pytest.raises(TypeError):
         _ = portfolio.lag(1.5)  # type: ignore[arg-type]
 
