@@ -130,11 +130,60 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
 
 
 class BasanosConfig(BaseModel):
-    """Configuration for correlation-aware position optimization.
+    r"""Configuration for correlation-aware position optimization.
 
     The required parameters (``vola``, ``corr``, ``clip``, ``shrink``, ``aum``)
     must be supplied by the caller.  The optional parameters carry
     carefully chosen defaults whose rationale is described below.
+
+    Shrinkage methodology
+    ---------------------
+    ``shrink`` controls linear shrinkage of the EWMA correlation matrix toward
+    the identity:
+
+    .. math::
+
+        C_{\\text{shrunk}} = \\lambda \\cdot C_{\\text{EWMA}} + (1 - \\lambda) \\cdot I_n
+
+    where :math:`\\lambda` = ``shrink`` and :math:`I_n` is the identity.
+    Shrinkage regularises the matrix when assets are few relative to the
+    lookback (high concentration ratio :math:`n / T`), reducing the impact of
+    extreme sample eigenvalues and improving the condition number of the matrix
+    passed to the linear solver.
+
+    **When to prefer strong shrinkage (low** ``shrink`` **/ high** ``1-shrink``\\ **):**
+
+    * Fewer than ~30 assets with a ``corr`` lookback shorter than 100 days.
+    * High-volatility or crisis regimes where correlations spike and the sample
+      matrix is less representative of the true structure.
+    * Portfolios where estimation noise is more costly than correlation bias
+      (e.g., when the signal-to-noise ratio of ``mu`` is low).
+
+    **When to prefer light shrinkage (high** ``shrink``\\ **):**
+
+    * Many assets with a long lookback (low concentration ratio).
+    * The EWMA correlation structure carries genuine diversification information
+      that you want the solver to exploit.
+    * Out-of-sample testing shows that position stability is not a concern.
+
+    **Practical starting points (daily return data):**
+
+    Here *n* = number of assets and *T* = ``cfg.corr`` (EWMA lookback).
+
+    +-----------------------+-------------------+--------------------------------+
+    | n (assets) / T (corr) | Suggested shrink  | Notes                          |
+    +=======================+===================+================================+
+    | n > 20, T < 40        | 0.3 - 0.5         | Near-singular matrix likely;   |
+    |                       |                   | strong regularisation needed.  |
+    +-----------------------+-------------------+--------------------------------+
+    | n ~ 10, T ~ 60        | 0.5 - 0.7         | Balanced regime.               |
+    +-----------------------+-------------------+--------------------------------+
+    | n < 10, T > 100       | 0.7 - 0.9         | Well-conditioned sample;       |
+    |                       |                   | light shrinkage for stability. |
+    +-----------------------+-------------------+--------------------------------+
+
+    See :func:`~basanos.math._signal.shrink2id` for the full theoretical
+    background and academic references (Ledoit & Wolf, 2004; Chen et al., 2010).
 
     Default rationale
     -----------------
@@ -181,7 +230,18 @@ class BasanosConfig(BaseModel):
     corr: int = Field(..., gt=0, description="EWMA lookback for correlation estimation.")
     clip: float = Field(..., gt=0.0, description="Clipping threshold for volatility adjustment.")
     shrink: float = Field(
-        ..., ge=0.0, le=1.0, description="Shrinkage intensity towards identity (0=no shrinkage, 1=identity)."
+        ...,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Retention weight λ for linear shrinkage of the EWMA correlation matrix toward "
+            "the identity: C_shrunk = λ·C_ewma + (1-λ)·I. "
+            "λ=1.0 uses the raw EWMA matrix (no shrinkage); λ=0.0 replaces it entirely "
+            "with the identity (maximum shrinkage, positions are treated as uncorrelated). "
+            "Values in [0.3, 0.8] are typical for daily financial return data. "
+            "Lower values improve numerical stability when assets are many relative to the "
+            "lookback (high concentration ratio n/T). See shrink2id() for full guidance."
+        ),
     )
     aum: float = Field(..., gt=0.0, description="Assets under management for portfolio scaling.")
     profit_variance_init: float = Field(
