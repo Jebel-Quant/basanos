@@ -18,7 +18,7 @@ from basanos.exceptions import (
     NonSquareMatrixError,
     SingularMatrixError,
 )
-from basanos.math._linalg import inv_a_norm, solve, valid
+from basanos.math._linalg import inv_a_norm, is_positive_definite, solve, valid
 
 
 def test_non_quadratic() -> None:
@@ -302,3 +302,55 @@ def test_non_positive_definite_fallback_solve() -> None:
 def test_ill_conditioned_warning_is_user_warning_subclass() -> None:
     """IllConditionedMatrixWarning inherits from UserWarning."""
     assert issubclass(IllConditionedMatrixWarning, UserWarning)
+
+
+# ---------------------------------------------------------------------------
+# is_positive_definite tests
+# ---------------------------------------------------------------------------
+
+
+def test_is_positive_definite_identity() -> None:
+    """Identity matrix is positive-definite."""
+    assert is_positive_definite(np.eye(3)) is True
+
+
+def test_is_positive_definite_spd_matrix() -> None:
+    """A known symmetric positive-definite matrix returns True."""
+    matrix = np.array([[4.0, 2.0], [2.0, 3.0]])
+    assert is_positive_definite(matrix) is True
+
+
+def test_is_positive_definite_correlation_like() -> None:
+    """A typical shrunk correlation matrix is positive-definite."""
+    # [[1, 0.3], [0.3, 1]] is PD (eigenvalues 0.7 and 1.3)
+    matrix = np.array([[1.0, 0.3], [0.3, 1.0]])
+    assert is_positive_definite(matrix) is True
+
+
+def test_is_positive_definite_indefinite_matrix() -> None:
+    """An indefinite matrix (has negative eigenvalue) returns False."""
+    # [[1, 2], [2, 1]] has eigenvalues 3 and -1
+    matrix = np.array([[1.0, 2.0], [2.0, 1.0]])
+    assert is_positive_definite(matrix) is False
+
+
+def test_is_positive_definite_singular_matrix() -> None:
+    """A singular matrix (zero eigenvalue) returns False."""
+    matrix = np.array([[1.0, 1.0], [1.0, 1.0]])
+    assert is_positive_definite(matrix) is False
+
+
+def test_is_positive_definite_negative_definite_matrix() -> None:
+    """A negative-definite matrix returns False."""
+    matrix = -1.0 * np.eye(2)
+    assert is_positive_definite(matrix) is False
+
+
+def test_is_positive_definite_scalar() -> None:
+    """A 1x1 positive matrix is positive-definite."""
+    assert is_positive_definite(np.array([[5.0]])) is True
+
+
+def test_is_positive_definite_scalar_zero() -> None:
+    """A 1x1 zero matrix is not positive-definite."""
+    assert is_positive_definite(np.array([[0.0]])) is False
