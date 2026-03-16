@@ -19,6 +19,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "hypothesis>=6.0.0",
     "marimo",
     "pandas>=2.0",
     "pyarrow>=14.0",
