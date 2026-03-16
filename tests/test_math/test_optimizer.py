@@ -1,4 +1,17 @@
-"""Tests for basanos.math.optimizer (BasanosEngine and BasanosConfig)."""
+"""Tests for basanos.math.optimizer (BasanosEngine and BasanosConfig).
+
+This module covers:
+- BasanosConfig field validation and default values.
+- BasanosEngine construction guards (shape, date column, column names,
+  non-positive prices, excessive nulls, monotonic prices).
+- cash_position output schema, finite-value assertions, and edge-case
+  branches (all-NaN mu, all-NaN price rows, degenerate normalisation).
+- ret_adj, vola, and cor property shapes.
+- portfolio property producing a Portfolio with sane NAV.
+- Structural and asset-availability properties of the correlation matrix dict.
+- cash_position correctness with staggered-asset price frames.
+- cor_tensor shape, slice equality, and flat-file round-trip.
+"""
 
 from __future__ import annotations
 
@@ -37,7 +50,11 @@ def optimizer_prices() -> pl.DataFrame:
 
 @pytest.fixture
 def optimizer_mu(optimizer_prices) -> pl.DataFrame:
-    """Sinusoidal mu aligned with optimizer_prices."""
+    """Bounded sinusoidal expected-return signal aligned with optimizer_prices.
+
+    Uses tanh(sin/cos) so values stay in (−1, +1) and change sign frequently,
+    exercising both long and short allocation paths in the optimizer.
+    """
     n = optimizer_prices.height
     theta = np.linspace(0.0, 4.0 * np.pi, num=n)
     return pl.DataFrame(
@@ -66,7 +83,12 @@ def small_prices() -> pl.DataFrame:
 
 @pytest.fixture
 def small_mu(small_prices: pl.DataFrame) -> pl.DataFrame:
-    """Bounded sinusoidal mu aligned with small_prices."""
+    """Bounded sinusoidal expected-return signal aligned with small_prices.
+
+    Half-period sine wave keeps values non-negative on the first half and
+    non-positive on the second half, providing sign-change coverage with only
+    10 rows, which is enough for the small validation tests.
+    """
     n = small_prices.height
     theta = np.linspace(0.0, np.pi, num=n)
     return pl.DataFrame(
@@ -222,7 +244,10 @@ def test_post_init_shape_mismatch_raises(small_prices: pl.DataFrame, small_mu: p
 
 
 def test_post_init_missing_date_raises() -> None:
-    """Both prices and mu must contain a 'date' column."""
+    """BasanosEngine requires a 'date' column in both prices and mu; omitting it raises ValueError.
+
+    Tested for each direction: prices missing 'date', then mu missing 'date'.
+    """
     cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
     prices_no_date = pl.DataFrame({"A": [1.0, 2.0], "B": [3.0, 4.0]})
     mu_ok = pl.DataFrame(
@@ -249,7 +274,11 @@ def test_post_init_missing_date_raises() -> None:
 
 
 def test_post_init_column_mismatch_raises(small_prices: pl.DataFrame, small_mu: pl.DataFrame) -> None:
-    """Prices and mu must have identical column sets."""
+    """BasanosEngine rejects prices and mu with different column names.
+
+    Renaming a column in mu so it no longer matches prices should raise
+    ValueError, ensuring the engine cannot silently pair assets incorrectly.
+    """
     cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
     with pytest.raises(ColumnMismatchError) as exc_info:
         _ = BasanosEngine(prices=small_prices, mu=small_mu.rename({"B": "BB"}), cfg=cfg)
@@ -637,7 +666,11 @@ class TestCorMatrixShape:
     """Structural properties of the returned correlation dict."""
 
     def test_returns_dict(self, cor: dict) -> None:
-        """Cor should return a plain Python dict."""
+        """Cor property should return a plain Python dict keyed by date.
+
+        Verifies the public API contract so callers can rely on dict-style
+        lookup (e.g. cor[some_date]) without additional unwrapping.
+        """
         assert isinstance(cor, dict)
 
     def test_has_one_entry_per_day(self, prices: pl.DataFrame, cor: dict) -> None:
@@ -659,7 +692,11 @@ class TestCorMatrixShape:
                 assert np.all(finite <= 1.0 + 1e-9), f"Correlation above +1 at {_d}"
 
     def test_matrices_are_symmetric(self, cor: dict) -> None:
-        """Sample every 30th date to keep the test fast."""
+        """Correlation matrices must be symmetric for every pair of finite entries.
+
+        Samples every 30th date to keep runtime short while still spanning
+        multiple years and asset-availability regimes.
+        """
         for d in list(cor.keys())[::30]:
             mat = cor[d]
             both_finite = np.isfinite(mat) & np.isfinite(mat.T)

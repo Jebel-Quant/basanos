@@ -1,4 +1,13 @@
-"""Tests for basanos.math._signal (shrink2id, vol_adj)."""
+"""Tests for basanos.math._signal (shrink2id, vol_adj).
+
+shrink2id mixes a covariance/correlation matrix linearly towards the identity
+matrix and is tested for boundary lambdas (0 and 1), midpoints, default
+behaviour, and shape preservation.
+
+vol_adj computes exponentially-weighted volatility-adjusted log-returns and
+is tested for output shape, the mandatory leading null, finiteness of
+subsequent values, ±clip enforcement, and the constant-price degenerate case.
+"""
 
 import math
 
@@ -32,7 +41,11 @@ def test_shrink2id_default_lamb_is_one():
 
 
 def test_shrink2id_output_shape_preserved():
-    """Output shape must equal input shape for any lamb."""
+    """shrink2id must not change the shape of the input matrix for any lamb.
+
+    This guards against implementations that, e.g., rebuild from eigenvalues
+    and inadvertently drop dimensions.
+    """
     mat = np.eye(4)
     assert shrink2id(mat, lamb=0.3).shape == mat.shape
 
@@ -42,7 +55,11 @@ def test_shrink2id_output_shape_preserved():
 
 @pytest.fixture
 def price_series() -> pl.DataFrame:
-    """Simple 10-row price series with no NaNs."""
+    """Ten-row price series with small realistic fluctuations and no NaN values.
+
+    Prices oscillate gently around a mild uptrend so that log-returns and the
+    EWM volatility estimator both receive non-trivial, non-degenerate inputs.
+    """
     prices = [1.0, 1.01, 1.03, 1.02, 1.05, 1.04, 1.06, 1.08, 1.07, 1.10]
     return pl.DataFrame({"p": prices})
 
@@ -68,7 +85,12 @@ def test_vol_adj_subsequent_rows_are_finite(price_series):
 
 
 def test_vol_adj_clipping_respected():
-    """Values exceeding ±clip must be clamped to ±clip."""
+    """vol_adj must clamp all non-null, non-NaN outputs to the interval [−clip, +clip].
+
+    Uses a large price spike at the end (×100 jump) to force the standardised
+    log-return far beyond the clip bound, confirming that the clamp is applied
+    after volatility normalisation.
+    """
     clip = 1.0
     # Prices with prior volatility (so EWM std is non-zero) then a huge jump.
     prices = [1.0, 1.05, 0.95, 1.05, 0.95, 1.05, 100.0]

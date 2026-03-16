@@ -101,7 +101,7 @@ def test_periods_per_year_numeric_first_column_uses_to_float():
 
 
 def test_to_float_none_returns_zero():
-    """_to_float(None) should return 0.0."""
+    """_to_float(None) should return 0.0, treating absence as a zero contribution."""
     assert _to_float(None) == 0.0
 
 
@@ -111,7 +111,12 @@ def test_to_float_timedelta_returns_total_seconds():
 
 
 def test_to_float_or_none_none_returns_none():
-    """_to_float_or_none(None) should return None."""
+    """_to_float_or_none(None) should propagate None rather than coercing to zero.
+
+    This contrasts with _to_float which converts None to 0.0; the *_or_none
+    variant preserves the absence signal for callers that need to distinguish
+    missing from zero.
+    """
     assert _to_float_or_none(None) is None
 
 
@@ -293,7 +298,11 @@ def test_best_and_worst_handles_nulls_and_returns_extremes(frame):
 
 
 def test_summary_returns_polars_dataframe(frame):
-    """summary() should return a Polars DataFrame."""
+    """summary() should return a Polars DataFrame rather than a dict or other type.
+
+    Callers that pass the summary directly to Polars/Pandas pipelines depend on
+    this type contract.
+    """
     data = frame.head(20).with_columns(pl.Series("A", [0.01 * i for i in range(1, 21)]))
     assert isinstance(Stats(data).summary(), pl.DataFrame)
 
