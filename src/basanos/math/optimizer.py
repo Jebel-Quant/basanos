@@ -423,7 +423,8 @@ class BasanosEngine:
                 ret_mask = np.isfinite(returns_num[i]) & mask
                 # Profit at time i comes from yesterday's cash position applied to today's returns
                 if ret_mask.any():
-                    cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
+                    with np.errstate(invalid="ignore"):
+                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
                     lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
                     rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
                     profit = lhs @ rhs
@@ -450,7 +451,8 @@ class BasanosEngine:
                 pos = solve(matrix, expected_mu) / denom
 
             risk_pos_np[i, mask] = pos / profit_variance
-            cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
+            with np.errstate(invalid="ignore"):
+                cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
 
         # Build Polars DataFrame for risk positions (numeric columns only)
         cash_position = self.prices.with_columns(
