@@ -204,7 +204,7 @@ def cell_08(clip_sweep, mu, prices, vola_sweep):
             )
             try:
                 _eng = BasanosEngine(prices=prices, mu=mu, cfg=_cfg)
-                _sharpe = _eng.portfolio.stats.sharpe(periods=252)
+                _sharpe = float(_eng.portfolio.stats.sharpe(periods=252).get("returns", float("nan")))
             except Exception:
                 _sharpe = float("nan")
             _results[_key].append(_sharpe)
@@ -406,12 +406,18 @@ def cell_17(clip_sens, corr_sens, mu, prices, shrink_sens, vola_sens):
         aum=1_000_000,
     )
     _eng_s = BasanosEngine(prices=prices, mu=mu, cfg=_cfg_s)
-    _port_s = _eng_s.portfolio
+    port_s = _eng_s.portfolio
     _n_assets = len(_eng_s.assets)
     _concentration = _n_assets / _eff_corr_s
-    _sharpe_s = _port_s.stats.sharpe(periods=252)
-    _vol_s = _port_s.stats.volatility(periods=252)
+    _sharpe_s = float(port_s.stats.sharpe(periods=252).get("returns", float("nan")))
+    _vol_s = float(port_s.stats.volatility(periods=252).get("returns", float("nan")))
 
+    _concentration_msg = (
+        "⚠️ High concentration ratio (n/T > 0.3): consider reducing λ for better regularisation."
+        if _concentration > 0.3
+        else "✅ Concentration ratio is within a manageable range."
+    )
+    _corr_raised_msg = "⚠️ `corr` was raised to match `vola`." if _eff_corr_s > corr_sens.value else ""
     mo.callout(
         mo.md(
             f"""
@@ -426,26 +432,22 @@ def cell_17(clip_sens, corr_sens, mu, prices, shrink_sens, vola_sens):
             | Annualised Sharpe | **{_sharpe_s:.3f}** |
             | Annualised volatility | {_vol_s:.4f} |
 
-            {
-                "⚠️ High concentration ratio (n/T > 0.3): consider reducing λ for better regularisation."
-                if _concentration > 0.3
-                else "✅ Concentration ratio is within a manageable range."
-            }
-            {"⚠️ `corr` was raised to match `vola`." if _eff_corr_s > corr_sens.value else ""}
+            {_concentration_msg}
+            {_corr_raised_msg}
             """
         ),
         kind="info",
     )
-    return (_port_s,)
+    return (port_s,)
 
 
 @app.cell
-def cell_18(_port_s):
+def cell_18(port_s):
     """Show the NAV chart for the selected configuration."""
     mo.vstack(
         [
             mo.md("### Performance (NAV)"),
-            mo.ui.plotly(_port_s.plots.snapshot()),
+            mo.ui.plotly(port_s.plots.snapshot()),
         ]
     )
 
