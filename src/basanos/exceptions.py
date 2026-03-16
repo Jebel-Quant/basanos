@@ -116,7 +116,7 @@ class MissingDateColumnError(BasanosError, ValueError):
 
     def __init__(self, frame_name: str) -> None:
         """Initialize with the name of the frame that is missing the column."""
-        super().__init__(f"DataFrame '{frame_name}' is missing the required 'date' column.")
+        super().__init__(f"'{frame_name}' requires a 'date' column.")
         self.frame_name = frame_name
 
 
@@ -209,6 +209,27 @@ class ExcessiveNullsError(BasanosError, ValueError):
         self.asset = asset
         self.null_fraction = null_fraction
         self.max_fraction = max_fraction
+
+
+class IntegerIndexBoundError(BasanosError, TypeError):
+    """Raised when a row-index bound is not an integer.
+
+    Args:
+        param: Name of the offending parameter (e.g. ``"start"`` or ``"end"``).
+        actual_type: The ``type.__name__`` of the value that was supplied.
+
+    Examples:
+        >>> raise IntegerIndexBoundError("start", "str")
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.IntegerIndexBoundError: start must be an integer, got str.
+    """
+
+    def __init__(self, param: str, actual_type: str) -> None:
+        """Initialize with the parameter name and the offending type."""
+        super().__init__(f"{param} must be an integer, got {actual_type}.")
+        self.param = param
+        self.actual_type = actual_type
 
 
 class MonotonicPricesError(BasanosError, ValueError):
