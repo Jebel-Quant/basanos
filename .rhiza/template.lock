@@ -106,7 +106,6 @@ files:
 - .rhiza/tests/test_utils.py
 - .rhiza/tests/utils/test_git_repo_fixture.py
 - Makefile
-- book/marimo/notebooks/rhiza.py
 - docs/ARCHITECTURE.md
 - docs/BOOK.md
 - docs/CUSTOMIZATION.md
