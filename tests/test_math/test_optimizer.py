@@ -465,6 +465,74 @@ def test_cash_position_warns_when_denom_is_near_zero(optimizer_prices: pl.DataFr
     assert all("denom_tol=" in r.message for r in warnings)
 
 
+def test_cash_position_no_warning_for_zero_mu(optimizer_prices: pl.DataFrame, caplog) -> None:
+    """No warning should be logged when mu is all zeros.
+
+    When expected_mu is identically zero the optimizer short-circuits before
+    calling inv_a_norm, so the degenerate-denominator path is never reached and
+    no warning should be emitted.
+    """
+    cfg = BasanosConfig(corr=20, vola=12, clip=4.0, shrink=0.7, aum=1e6)
+    n = optimizer_prices.height
+    mu_zero = pl.DataFrame(
+        {
+            "date": optimizer_prices["date"],
+            "A": pl.Series([0.0] * n, dtype=pl.Float64),
+            "B": pl.Series([0.0] * n, dtype=pl.Float64),
+        }
+    )
+    with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+        _ = BasanosEngine(prices=optimizer_prices, cfg=cfg, mu=mu_zero).cash_position
+
+    degen_warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    assert not degen_warnings, "No warning should be logged when mu is all zeros"
+
+
+def test_cash_position_zeros_and_warns_when_inv_a_norm_returns_nan(caplog) -> None:
+    """When inv_a_norm returns nan (all-NaN correlation matrix), positions are zeroed and a warning emitted.
+
+    A minimal price series with corr=100 ensures the correlation window is never
+    satisfied, so every correlation matrix is all-NaN.  With non-zero mu the
+    optimizer must still zero positions and emit a warning rather than dividing
+    by NaN.
+    """
+    n = 10
+    start = date(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    # Seed is fixed for reproducibility; specific values are not critical to the test
+    rng = np.random.default_rng(42)
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(100.0 + np.cumsum(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "B": pl.Series(200.0 + np.cumsum(rng.normal(0, 0.7, n)), dtype=pl.Float64),
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series([0.1] * n, dtype=pl.Float64),
+            "B": pl.Series([0.2] * n, dtype=pl.Float64),
+        }
+    )
+    # corr=100 far exceeds the 10-row series, so all correlation matrices are all-NaN
+    cfg = BasanosConfig(corr=100, vola=5, clip=4.0, shrink=0.5, aum=1e6)
+
+    with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+        cp = BasanosEngine(prices=prices, cfg=cfg, mu=mu).cash_position
+
+    # All positions must be zero or NaN during warm-up - never infinite or based on NaN denom
+    for col in ("A", "B"):
+        vals = cp[col].to_numpy(allow_copy=True)
+        assert not np.any(np.isinf(vals)), f"Unexpected infinite position in column {col}"
+        assert np.all(np.isnan(vals) | (vals == 0.0)), f"Expected only NaN or zero positions in column {col}"
+
+    # A warning must have been logged for the degenerate denominator
+    degen_warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    assert degen_warnings, "Expected a warning when inv_a_norm returns nan due to all-NaN correlation matrix"
+    assert all("denom=nan" in r.message for r in degen_warnings)
+
+
 # ─── ret_adj, vola, cor properties ────────────────────────────────────────────
 
 
