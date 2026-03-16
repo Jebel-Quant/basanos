@@ -31,7 +31,7 @@ packages = ["src/basanos"]
 
 [tool.deptry]
 # Explicit module name map so deptry doesn't need to inspect installed packages
-package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow", "ty" = "ty" }
+package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "hypothesis" = "hypothesis", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow", "ty" = "ty" }
 
 [tool.ty.environment]
 python-version = "3.12"
