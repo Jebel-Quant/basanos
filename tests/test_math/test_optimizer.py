@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from datetime import date, timedelta
 
@@ -435,6 +436,33 @@ def test_cash_position_skips_rows_with_all_nan_prices() -> None:
     row = cp.row(idx_nan, named=True)
     assert row["A"] is None or (isinstance(row["A"], float) and np.isnan(row["A"]))
     assert row["B"] is None or (isinstance(row["B"], float) and np.isnan(row["B"]))
+
+
+def test_cash_position_warns_when_denom_is_near_zero(optimizer_prices: pl.DataFrame, caplog) -> None:
+    """A warning should be emitted when the normalisation denominator is degenerate.
+
+    A large denom_tol forces all non-zero-mu timestamps to trigger the guard, so
+    at least one warning is logged for the non-trivial (non-zero mu) case.
+    """
+    n = optimizer_prices.height
+    theta = np.linspace(0.0, 4.0 * np.pi, num=n)
+    mu = pl.DataFrame(
+        {
+            "date": optimizer_prices["date"],
+            "A": pl.Series(np.tanh(np.sin(theta)), dtype=pl.Float64),
+            "B": pl.Series(np.tanh(np.cos(theta)), dtype=pl.Float64),
+        }
+    )
+    # denom_tol set absurdly large so every timestamp triggers the guard
+    cfg = BasanosConfig(corr=20, vola=12, clip=4.0, shrink=0.7, aum=1e6, denom_tol=1e6)
+
+    with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+        _ = BasanosEngine(prices=optimizer_prices, cfg=cfg, mu=mu).cash_position
+
+    warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    assert warnings, "Expected at least one warning about a degenerate normalisation denominator"
+    assert all("denom=" in r.message for r in warnings)
+    assert all("denom_tol=" in r.message for r in warnings)
 
 
 # ─── ret_adj, vola, cor properties ────────────────────────────────────────────
