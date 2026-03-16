@@ -7,11 +7,14 @@ solving linear systems with different input scenarios including edge cases.
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 
 from basanos.exceptions import (
     DimensionMismatchError,
+    IllConditionedMatrixWarning,
     NonSquareMatrixError,
     SingularMatrixError,
 )
@@ -143,7 +146,7 @@ def test_solve() -> None:
     matrix = 0.5 * np.eye(2)
     x = solve(matrix=matrix, rhs=rhs)
 
-    np.testing.assert_array_equal(matrix @ x, rhs)
+    np.testing.assert_allclose(matrix @ x, rhs, atol=1e-12)
 
 
 def test_singular_matrix_solve() -> None:
@@ -216,3 +219,86 @@ def test_insufficient_data_error() -> None:
     detail = "All diagonal entries are non-finite."
     exc_detail = InsufficientDataError(detail)
     assert str(exc_detail) == detail
+
+
+# ---------------------------------------------------------------------------
+# Cholesky and condition-number tests
+# ---------------------------------------------------------------------------
+
+
+def test_ill_conditioned_matrix_warns_solve() -> None:
+    """Solve emits IllConditionedMatrixWarning for an ill-conditioned matrix."""
+    # Construct a near-singular positive-definite matrix with a large condition number.
+    # [[1, 0], [0, eps]] has condition number ~1/eps.
+    eps = 1e-14
+    matrix = np.diag([1.0, eps])
+    rhs = np.array([1.0, 1.0])
+
+    with pytest.warns(IllConditionedMatrixWarning, match="condition number"):
+        solve(matrix=matrix, rhs=rhs)
+
+
+def test_ill_conditioned_matrix_warns_inv_a_norm() -> None:
+    """inv_a_norm emits IllConditionedMatrixWarning for an ill-conditioned matrix."""
+    eps = 1e-14
+    matrix = np.diag([1.0, eps])
+    v = np.array([1.0, 1.0])
+
+    with pytest.warns(IllConditionedMatrixWarning, match="condition number"):
+        inv_a_norm(vector=v, matrix=matrix)
+
+
+def test_custom_cond_threshold_suppresses_warning() -> None:
+    """No warning is emitted when condition number is below the custom threshold."""
+    eps = 1e-14
+    matrix = np.diag([1.0, eps])
+    rhs = np.array([1.0, 1.0])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # turn any warning into an error
+        # A very permissive threshold should suppress the warning
+        x = solve(matrix=matrix, rhs=rhs, cond_threshold=np.inf)
+
+    np.testing.assert_allclose(matrix @ x, rhs, atol=1e-10)
+
+
+def test_custom_cond_threshold_triggers_warning() -> None:
+    """IllConditionedMatrixWarning is triggered when threshold is set low."""
+    # A well-conditioned identity matrix (cond == 1) should still warn when
+    # the threshold is set below 1.
+    matrix = np.eye(2)
+    rhs = np.array([1.0, 2.0])
+
+    with pytest.warns(IllConditionedMatrixWarning):
+        solve(matrix=matrix, rhs=rhs, cond_threshold=0.5)
+
+
+def test_cholesky_path_gives_correct_result_solve() -> None:
+    """Solve returns correct result via Cholesky for a positive-definite matrix."""
+    matrix = np.array([[4.0, 2.0], [2.0, 3.0]])
+    rhs = np.array([1.0, 2.0])
+    x = solve(matrix=matrix, rhs=rhs)
+    np.testing.assert_allclose(matrix @ x, rhs, atol=1e-12)
+
+
+def test_cholesky_path_gives_correct_result_inv_a_norm() -> None:
+    """inv_a_norm returns correct result via Cholesky for a positive-definite matrix."""
+    matrix = np.array([[4.0, 2.0], [2.0, 3.0]])
+    v = np.array([1.0, 0.0])
+    expected = float(np.sqrt(np.dot(v, np.linalg.solve(matrix, v))))
+    assert inv_a_norm(vector=v, matrix=matrix) == pytest.approx(expected)
+
+
+def test_non_positive_definite_fallback_solve() -> None:
+    """Solve falls back to LU and succeeds for non-positive-definite (indefinite) matrix."""
+    # [[1, 2], [2, 1]] has eigenvalues 3 and -1, so it is indefinite (not PD).
+    # Cholesky will fail; LU should succeed.
+    matrix = np.array([[1.0, 2.0], [2.0, 1.0]])
+    rhs = np.array([1.0, 0.0])
+    x = solve(matrix=matrix, rhs=rhs)
+    np.testing.assert_allclose(matrix @ x, rhs, atol=1e-12)
+
+
+def test_ill_conditioned_warning_is_user_warning_subclass() -> None:
+    """IllConditionedMatrixWarning inherits from UserWarning."""
+    assert issubclass(IllConditionedMatrixWarning, UserWarning)
