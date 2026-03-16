@@ -22,6 +22,9 @@ from basanos.exceptions import (
     InsufficientDataError as InsufficientDataError,
 )
 from basanos.exceptions import (
+    IntegerIndexBoundError as IntegerIndexBoundError,
+)
+from basanos.exceptions import (
     MissingDateColumnError as MissingDateColumnError,
 )
 from basanos.exceptions import (
@@ -29,12 +32,6 @@ from basanos.exceptions import (
 )
 from basanos.exceptions import (
     NonPositivePricesError as NonPositivePricesError,
-)
-from basanos.exceptions import (
-    IntegerIndexBoundError as IntegerIndexBoundError,
-)
-from basanos.exceptions import (
-    MissingDateColumnError as MissingDateColumnError,
 )
 from basanos.exceptions import (
     NonSquareMatrixError as NonSquareMatrixError,
