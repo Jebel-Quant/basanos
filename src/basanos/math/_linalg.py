@@ -4,6 +4,8 @@ This private module provides a small set of NumPy-based utilities for
 working with symmetric (correlation-like) matrices in a robust way:
 - valid(matrix): mask out rows/cols with non-finite diagonal entries and
   return the corresponding sub-matrix.
+- is_positive_definite(matrix): explicitly test whether a matrix is
+  positive-definite using Cholesky decomposition.
 - inv_a_norm(vector, matrix=None, cond_threshold=...): compute the inverse
   A-norm of a vector with respect to a (possibly masked) positive-definite
   matrix; defaults to the Euclidean norm when no matrix is given. Emits
@@ -72,6 +74,42 @@ def valid(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
     v = np.isfinite(np.diag(matrix))
     return v, matrix[:, v][v]
+
+
+def is_positive_definite(matrix: np.ndarray) -> bool:
+    """Return True if *matrix* is symmetric positive-definite, False otherwise.
+
+    The check is performed via an attempted Cholesky decomposition — the most
+    numerically reliable way to test positive-definiteness for symmetric
+    matrices.  A matrix is positive-definite if and only if its Cholesky
+    decomposition exists and all diagonal entries of the Cholesky factor are
+    strictly positive.
+
+    This function is intentionally side-effect-free: it raises no exceptions
+    and emits no warnings.  It is suitable for use as a guard before passing a
+    shrunk correlation matrix to a linear solver.
+
+    Args:
+        matrix (np.ndarray): Square matrix to test.
+
+    Returns:
+        bool: ``True`` if the matrix is positive-definite, ``False`` otherwise.
+
+    Examples:
+        >>> import numpy as np
+        >>> is_positive_definite(np.eye(3))
+        True
+        >>> is_positive_definite(np.array([[1.0, 2.0], [2.0, 1.0]]))
+        False
+        >>> is_positive_definite(np.array([[1.0, 0.5], [0.5, 1.0]]))
+        True
+    """
+    try:
+        cho_factor(matrix, check_finite=False)
+    except np.linalg.LinAlgError:
+        return False
+    else:
+        return True
 
 
 def _check_and_warn_condition(matrix: np.ndarray, threshold: float) -> None:
