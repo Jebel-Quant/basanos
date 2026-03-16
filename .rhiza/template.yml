@@ -12,3 +12,4 @@ templates:
 exclude:
 - test/benchmarks
 - .github/workflows/rhiza_benchmarks.yml
+- book/marimo/notebooks/rhiza.py
