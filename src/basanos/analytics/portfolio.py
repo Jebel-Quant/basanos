@@ -9,6 +9,7 @@ import dataclasses
 import polars as pl
 import polars.selectors as cs
 
+from ..exceptions import IntegerIndexBoundError, MissingDateColumnError
 from ._plots import Plots
 from ._stats import Stats
 
@@ -212,7 +213,7 @@ class Portfolio:
                 aggregation requires temporal date information.
         """
         if "date" not in self.prices.columns:
-            raise ValueError
+            raise MissingDateColumnError("monthly")
         daily = self.returns.select(["date", "returns", "profit", "NAV_accumulated"])  # ensure only required columns
         monthly = (
             daily.group_by_dynamic(
@@ -342,9 +343,9 @@ class Portfolio:
         else:
             # Integer row-index slicing for date-free portfolios
             if start is not None and not isinstance(start, int):
-                raise TypeError
+                raise IntegerIndexBoundError("start", type(start).__name__)
             if end is not None and not isinstance(end, int):
-                raise TypeError
+                raise IntegerIndexBoundError("end", type(end).__name__)
             row_start = int(start) if start is not None else 0
             row_end = int(end) + 1 if end is not None else self.prices.height
             length = max(0, row_end - row_start)
