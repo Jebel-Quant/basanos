@@ -22,6 +22,7 @@ dev = [
     "marimo",
     "pandas>=2.0",
     "pyarrow>=14.0",
+    "ty>=0.0.18",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -29,4 +30,7 @@ packages = ["src/basanos"]
 
 [tool.deptry]
 # Explicit module name map so deptry doesn't need to inspect installed packages
-package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow" }
+package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow", "ty" = "ty" }
+
+[tool.ty.environment]
+python-version = "3.12"
