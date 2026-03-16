@@ -121,6 +121,43 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
 class BasanosConfig(BaseModel):
     """Configuration for correlation-aware position optimization.
 
+    The required parameters (``vola``, ``corr``, ``clip``, ``shrink``, ``aum``)
+    must be supplied by the caller.  The optional parameters carry
+    carefully chosen defaults whose rationale is described below.
+
+    Default rationale
+    -----------------
+    ``profit_variance_init = 1.0``
+        Unit variance is a neutral, uninformative starting point for the
+        exponential moving average of realized P&L variance.  Because the
+        normalised risk positions are divided by the square root of this
+        quantity, initialising at 1.0 leaves the first few positions
+        unaffected until the EMA accumulates real data.  Larger values
+        would shrink initial positions; smaller values would inflate them.
+
+    ``profit_variance_decay = 0.99``
+        An EMA decay factor of λ = 0.99 corresponds to a half-life of
+        ``log(0.5) / log(0.99) ≈ 69`` periods and an effective centre-of-
+        mass of ``1 / (1 - 0.99) = 100`` periods.  For daily data this
+        represents approximately 100 trading days (~5 months), a
+        commonly used horizon for medium-frequency regime adaptation in
+        systematic strategies.
+
+    ``denom_tol = 1e-12``
+        Positions are zeroed when the normalisation denominator
+        ``inv_a_norm(μ, Σ)`` falls at or below this threshold.  The
+        value 1e-12 provides ample headroom above float64 machine
+        epsilon (~2.2e-16) while remaining negligible relative to any
+        economically meaningful signal magnitude.
+
+    ``position_scale = 1e6``
+        The dimensionless risk position is multiplied by this factor
+        before being passed to :class:`~basanos.analytics.Portfolio`.
+        A value of 1e6 means positions are expressed in units of one
+        million of the base currency, a conventional denomination for
+        institutional-scale portfolios where AUM is measured in hundreds
+        of millions.
+
     Examples:
         >>> cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
         >>> cfg.vola
@@ -137,23 +174,41 @@ class BasanosConfig(BaseModel):
     )
     aum: float = Field(..., gt=0.0, description="Assets under management for portfolio scaling.")
     profit_variance_init: float = Field(
-        default=1.0, gt=0.0, description="Initial value for the profit variance EMA used in position sizing."
+        default=1.0,
+        gt=0.0,
+        description=(
+            "Initial value for the profit variance EMA used in position sizing. "
+            "Defaults to 1.0 (unit variance) so that the first positions are unscaled "
+            "until real P&L data accumulates."
+        ),
     )
     profit_variance_decay: float = Field(
         default=0.99,
         gt=0.0,
         lt=1.0,
-        description="EMA decay rate for profit variance (higher = slower adaptation).",
+        description=(
+            "EMA decay factor λ for the realized P&L variance (higher = slower adaptation). "
+            "The default 0.99 gives a half-life of ~69 periods and an effective window of "
+            "100 periods, suitable for daily data."
+        ),
     )
     denom_tol: float = Field(
         default=1e-12,
         gt=0.0,
-        description="Minimum normalisation denominator; positions are zeroed at or below this value.",
+        description=(
+            "Minimum normalisation denominator; positions are zeroed at or below this value. "
+            "The default 1e-12 is well above float64 machine epsilon (~2.2e-16) while "
+            "remaining negligible for any economically meaningful signal."
+        ),
     )
     position_scale: float = Field(
         default=1e6,
         gt=0.0,
-        description="Multiplicative scaling factor applied to risk positions to obtain cash positions.",
+        description=(
+            "Multiplicative scaling factor applied to dimensionless risk positions to obtain "
+            "cash positions in base-currency units. Defaults to 1e6 (one million), a "
+            "conventional denomination for institutional portfolios."
+        ),
     )
 
     model_config = {"frozen": True, "extra": "forbid"}
