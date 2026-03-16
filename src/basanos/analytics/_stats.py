@@ -300,8 +300,7 @@ class Stats:
 
         divisor = _to_float(series.std(ddof=1))
         if divisor == 0.0:
-            # Align with tests that expect an explicit failure when variability is zero
-            raise ZeroDivisionError
+            return float("nan")
 
         res = _to_float(series.mean()) / divisor
         factor = periods or 1
