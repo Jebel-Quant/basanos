@@ -206,7 +206,13 @@ class Portfolio:
         - year: integer year (e.g., 2020)
         - month: integer month number (1-12)
         - month_name: abbreviated month name (e.g., "Jan", "Feb")
+
+        Raises:
+            ValueError: If the portfolio data has no 'date' column. Monthly
+                aggregation requires temporal date information.
         """
+        if "date" not in self.prices.columns:
+            raise ValueError
         daily = self.returns.select(["date", "returns", "profit", "NAV_accumulated"])  # ensure only required columns
         monthly = (
             daily.group_by_dynamic(
@@ -266,53 +272,84 @@ class Portfolio:
 
     @property
     def all(self) -> pl.DataFrame:
-        """Return a merged view of drawdown and compounded NAV, joined on 'date'.
+        """Return a merged view of drawdown and compounded NAV.
 
-        This ensures alignment by timestamp and avoids duplication of shared
-        columns by only adding the NAV_compounded series from the right frame.
+        When a 'date' column is present the two frames are joined on that
+        column to ensure temporal alignment.  When the data is integer-indexed
+        (no 'date' column) the frames are stacked horizontally - they are
+        guaranteed to have identical row counts because both are derived from
+        the same source portfolio.
         """
         # Start with drawdown (includes date, NAV_accumulated, highwater, drawdown, drawdown_pct, etc.)
         left = self.drawdown
         # From nav_compounded, only take the additional compounded NAV column to avoid duplicate fields
-        right = self.nav_compounded.select(["date", "NAV_compounded"])
-        return left.join(right, on="date", how="inner")
+        if "date" in left.columns:
+            right = self.nav_compounded.select(["date", "NAV_compounded"])
+            return left.join(right, on="date", how="inner")
+        else:
+            right = self.nav_compounded.select(["NAV_compounded"])
+            return left.hstack(right)
 
     @property
     def stats(self) -> Stats:
         """Return a Stats object built from the portfolio's daily returns.
 
         Constructs a basanos.analytics.Stats instance from the portfolio
-        returns (using the 'date' and 'returns' columns) and exposes its
-        Stats facade for computing metrics such as Sharpe, skew, and kurtosis.
+        returns. When a 'date' column is present both 'date' and 'returns'
+        are passed to Stats; otherwise only 'returns' is used.
         """
-        return Stats(data=self.returns.select(["date", "returns"]))
+        cols = ["date", "returns"] if "date" in self.returns.columns else ["returns"]
+        return Stats(data=self.returns.select(cols))
 
     def truncate(self, start: object = None, end: object = None) -> "Portfolio":
         """Return a new Portfolio truncated to the inclusive [start, end] range.
 
-        By default, truncation is performed on the 'date' column if present
-        in both prices and cash positions. If the 'date' column is absent,
-        integer-based slicing is supported when ``start`` and/or ``end`` are
-        provided as integers (0-based row indices). In all cases, the ``aum``
-        value is preserved.
+        When a 'date' column is present in both prices and cash positions,
+        truncation is performed by comparing the 'date' column against
+        ``start`` and ``end`` (which should be date/datetime values or strings
+        parseable by Polars).
+
+        When the 'date' column is absent, integer-based row slicing is used
+        instead.  In this case ``start`` and ``end`` must be non-negative
+        integers representing 0-based row indices.  Passing non-integer bounds
+        to an integer-indexed portfolio raises ``TypeError``.
+
+        In all cases the ``aum`` value is preserved.
 
         Args:
-            start: Optional lower bound (inclusive). Typically a date/datetime
-                or string parseable by Polars; can also be an int row index
-                when data has no 'date' column.
+            start: Optional lower bound (inclusive). A date/datetime or
+                Polars-parseable string when a 'date' column exists; a
+                non-negative int row index when the data has no 'date' column.
             end: Optional upper bound (inclusive). Same type rules as ``start``.
 
         Returns:
             A new Portfolio instance with prices and cash positions filtered to
             the specified range.
+
+        Raises:
+            TypeError: When the portfolio has no 'date' column and a non-integer
+                bound is supplied.
         """
-        cond = pl.lit(True)
-        if start is not None:
-            cond = cond & (pl.col("date") >= pl.lit(start))
-        if end is not None:
-            cond = cond & (pl.col("date") <= pl.lit(end))
-        pr = self.prices.filter(cond)
-        cp = self.cashposition.filter(cond)
+        has_date = "date" in self.prices.columns
+        if has_date:
+            cond = pl.lit(True)
+            if start is not None:
+                cond = cond & (pl.col("date") >= pl.lit(start))
+            if end is not None:
+                cond = cond & (pl.col("date") <= pl.lit(end))
+            pr = self.prices.filter(cond)
+            cp = self.cashposition.filter(cond)
+        else:
+            # Integer row-index slicing for date-free portfolios
+            if start is not None and not isinstance(start, int):
+                raise TypeError
+            if end is not None and not isinstance(end, int):
+                raise TypeError
+            row_start = int(start) if start is not None else 0
+            row_end = int(end) + 1 if end is not None else self.prices.height
+            length = max(0, row_end - row_start)
+            pr = self.prices.slice(row_start, length)
+            cp = self.cashposition.slice(row_start, length)
         return Portfolio(prices=pr, cashposition=cp, aum=self.aum)
 
     def lag(self, n: int) -> "Portfolio":
@@ -431,15 +468,29 @@ class Portfolio:
 
     @property
     def tilt_timing_decomp(self) -> pl.DataFrame:
-        """Return the portfolio's timing component as prices minus tilt prices."""
-        nav_portfolio = self.nav_accumulated.select(["date", "NAV_accumulated"])
-        nav_tilt = self.tilt.nav_accumulated.select(["date", "NAV_accumulated"])
-        nav_timing = self.timing.nav_accumulated.select(["date", "NAV_accumulated"])
+        """Return the portfolio's tilt/timing NAV decomposition.
 
-        # Join all three DataFrames on the 'time' column
-        merged_df = nav_portfolio.join(nav_tilt, on="date", how="inner", suffix="_tilt").join(
-            nav_timing, on="date", how="inner", suffix="_timing"
-        )
+        When a 'date' column is present the three NAV series are joined on it.
+        When data is integer-indexed the frames are stacked horizontally.
+        """
+        if "date" in self.nav_accumulated.columns:
+            nav_portfolio = self.nav_accumulated.select(["date", "NAV_accumulated"])
+            nav_tilt = self.tilt.nav_accumulated.select(["date", "NAV_accumulated"])
+            nav_timing = self.timing.nav_accumulated.select(["date", "NAV_accumulated"])
+
+            # Join all three DataFrames on the 'date' column
+            merged_df = nav_portfolio.join(nav_tilt, on="date", how="inner", suffix="_tilt").join(
+                nav_timing, on="date", how="inner", suffix="_timing"
+            )
+        else:
+            nav_portfolio = self.nav_accumulated.select(["NAV_accumulated"])
+            nav_tilt = self.tilt.nav_accumulated.select(["NAV_accumulated"]).rename(
+                {"NAV_accumulated": "NAV_accumulated_tilt"}
+            )
+            nav_timing = self.timing.nav_accumulated.select(["NAV_accumulated"]).rename(
+                {"NAV_accumulated": "NAV_accumulated_timing"}
+            )
+            merged_df = nav_portfolio.hstack(nav_tilt).hstack(nav_timing)
 
         merged_df = merged_df.rename(
             {"NAV_accumulated_tilt": "tilt", "NAV_accumulated_timing": "timing", "NAV_accumulated": "portfolio"}
