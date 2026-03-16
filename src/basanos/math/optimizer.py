@@ -8,6 +8,7 @@ obtain stable positions.
 """
 
 import dataclasses
+import logging
 
 import numpy as np
 import polars as pl
@@ -20,6 +21,8 @@ from ._signal import shrink2id, vol_adj
 
 _MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
 _MAX_NAN_FRACTION: float = 0.9  # raise if more than this fraction of prices in any asset column are null
+
+_logger = logging.getLogger(__name__)
 
 
 def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
@@ -445,6 +448,14 @@ class BasanosEngine:
             denom = inv_a_norm(expected_mu, matrix)
 
             if denom is None or not np.isfinite(denom) or denom <= self.cfg.denom_tol or np.allclose(expected_mu, 0.0):
+                if not np.allclose(expected_mu, 0.0):
+                    _logger.warning(
+                        "Positions zeroed at t=%s: normalisation denominator is degenerate "
+                        "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
+                        t,
+                        denom,
+                        self.cfg.denom_tol,
+                    )
                 pos = np.zeros_like(expected_mu)
             else:
                 pos = solve(matrix, expected_mu) / denom
