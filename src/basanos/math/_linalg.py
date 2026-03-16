@@ -10,14 +10,20 @@ working with symmetric (correlation-like) matrices in a robust way:
 - solve(matrix, rhs): solve a linear system on the valid subset indicated
   by finite diagonal entries, returning NaNs for invalid positions.
 
-These routines are intentionally lightweight and have explicit input
-assertions to guard against shape mismatches. They are internal
-implementation details and may change without notice.
+These routines are intentionally lightweight and raise domain-specific
+exceptions to guard against shape mismatches and numerical errors.
+They are internal implementation details and may change without notice.
 """
 
 from __future__ import annotations
 
 import numpy as np
+
+from basanos.exceptions import (
+    DimensionMismatchError,
+    NonSquareMatrixError,
+    SingularMatrixError,
+)
 
 
 def valid(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -36,7 +42,7 @@ def valid(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             - submatrix: Matrix containing only rows/columns with finite diagonal.
 
     Raises:
-        AssertionError: If the input matrix is not square.
+        NonSquareMatrixError: If the input matrix is not square.
 
     Examples:
         >>> import numpy as np
@@ -48,7 +54,7 @@ def valid(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
     # make sure matrix  is quadratic
     if matrix.shape[0] != matrix.shape[1]:
-        raise AssertionError
+        raise NonSquareMatrixError(matrix.shape[0], matrix.shape[1])
 
     v = np.isfinite(np.diag(matrix))
     return v, matrix[:, v][v]
@@ -69,7 +75,9 @@ def inv_a_norm(vector: np.ndarray, matrix: np.ndarray | None = None) -> float:
         float: The computed norm. Returns np.nan if no valid entries exist.
 
     Raises:
-        AssertionError: If ``matrix`` is not square or dimensions mismatch.
+        NonSquareMatrixError: If ``matrix`` is not square.
+        DimensionMismatchError: If ``vector`` length does not match the matrix dimension.
+        SingularMatrixError: If the valid sub-matrix is singular.
 
     Examples:
         >>> import numpy as np
@@ -81,16 +89,19 @@ def inv_a_norm(vector: np.ndarray, matrix: np.ndarray | None = None) -> float:
 
     # make sure matrix is quadratic
     if matrix.shape[0] != matrix.shape[1]:
-        raise AssertionError
+        raise NonSquareMatrixError(matrix.shape[0], matrix.shape[1])
 
     # make sure the vector has the right number of entries
     if vector.size != matrix.shape[0]:
-        raise AssertionError
+        raise DimensionMismatchError(vector.size, matrix.shape[0])
 
     v, mat = valid(matrix)
 
     if v.any():
-        return float(np.sqrt(np.dot(vector[v], np.linalg.solve(mat, vector[v]))))
+        try:
+            return float(np.sqrt(np.dot(vector[v], np.linalg.solve(mat, vector[v]))))
+        except np.linalg.LinAlgError as exc:
+            raise SingularMatrixError(str(exc)) from exc
     return float(np.nan)
 
 
@@ -105,7 +116,9 @@ def solve(matrix: np.ndarray, rhs: np.ndarray) -> np.ndarray:
         np.ndarray: Solution vector with NaN for invalid positions.
 
     Raises:
-        AssertionError: If matrix is not square or rhs size mismatches.
+        NonSquareMatrixError: If matrix is not square.
+        DimensionMismatchError: If rhs size does not match the matrix dimension.
+        SingularMatrixError: If the valid sub-matrix is singular.
 
     Examples:
         >>> import numpy as np
@@ -114,16 +127,19 @@ def solve(matrix: np.ndarray, rhs: np.ndarray) -> np.ndarray:
     """
     # make sure matrix is quadratic
     if matrix.shape[0] != matrix.shape[1]:
-        raise AssertionError
+        raise NonSquareMatrixError(matrix.shape[0], matrix.shape[1])
 
     # make sure the vector rhs has the right number of entries
     if rhs.size != matrix.shape[0]:
-        raise AssertionError
+        raise DimensionMismatchError(rhs.size, matrix.shape[0])
 
     x = np.nan * np.ones(rhs.size)
     v, mat = valid(matrix)
 
     if v.any():
-        x[v] = np.linalg.solve(mat, rhs[v])
+        try:
+            x[v] = np.linalg.solve(mat, rhs[v])
+        except np.linalg.LinAlgError as exc:
+            raise SingularMatrixError(str(exc)) from exc
 
     return x

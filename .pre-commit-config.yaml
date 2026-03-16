@@ -8,6 +8,15 @@ repos:
       - id: check-toml
       - id: check-yaml
         args: ['--unsafe']
+      - id: check-added-large-files
+
+  - repo: local
+    hooks:
+      - id: no-python-cache-files
+        name: Prevent committing Python cache files
+        language: fail
+        entry: Python cache files (__pycache__, .pyc, .pyo, .pyd) must not be committed. Run 'make clean' to remove them.
+        files: '(/__pycache__/|\.py[cod]$)'
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 'v0.15.6'

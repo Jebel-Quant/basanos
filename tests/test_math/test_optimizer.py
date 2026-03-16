@@ -42,15 +42,15 @@ def optimizer_mu(optimizer_prices) -> pl.DataFrame:
 
 @pytest.fixture
 def small_prices() -> pl.DataFrame:
-    """10-day deterministic prices frame with two monotonic assets."""
+    """10-day deterministic prices frame with two non-monotonic assets."""
     n = 10
     start = date(2020, 1, 1)
     dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
     return pl.DataFrame(
         {
             "date": dates,
-            "A": pl.Series([100.0 + i for i in range(n)], dtype=pl.Float64),
-            "B": pl.Series([200.0 + 2 * i for i in range(n)], dtype=pl.Float64),
+            "A": pl.Series([100.0, 101.5, 99.8, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64),
+            "B": pl.Series([200.0, 203.1, 198.5, 206.4, 203.7, 209.2, 204.6, 212.3, 207.8, 214.5], dtype=pl.Float64),
         }
     )
 
@@ -242,7 +242,109 @@ def test_post_init_column_mismatch_raises(small_prices: pl.DataFrame, small_mu: 
         _ = BasanosEngine(prices=small_prices, mu=small_mu.rename({"B": "BB"}), cfg=cfg)
 
 
-# ─── cash_position: basic schema and finite values ────────────────────────────
+def test_post_init_nonpositive_prices_raises(small_mu: pl.DataFrame) -> None:
+    """Prices must be strictly positive; zero or negative values should raise."""
+    cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    dates = small_mu["date"]
+
+    # price of zero
+    a_zero = pl.Series([100.0, 101.5, 0.0, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64)
+    b_ok = pl.Series([200.0, 203.1, 198.5, 206.4, 203.7, 209.2, 204.6, 212.3, 207.8, 214.5], dtype=pl.Float64)
+    with pytest.raises(ValueError, match="non-positive prices"):
+        _ = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": a_zero, "B": b_ok}),
+            mu=small_mu,
+            cfg=cfg,
+        )
+
+    # negative price
+    a_neg = pl.Series([100.0, 101.5, -5.0, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64)
+    with pytest.raises(ValueError, match="non-positive prices"):
+        _ = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": a_neg, "B": b_ok}),
+            mu=small_mu,
+            cfg=cfg,
+        )
+
+    # null values should be ignored; only non-null values are checked
+    a_with_null = pl.Series([100.0, None, 99.8, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64)
+    _ = BasanosEngine(
+        prices=pl.DataFrame({"date": dates, "A": a_with_null, "B": b_ok}),
+        mu=small_mu,
+        cfg=cfg,
+    )
+
+
+def test_post_init_excessive_nan_raises(small_mu: pl.DataFrame) -> None:
+    """Any asset column with more than 90% null values should raise."""
+    cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    n = small_mu.height
+    dates = small_mu["date"]
+
+    # 9 out of 10 values are null (90% nulls → exactly at boundary, not over)
+    a_ninety = pl.Series([100.0] + [None] * (n - 1), dtype=pl.Float64)
+    b_ok = pl.Series([200.0, 203.1, 198.5, 206.4, 203.7, 209.2, 204.6, 212.3, 207.8, 214.5], dtype=pl.Float64)
+    # exactly 90% null: should NOT raise (threshold is strictly greater than)
+    _ = BasanosEngine(
+        prices=pl.DataFrame({"date": dates, "A": a_ninety, "B": b_ok}),
+        mu=small_mu,
+        cfg=cfg,
+    )
+
+    # 10 out of 10 values are null (100% nulls → over threshold)
+    a_all_null = pl.Series([None] * n, dtype=pl.Float64)
+    with pytest.raises(ValueError, match="null values"):
+        _ = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": a_all_null, "B": b_ok}),
+            mu=small_mu,
+            cfg=cfg,
+        )
+
+
+def test_post_init_monotonic_prices_raises(small_mu: pl.DataFrame) -> None:
+    """Strictly monotonic price series should raise; non-monotonic should pass."""
+    cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    n = small_mu.height
+    dates = small_mu["date"]
+    b_ok = pl.Series([200.0, 203.1, 198.5, 206.4, 203.7, 209.2, 204.6, 212.3, 207.8, 214.5], dtype=pl.Float64)
+
+    # strictly increasing prices
+    a_increasing = pl.Series([100.0 + i for i in range(n)], dtype=pl.Float64)
+    with pytest.raises(ValueError, match="monotonic prices"):
+        _ = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": a_increasing, "B": b_ok}),
+            mu=small_mu,
+            cfg=cfg,
+        )
+
+    # strictly decreasing prices
+    a_decreasing = pl.Series([100.0 - i for i in range(n)], dtype=pl.Float64)
+    with pytest.raises(ValueError, match="monotonic prices"):
+        _ = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": a_decreasing, "B": b_ok}),
+            mu=small_mu,
+            cfg=cfg,
+        )
+
+    # constant prices
+    a_constant = pl.Series([100.0] * n, dtype=pl.Float64)
+    with pytest.raises(ValueError, match="monotonic prices"):
+        _ = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": a_constant, "B": b_ok}),
+            mu=small_mu,
+            cfg=cfg,
+        )
+
+    # non-monotonic prices should pass
+    a_ok = pl.Series([100.0, 101.5, 99.8, 103.2, 101.7, 104.5, 102.3, 106.1, 103.9, 107.2], dtype=pl.Float64)
+    _ = BasanosEngine(
+        prices=pl.DataFrame({"date": dates, "A": a_ok, "B": b_ok}),
+        mu=small_mu,
+        cfg=cfg,
+    )
+
+
+# ─── cash_position: basic schema and finite values ────────────────────────────────────────────
 
 
 def test_optimize_returns_frame_with_expected_schema_and_finite_after_warmup(optimizer_prices, optimizer_mu):
@@ -285,7 +387,7 @@ def test_cash_position_skips_profit_update_when_returns_all_nan():
     """Branch where ret_mask.any() is False should be exercised without error."""
     dates = pl.date_range(start=pl.date(2020, 1, 1), end=pl.date(2020, 1, 5), interval="1d", eager=True)
     prices = pl.DataFrame(
-        {"date": dates, "A": [None, 101.0, 102.0, 103.0, 104.0], "B": [None, 201.0, 202.0, 203.0, 204.0]}
+        {"date": dates, "A": [None, 101.0, 103.5, 101.8, 104.2], "B": [None, 201.0, 203.5, 200.8, 204.2]}
     ).with_columns(pl.col(["A", "B"]).cast(pl.Float64))
     mu = pl.DataFrame(
         {
@@ -310,8 +412,9 @@ def test_cash_position_skips_rows_with_all_nan_prices() -> None:
     n = 12
     start = date(2020, 1, 1)
     dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
-    a = [100.0 + i for i in range(n)]
-    b = [200.0 + 2 * i for i in range(n)]
+    rng = np.random.default_rng(7)
+    a = list(100.0 + np.cumsum(rng.normal(0.0, 0.5, size=n)))
+    b = list(200.0 + np.cumsum(rng.normal(0.0, 0.7, size=n)))
     idx_nan = 6
     a[idx_nan] = None  # type: ignore[assignment]
     b[idx_nan] = None  # type: ignore[assignment]
