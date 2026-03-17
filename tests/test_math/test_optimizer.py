@@ -1310,3 +1310,62 @@ class TestICNaNHandling:
         # With only one valid asset pair, every IC value must be NaN
         for v in ic_vals:
             assert v is None or (isinstance(v, float) and math.isnan(v))
+
+
+# ─── sharpe_at_shrink and naive_sharpe ───────────────────────────────────────
+
+
+class TestSharpeAtShrink:
+    """Tests for BasanosEngine.sharpe_at_shrink and BasanosEngine.naive_sharpe."""
+
+    @pytest.fixture
+    def engine(self, optimizer_prices: pl.DataFrame, optimizer_mu: pl.DataFrame) -> BasanosEngine:
+        """BasanosEngine with moderate config for Sharpe benchmark tests."""
+        cfg = BasanosConfig(vola=16, corr=20, clip=3.5, shrink=0.5, aum=1e6)
+        return BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=cfg)
+
+    def test_sharpe_at_shrink_returns_float(self, engine: BasanosEngine) -> None:
+        """sharpe_at_shrink should return a Python float."""
+        result = engine.sharpe_at_shrink(0.5)
+        assert isinstance(result, float)
+
+    def test_sharpe_at_shrink_zero_returns_float(self, engine: BasanosEngine) -> None:
+        """sharpe_at_shrink(0.0) corresponds to identity matrix (signal-proportional) and must return float."""
+        result = engine.sharpe_at_shrink(0.0)
+        assert isinstance(result, float)
+
+    def test_sharpe_at_shrink_one_returns_float(self, engine: BasanosEngine) -> None:
+        """sharpe_at_shrink(1.0) uses the raw EWMA correlation and must return float."""
+        result = engine.sharpe_at_shrink(1.0)
+        assert isinstance(result, float)
+
+    def test_sharpe_at_shrink_matches_portfolio_sharpe_for_same_lambda(self, engine: BasanosEngine) -> None:
+        """sharpe_at_shrink(cfg.shrink) must equal the engine's own portfolio Sharpe."""
+        expected = engine.portfolio.stats.sharpe().get("returns", float("nan"))
+        actual = engine.sharpe_at_shrink(engine.cfg.shrink)
+        assert actual == pytest.approx(expected, abs=1e-10)
+
+    def test_sharpe_at_shrink_varies_across_lambda_values(self, engine: BasanosEngine) -> None:
+        """Different shrinkage values generally produce different Sharpe ratios."""
+        sharpes = [engine.sharpe_at_shrink(lam) for lam in (0.0, 0.25, 0.5, 0.75, 1.0)]
+        # All must be finite floats
+        assert all(isinstance(s, float) for s in sharpes)
+        # At least two distinct values across the sweep (non-trivial signal with non-trivial data)
+        assert len({round(s, 6) for s in sharpes}) > 1, "Expected distinct Sharpe values across the lambda sweep"
+
+    def test_naive_sharpe_returns_float(self, engine: BasanosEngine) -> None:
+        """naive_sharpe should return a Python float."""
+        result = engine.naive_sharpe
+        assert isinstance(result, float)
+
+    def test_naive_sharpe_differs_from_signal_sharpe(self, engine: BasanosEngine) -> None:
+        """naive_sharpe (equal-weight mu) should differ from the signal-driven Sharpe."""
+        signal_sharpe = engine.portfolio.stats.sharpe().get("returns", float("nan"))
+        naive = engine.naive_sharpe
+        # Both must be finite floats; the signal should add information so they differ
+        assert isinstance(naive, float)
+        assert isinstance(signal_sharpe, float)
+        # They may coincidentally agree on some seeds, but with a sinusoidal signal they should differ
+        assert naive != pytest.approx(signal_sharpe, abs=1e-6), (
+            "naive_sharpe should differ from signal Sharpe for a non-constant signal"
+        )
