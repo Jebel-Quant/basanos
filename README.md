@@ -414,9 +414,17 @@ from basanos.analytics import Portfolio
 | `monthly_win_rate()` | Fraction of profitable calendar months |
 | `best()` | Maximum single-period return |
 | `worst()` | Minimum single-period return |
+<<<<<<< copilot/add-temporal-measures-metrics
 | `worst_n_periods(n)` | *N* worst return periods (default 5) |
 | `up_capture(benchmark)` | Up-market capture ratio vs. benchmark |
 | `down_capture(benchmark)` | Down-market capture ratio vs. benchmark |
+=======
+| `max_drawdown()` | Largest peak-to-trough decline as a fraction of peak |
+| `avg_drawdown()` | Mean drawdown across all underwater periods |
+| `max_drawdown_duration()` | Longest consecutive underwater period (calendar days) |
+| `calmar(periods)` | Annualized return divided by max drawdown |
+| `recovery_factor()` | Total return divided by max drawdown |
+>>>>>>> main
 
 ## Configuration Reference
 
