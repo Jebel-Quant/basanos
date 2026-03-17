@@ -77,7 +77,7 @@ from ..exceptions import (
     NonPositivePricesError,
     ShapeMismatchError,
 )
-from ._linalg import inv_a_norm, solve
+from ._linalg import inv_a_norm, solve, valid
 from ._signal import shrink2id, vol_adj
 
 _MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
@@ -615,6 +615,218 @@ class BasanosEngine:
         )
 
         return cash_position
+
+    @property
+    def risk_position(self) -> pl.DataFrame:
+        """Risk positions (before EWMA-volatility scaling) at each timestamp.
+
+        Derives the un-volatility-scaled position by multiplying the cash
+        position by the per-asset EWMA volatility.  Equivalently, this is
+        the quantity solved by the correlation-adjusted linear system before
+        dividing by ``vola``.
+
+        Relationship to other properties::
+
+            cash_position = risk_position / vola
+            risk_position = cash_position * vola
+
+        Returns:
+            pl.DataFrame: DataFrame with columns ``['date'] + assets`` where
+            each value is ``cash_position_i * vola_i`` at the given timestamp.
+        """
+        assets = self.assets
+        cp_np = self.cash_position.select(assets).to_numpy()
+        vola_np = self.vola.select(assets).to_numpy()
+        with np.errstate(invalid="ignore"):
+            risk_pos = cp_np * vola_np
+        return self.prices.with_columns([pl.lit(risk_pos[:, i]).alias(asset) for i, asset in enumerate(assets)])
+
+    @property
+    def position_leverage(self) -> pl.DataFrame:
+        """L1 norm of cash positions (gross leverage) at each timestamp.
+
+        Sums the absolute values of all asset cash positions at each row.
+        NaN positions are treated as zero (they contribute nothing to gross
+        leverage).
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'leverage': ...}``
+            where ``leverage`` is the L1 norm of the cash-position vector.
+        """
+        assets = self.assets
+        cp_np = self.cash_position.select(assets).to_numpy()
+        leverage = np.nansum(np.abs(cp_np), axis=1)
+        return pl.DataFrame({"date": self.prices["date"], "leverage": pl.Series(leverage, dtype=pl.Float64)})
+
+    @property
+    def condition_number(self) -> pl.DataFrame:
+        """Condition number κ of the shrunk correlation matrix C_shrunk at each timestamp.
+
+        Applies the same shrinkage as ``cash_position`` (``cfg.shrink``) to the
+        per-timestamp EWM correlation matrix and computes ``np.linalg.cond``.
+        Only the sub-matrix corresponding to assets with finite prices at that
+        timestamp is used; rows with no finite prices yield ``NaN``.
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'condition_number': ...}``.
+        """
+        cor = self.cor
+        assets = self.assets
+        prices_num = self.prices.select(assets).to_numpy()
+
+        kappas: list[float] = []
+        for i, (_t, corr_n) in enumerate(cor.items()):
+            mask = np.isfinite(prices_num[i])
+            if not mask.any():
+                kappas.append(float(np.nan))
+                continue
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            _v, mat = valid(matrix)
+            if not _v.any():
+                kappas.append(float(np.nan))
+                continue
+            kappas.append(float(np.linalg.cond(mat)))
+
+        return pl.DataFrame({"date": self.prices["date"], "condition_number": pl.Series(kappas, dtype=pl.Float64)})
+
+    @property
+    def effective_rank(self) -> pl.DataFrame:
+        r"""Effective rank of the shrunk correlation matrix C_shrunk at each timestamp.
+
+        Measures the true dimensionality of the portfolio by computing the
+        entropy-based effective rank:
+
+        .. math::
+
+            \\text{eff\\_rank} = \\exp\\!\\left(-\\sum_i p_i \\ln p_i\\right),
+            \\quad p_i = \\frac{\\lambda_i}{\\sum_j \\lambda_j}
+
+        where :math:`\\lambda_i` are the eigenvalues of ``C_shrunk`` (restricted
+        to assets with finite prices at that timestamp).  A value equal to the
+        number of assets indicates a perfectly uniform spectrum (identity-like
+        matrix); a value of 1 indicates a rank-1 matrix dominated by one
+        direction.
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'effective_rank': ...}``.
+        """
+        cor = self.cor
+        assets = self.assets
+        prices_num = self.prices.select(assets).to_numpy()
+
+        ranks: list[float] = []
+        for i, (_t, corr_n) in enumerate(cor.items()):
+            mask = np.isfinite(prices_num[i])
+            if not mask.any():
+                ranks.append(float(np.nan))
+                continue
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            _v, mat = valid(matrix)
+            if not _v.any():
+                ranks.append(float(np.nan))
+                continue
+            eigvals = np.linalg.eigvalsh(mat)
+            eigvals = np.clip(eigvals, 0.0, None)
+            total = eigvals.sum()
+            if total <= 0.0:
+                ranks.append(float(np.nan))
+                continue
+            p = eigvals / total
+            p_pos = p[p > 0.0]
+            entropy = float(-np.sum(p_pos * np.log(p_pos)))
+            ranks.append(float(np.exp(entropy)))
+
+        return pl.DataFrame({"date": self.prices["date"], "effective_rank": pl.Series(ranks, dtype=pl.Float64)})
+
+    @property
+    def solver_residual(self) -> pl.DataFrame:
+        r"""Per-timestamp solver residual ``‖C_shrunk·x - μ‖₂``.
+
+        After solving the normalised linear system ``C_shrunk · x = μ`` at
+        each timestamp, this property reports the Euclidean residual norm.
+        For a well-posed, well-conditioned system the residual is near machine
+        epsilon; large values flag numerical difficulties (near-singular
+        matrices, extreme condition numbers, or solver fall-back to LU).
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'residual': ...}``.
+            Zero is returned when ``μ`` is the zero vector (no solve is
+            performed).  ``NaN`` is returned when no asset has finite prices.
+        """
+        cor = self.cor
+        assets = self.assets
+        mu_np = self.mu.select(assets).to_numpy()
+        prices_num = self.prices.select(assets).to_numpy()
+
+        residuals: list[float] = []
+        for i, (_t, corr_n) in enumerate(cor.items()):
+            mask = np.isfinite(prices_num[i])
+            if not mask.any():
+                residuals.append(float(np.nan))
+                continue
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            expected_mu = np.nan_to_num(mu_np[i][mask])
+            if np.allclose(expected_mu, 0.0):
+                residuals.append(0.0)
+                continue
+            x = solve(matrix, expected_mu)
+            finite_x = np.isfinite(x)
+            if not finite_x.any():
+                residuals.append(float(np.nan))
+                continue
+            residuals.append(
+                float(np.linalg.norm(matrix[np.ix_(finite_x, finite_x)] @ x[finite_x] - expected_mu[finite_x]))
+            )
+
+        return pl.DataFrame({"date": self.prices["date"], "residual": pl.Series(residuals, dtype=pl.Float64)})
+
+    @property
+    def signal_utilisation(self) -> pl.DataFrame:
+        r"""Per-asset signal utilisation: fraction of μ_i surviving the correlation filter.
+
+        For each asset *i* and timestamp *t*, computes
+
+        .. math::
+
+            u_i = \\frac{(C_{\\text{shrunk}}^{-1}\\,\\mu)_i}{\\mu_i}
+
+        where :math:`C_{\\text{shrunk}}^{-1}\\,\\mu` is the unnormalised solve
+        result.  When :math:`C = I` (identity) all assets have utilisation 1.
+        Off-diagonal correlations attenuate some assets (:math:`u_i < 1`) and
+        may amplify negatively correlated ones (:math:`u_i > 1`).
+
+        A value of ``0.0`` is returned when the entire signal vector
+        :math:`\\mu` is near zero at that timestamp (no solve is performed).
+        ``NaN`` is returned for individual assets where :math:`|\\mu_i|` is
+        below machine-epsilon precision or where prices are unavailable.
+
+        Returns:
+            pl.DataFrame: DataFrame with columns ``['date'] + assets``.
+        """
+        cor = self.cor
+        assets = self.assets
+        mu_np = self.mu.select(assets).to_numpy()
+        prices_num = self.prices.select(assets).to_numpy()
+
+        _mu_tol = 1e-14  # treat |μ_i| below this as zero to avoid spurious large ratios
+        n_assets = len(assets)
+        util_np = np.full((self.prices.height, n_assets), np.nan)
+
+        for i, (_t, corr_n) in enumerate(cor.items()):
+            mask = np.isfinite(prices_num[i])
+            if not mask.any():
+                continue
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            expected_mu = np.nan_to_num(mu_np[i][mask])
+            if np.allclose(expected_mu, 0.0):
+                util_np[i, mask] = 0.0
+                continue
+            x = solve(matrix, expected_mu)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio = np.where(np.abs(expected_mu) > _mu_tol, x / expected_mu, np.nan)
+            util_np[i, mask] = ratio
+
+        return self.prices.with_columns([pl.lit(util_np[:, j]).alias(asset) for j, asset in enumerate(assets)])
 
     @property
     def portfolio(self) -> Portfolio:
