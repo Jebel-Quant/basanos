@@ -401,6 +401,9 @@ from basanos.analytics import Portfolio
 |--------|-------------|
 | `sharpe(periods)` | Annualized Sharpe ratio |
 | `volatility(periods, annualize)` | Standard deviation of returns |
+| `rolling_sharpe(window, periods)` | Rolling annualised Sharpe ratio time series |
+| `rolling_volatility(window, periods, annualize)` | Rolling volatility time series |
+| `annual_breakdown()` | Full summary statistics broken down by calendar year |
 | `skew()` | Skewness |
 | `kurtosis()` | Excess kurtosis |
 | `value_at_risk(alpha, sigma)` | Parametric VaR |
@@ -408,8 +411,31 @@ from basanos.analytics import Portfolio
 | `avg_return()` | Mean return (zeros excluded) |
 | `avg_win()` | Mean positive return |
 | `avg_loss()` | Mean negative return |
+| `win_rate()` | Fraction of profitable periods |
+| `profit_factor()` | Gross wins / absolute gross losses |
+| `payoff_ratio()` | Average win / absolute average loss |
+| `monthly_win_rate()` | Fraction of profitable calendar months |
 | `best()` | Maximum single-period return |
 | `worst()` | Minimum single-period return |
+<<<<<<< copilot/add-temporal-measures-metrics
+| `worst_n_periods(n)` | *N* worst return periods (default 5) |
+| `up_capture(benchmark)` | Up-market capture ratio vs. benchmark |
+| `down_capture(benchmark)` | Down-market capture ratio vs. benchmark |
+=======
+| `max_drawdown()` | Largest peak-to-trough decline as a fraction of peak |
+| `avg_drawdown()` | Mean drawdown across all underwater periods |
+| `max_drawdown_duration()` | Longest consecutive underwater period (calendar days) |
+| `calmar(periods)` | Annualized return divided by max drawdown |
+| `recovery_factor()` | Total return divided by max drawdown |
+>>>>>>> main
+
+**`Plots` methods (rolling & sub-period)**
+
+| Method | Description |
+|--------|-------------|
+| `rolling_sharpe_plot(window)` | Line chart of rolling Sharpe ratio |
+| `rolling_volatility_plot(window)` | Line chart of rolling annualised volatility |
+| `annual_sharpe_plot()` | Bar chart of Sharpe ratio by calendar year |
 
 ## Configuration Reference
 

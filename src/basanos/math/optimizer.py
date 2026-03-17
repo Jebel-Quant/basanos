@@ -67,6 +67,7 @@ import numpy as np
 import polars as pl
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from scipy.signal import lfilter
+from scipy.stats import spearmanr
 
 from ..analytics import Portfolio
 from ..exceptions import (
@@ -77,7 +78,7 @@ from ..exceptions import (
     NonPositivePricesError,
     ShapeMismatchError,
 )
-from ._linalg import inv_a_norm, solve
+from ._linalg import inv_a_norm, solve, valid
 from ._signal import shrink2id, vol_adj
 
 _MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
@@ -617,6 +618,218 @@ class BasanosEngine:
         return cash_position
 
     @property
+    def risk_position(self) -> pl.DataFrame:
+        """Risk positions (before EWMA-volatility scaling) at each timestamp.
+
+        Derives the un-volatility-scaled position by multiplying the cash
+        position by the per-asset EWMA volatility.  Equivalently, this is
+        the quantity solved by the correlation-adjusted linear system before
+        dividing by ``vola``.
+
+        Relationship to other properties::
+
+            cash_position = risk_position / vola
+            risk_position = cash_position * vola
+
+        Returns:
+            pl.DataFrame: DataFrame with columns ``['date'] + assets`` where
+            each value is ``cash_position_i * vola_i`` at the given timestamp.
+        """
+        assets = self.assets
+        cp_np = self.cash_position.select(assets).to_numpy()
+        vola_np = self.vola.select(assets).to_numpy()
+        with np.errstate(invalid="ignore"):
+            risk_pos = cp_np * vola_np
+        return self.prices.with_columns([pl.lit(risk_pos[:, i]).alias(asset) for i, asset in enumerate(assets)])
+
+    @property
+    def position_leverage(self) -> pl.DataFrame:
+        """L1 norm of cash positions (gross leverage) at each timestamp.
+
+        Sums the absolute values of all asset cash positions at each row.
+        NaN positions are treated as zero (they contribute nothing to gross
+        leverage).
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'leverage': ...}``
+            where ``leverage`` is the L1 norm of the cash-position vector.
+        """
+        assets = self.assets
+        cp_np = self.cash_position.select(assets).to_numpy()
+        leverage = np.nansum(np.abs(cp_np), axis=1)
+        return pl.DataFrame({"date": self.prices["date"], "leverage": pl.Series(leverage, dtype=pl.Float64)})
+
+    @property
+    def condition_number(self) -> pl.DataFrame:
+        """Condition number κ of the shrunk correlation matrix C_shrunk at each timestamp.
+
+        Applies the same shrinkage as ``cash_position`` (``cfg.shrink``) to the
+        per-timestamp EWM correlation matrix and computes ``np.linalg.cond``.
+        Only the sub-matrix corresponding to assets with finite prices at that
+        timestamp is used; rows with no finite prices yield ``NaN``.
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'condition_number': ...}``.
+        """
+        cor = self.cor
+        assets = self.assets
+        prices_num = self.prices.select(assets).to_numpy()
+
+        kappas: list[float] = []
+        for i, (_t, corr_n) in enumerate(cor.items()):
+            mask = np.isfinite(prices_num[i])
+            if not mask.any():
+                kappas.append(float(np.nan))
+                continue
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            _v, mat = valid(matrix)
+            if not _v.any():
+                kappas.append(float(np.nan))
+                continue
+            kappas.append(float(np.linalg.cond(mat)))
+
+        return pl.DataFrame({"date": self.prices["date"], "condition_number": pl.Series(kappas, dtype=pl.Float64)})
+
+    @property
+    def effective_rank(self) -> pl.DataFrame:
+        r"""Effective rank of the shrunk correlation matrix C_shrunk at each timestamp.
+
+        Measures the true dimensionality of the portfolio by computing the
+        entropy-based effective rank:
+
+        .. math::
+
+            \\text{eff\\_rank} = \\exp\\!\\left(-\\sum_i p_i \\ln p_i\\right),
+            \\quad p_i = \\frac{\\lambda_i}{\\sum_j \\lambda_j}
+
+        where :math:`\\lambda_i` are the eigenvalues of ``C_shrunk`` (restricted
+        to assets with finite prices at that timestamp).  A value equal to the
+        number of assets indicates a perfectly uniform spectrum (identity-like
+        matrix); a value of 1 indicates a rank-1 matrix dominated by one
+        direction.
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'effective_rank': ...}``.
+        """
+        cor = self.cor
+        assets = self.assets
+        prices_num = self.prices.select(assets).to_numpy()
+
+        ranks: list[float] = []
+        for i, (_t, corr_n) in enumerate(cor.items()):
+            mask = np.isfinite(prices_num[i])
+            if not mask.any():
+                ranks.append(float(np.nan))
+                continue
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            _v, mat = valid(matrix)
+            if not _v.any():
+                ranks.append(float(np.nan))
+                continue
+            eigvals = np.linalg.eigvalsh(mat)
+            eigvals = np.clip(eigvals, 0.0, None)
+            total = eigvals.sum()
+            if total <= 0.0:
+                ranks.append(float(np.nan))
+                continue
+            p = eigvals / total
+            p_pos = p[p > 0.0]
+            entropy = float(-np.sum(p_pos * np.log(p_pos)))
+            ranks.append(float(np.exp(entropy)))
+
+        return pl.DataFrame({"date": self.prices["date"], "effective_rank": pl.Series(ranks, dtype=pl.Float64)})
+
+    @property
+    def solver_residual(self) -> pl.DataFrame:
+        r"""Per-timestamp solver residual ``‖C_shrunk·x - μ‖₂``.
+
+        After solving the normalised linear system ``C_shrunk · x = μ`` at
+        each timestamp, this property reports the Euclidean residual norm.
+        For a well-posed, well-conditioned system the residual is near machine
+        epsilon; large values flag numerical difficulties (near-singular
+        matrices, extreme condition numbers, or solver fall-back to LU).
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'residual': ...}``.
+            Zero is returned when ``μ`` is the zero vector (no solve is
+            performed).  ``NaN`` is returned when no asset has finite prices.
+        """
+        cor = self.cor
+        assets = self.assets
+        mu_np = self.mu.select(assets).to_numpy()
+        prices_num = self.prices.select(assets).to_numpy()
+
+        residuals: list[float] = []
+        for i, (_t, corr_n) in enumerate(cor.items()):
+            mask = np.isfinite(prices_num[i])
+            if not mask.any():
+                residuals.append(float(np.nan))
+                continue
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            expected_mu = np.nan_to_num(mu_np[i][mask])
+            if np.allclose(expected_mu, 0.0):
+                residuals.append(0.0)
+                continue
+            x = solve(matrix, expected_mu)
+            finite_x = np.isfinite(x)
+            if not finite_x.any():
+                residuals.append(float(np.nan))
+                continue
+            residuals.append(
+                float(np.linalg.norm(matrix[np.ix_(finite_x, finite_x)] @ x[finite_x] - expected_mu[finite_x]))
+            )
+
+        return pl.DataFrame({"date": self.prices["date"], "residual": pl.Series(residuals, dtype=pl.Float64)})
+
+    @property
+    def signal_utilisation(self) -> pl.DataFrame:
+        r"""Per-asset signal utilisation: fraction of μ_i surviving the correlation filter.
+
+        For each asset *i* and timestamp *t*, computes
+
+        .. math::
+
+            u_i = \\frac{(C_{\\text{shrunk}}^{-1}\\,\\mu)_i}{\\mu_i}
+
+        where :math:`C_{\\text{shrunk}}^{-1}\\,\\mu` is the unnormalised solve
+        result.  When :math:`C = I` (identity) all assets have utilisation 1.
+        Off-diagonal correlations attenuate some assets (:math:`u_i < 1`) and
+        may amplify negatively correlated ones (:math:`u_i > 1`).
+
+        A value of ``0.0`` is returned when the entire signal vector
+        :math:`\\mu` is near zero at that timestamp (no solve is performed).
+        ``NaN`` is returned for individual assets where :math:`|\\mu_i|` is
+        below machine-epsilon precision or where prices are unavailable.
+
+        Returns:
+            pl.DataFrame: DataFrame with columns ``['date'] + assets``.
+        """
+        cor = self.cor
+        assets = self.assets
+        mu_np = self.mu.select(assets).to_numpy()
+        prices_num = self.prices.select(assets).to_numpy()
+
+        _mu_tol = 1e-14  # treat |μ_i| below this as zero to avoid spurious large ratios
+        n_assets = len(assets)
+        util_np = np.full((self.prices.height, n_assets), np.nan)
+
+        for i, (_t, corr_n) in enumerate(cor.items()):
+            mask = np.isfinite(prices_num[i])
+            if not mask.any():
+                continue
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            expected_mu = np.nan_to_num(mu_np[i][mask])
+            if np.allclose(expected_mu, 0.0):
+                util_np[i, mask] = 0.0
+                continue
+            x = solve(matrix, expected_mu)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                ratio = np.where(np.abs(expected_mu) > _mu_tol, x / expected_mu, np.nan)
+            util_np[i, mask] = ratio
+
+        return self.prices.with_columns([pl.lit(util_np[:, j]).alias(asset) for j, asset in enumerate(assets)])
+
+    @property
     def portfolio(self) -> Portfolio:
         """Construct a Portfolio from the optimized cash positions.
 
@@ -626,7 +839,267 @@ class BasanosEngine:
         Returns:
             Portfolio: Instance built from cash positions with AUM scaling.
         """
+<<<<<<< copilot/implement-turnover-measures
         cp = self.cash_position
         assets = [c for c in cp.columns if c != "date" and cp[c].dtype.is_numeric()]
         scaled = cp.with_columns(pl.col(a) * self.cfg.position_scale for a in assets)
         return Portfolio.from_cash_position(self.prices, scaled, aum=self.cfg.aum)
+=======
+        return Portfolio.from_cash_position(self.prices, self.cash_position * self.cfg.position_scale, aum=self.cfg.aum)
+
+    def sharpe_at_shrink(self, shrink: float) -> float:
+        r"""Return the annualised portfolio Sharpe ratio for the given shrinkage weight.
+
+        Constructs a new :class:`BasanosEngine` with all parameters identical to
+        ``self`` except that ``cfg.shrink`` is replaced by ``shrink``, then
+        returns the annualised Sharpe ratio of the resulting portfolio.
+
+        This is the canonical single-argument callable required by the benchmarks
+        specification: ``f(λ) → Sharpe``.  Use it to sweep λ across ``[0, 1]``
+        and measure whether correlation adjustment adds value over the
+        signal-proportional baseline (λ = 0) or the unregularised limit (λ = 1).
+
+        Corner cases:
+            * **λ = 0** — the shrunk matrix equals the identity, so the
+              optimiser treats all assets as uncorrelated and positions are
+              purely signal-proportional (no correlation adjustment).
+            * **λ = 1** — the raw EWMA correlation matrix is used without
+              shrinkage.
+
+        Args:
+            shrink: Retention weight λ ∈ [0, 1].  See
+                :attr:`BasanosConfig.shrink` for full documentation.
+
+        Returns:
+            Annualised Sharpe ratio of the portfolio returns as a ``float``.
+            Returns ``float("nan")`` when the Sharpe ratio cannot be computed
+            (e.g. zero-variance returns).
+
+        Raises:
+            ValidationError: When ``shrink`` is outside [0, 1] (delegated to
+                :class:`BasanosConfig` field validation).
+
+        Examples:
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
+            >>> dates = pl.Series("date", list(range(200)))
+            >>> rng = np.random.default_rng(0)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
+            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> s = engine.sharpe_at_shrink(0.5)
+            >>> isinstance(s, float)
+            True
+        """
+        new_cfg = self.cfg.model_copy(update={"shrink": shrink})
+        engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
+        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+
+    @property
+    def naive_sharpe(self) -> float:
+        r"""Sharpe ratio of the naïve equal-weight signal (μ = 1 for every asset/timestamp).
+
+        Replaces the expected-return signal ``mu`` with a constant matrix of
+        ones, then runs the optimiser with the current configuration and returns
+        the annualised Sharpe ratio of the resulting portfolio.
+
+        This provides the baseline answer to *"does the signal add value?"*:
+        a real signal should produce a higher Sharpe than the naïve benchmark.
+        Combined with :meth:`sharpe_at_shrink`, this yields a three-way
+        comparison:
+
+        +--------------------+----------------------------------------------+
+        | Benchmark          | What it measures                             |
+        +====================+==============================================+
+        | ``naive_sharpe``   | No signal skill; pure correlation routing   |
+        +--------------------+----------------------------------------------+
+        | ``sharpe_at_shrink(0.0)`` | Signal skill, no correlation adj.  |
+        +--------------------+----------------------------------------------+
+        | ``sharpe_at_shrink(cfg.shrink)`` | Signal + correlation adj.  |
+        +--------------------+----------------------------------------------+
+
+        Returns:
+            Annualised Sharpe ratio of the equal-weight portfolio as a ``float``.
+            Returns ``float("nan")`` when the Sharpe ratio cannot be computed.
+
+        Examples:
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
+            >>> dates = pl.Series("date", list(range(200)))
+            >>> rng = np.random.default_rng(0)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
+            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> s = engine.naive_sharpe
+            >>> isinstance(s, float)
+            True
+        """
+        naive_mu = self.mu.with_columns(pl.lit(1.0).alias(asset) for asset in self.assets)
+        engine = BasanosEngine(prices=self.prices, mu=naive_mu, cfg=self.cfg)
+        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+
+    def _ic_series(self, use_rank: bool) -> pl.DataFrame:
+        """Compute the cross-sectional IC time series.
+
+        For each timestamp *t* (from 0 to T-2), correlates the signal vector
+        ``mu[t, :]`` with the one-period forward return vector
+        ``prices[t+1, :] / prices[t, :] - 1`` across all assets where both
+        quantities are finite.  When fewer than two valid asset pairs are
+        available, the IC value is set to ``NaN``.
+
+        Args:
+            use_rank: When ``True`` the Spearman rank correlation is used
+                (Rank IC); when ``False`` the Pearson correlation is used (IC).
+
+        Returns:
+            pl.DataFrame: Two-column frame with ``date`` (signal date) and
+            either ``ic`` or ``rank_ic``.
+        """
+        assets = self.assets
+        prices_np = self.prices.select(assets).to_numpy().astype(float)
+        mu_np = self.mu.select(assets).to_numpy().astype(float)
+        dates = self.prices["date"].to_list()
+
+        col_name = "rank_ic" if use_rank else "ic"
+        ic_values: list[float] = []
+        ic_dates = []
+
+        for t in range(len(dates) - 1):
+            fwd_ret = prices_np[t + 1] / prices_np[t] - 1.0
+            signal = mu_np[t]
+
+            # Both signal and forward return must be finite
+            mask = np.isfinite(signal) & np.isfinite(fwd_ret)
+            n_valid = int(mask.sum())
+
+            if n_valid < 2:
+                ic_values.append(float("nan"))
+            elif use_rank:
+                corr, _ = spearmanr(signal[mask], fwd_ret[mask])
+                ic_values.append(float(corr))
+            else:
+                ic_values.append(float(np.corrcoef(signal[mask], fwd_ret[mask])[0, 1]))
+
+            ic_dates.append(dates[t])
+
+        return pl.DataFrame({"date": ic_dates, col_name: pl.Series(ic_values, dtype=pl.Float64)})
+
+    @property
+    def ic(self) -> pl.DataFrame:
+        """Cross-sectional Pearson Information Coefficient (IC) time series.
+
+        For each timestamp *t* (excluding the last), computes the Pearson
+        correlation between the signal ``mu[t, :]`` and the one-period forward
+        return ``prices[t+1, :] / prices[t, :] - 1`` across all assets where
+        both quantities are finite.
+
+        An IC value close to +1 means the signal ranked assets in the same
+        order as forward returns; close to -1 means the opposite; near 0 means
+        no predictive relationship.
+
+        Returns:
+            pl.DataFrame: Frame with columns ``['date', 'ic']``.  ``date`` is
+            the timestamp at which the signal was observed.  ``ic`` is a
+            ``Float64`` series (``NaN`` when fewer than 2 valid asset pairs
+            are available for a given timestamp).
+
+        See Also:
+            :py:attr:`rank_ic` — Spearman variant, more robust to outliers.
+            :py:attr:`ic_mean`, :py:attr:`ic_std`, :py:attr:`icir` — summary
+            statistics.
+        """
+        return self._ic_series(use_rank=False)
+
+    @property
+    def rank_ic(self) -> pl.DataFrame:
+        """Cross-sectional Spearman Rank Information Coefficient time series.
+
+        Identical to :py:attr:`ic` but uses the Spearman rank correlation
+        instead of the Pearson correlation, making it more robust to fat-tailed
+        return distributions and outliers.
+
+        Returns:
+            pl.DataFrame: Frame with columns ``['date', 'rank_ic']``.
+            ``rank_ic`` is a ``Float64`` series.
+
+        See Also:
+            :py:attr:`ic` — Pearson variant.
+            :py:attr:`rank_ic_mean`, :py:attr:`rank_ic_std` — summary
+            statistics.
+        """
+        return self._ic_series(use_rank=True)
+
+    @property
+    def ic_mean(self) -> float:
+        """Mean of the IC time series, ignoring NaN values.
+
+        Returns:
+            float: Arithmetic mean of all finite IC values, or ``NaN`` if
+            no finite values exist.
+        """
+        arr = self.ic["ic"].drop_nulls().to_numpy()
+        finite = arr[np.isfinite(arr)]
+        return float(np.mean(finite)) if len(finite) > 0 else float("nan")
+
+    @property
+    def ic_std(self) -> float:
+        """Standard deviation of the IC time series, ignoring NaN values.
+
+        Uses ``ddof=1`` (sample standard deviation).
+
+        Returns:
+            float: Sample standard deviation of all finite IC values, or
+            ``NaN`` if fewer than 2 finite values exist.
+        """
+        arr = self.ic["ic"].drop_nulls().to_numpy()
+        finite = arr[np.isfinite(arr)]
+        return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
+
+    @property
+    def icir(self) -> float:
+        """Information Coefficient Information Ratio (ICIR).
+
+        Defined as ``IC mean / IC std``.  A higher absolute ICIR indicates a
+        more consistent signal: the mean IC is large relative to its
+        variability.
+
+        Returns:
+            float: ``ic_mean / ic_std``, or ``NaN`` when ``ic_std`` is zero
+            or non-finite.
+        """
+        mean = self.ic_mean
+        std = self.ic_std
+        if not np.isfinite(std) or std == 0.0:
+            return float("nan")
+        return float(mean / std)
+
+    @property
+    def rank_ic_mean(self) -> float:
+        """Mean of the Rank IC time series, ignoring NaN values.
+
+        Returns:
+            float: Arithmetic mean of all finite Rank IC values, or ``NaN``
+            if no finite values exist.
+        """
+        arr = self.rank_ic["rank_ic"].drop_nulls().to_numpy()
+        finite = arr[np.isfinite(arr)]
+        return float(np.mean(finite)) if len(finite) > 0 else float("nan")
+
+    @property
+    def rank_ic_std(self) -> float:
+        """Standard deviation of the Rank IC time series, ignoring NaN values.
+
+        Uses ``ddof=1`` (sample standard deviation).
+
+        Returns:
+            float: Sample standard deviation of all finite Rank IC values, or
+            ``NaN`` if fewer than 2 finite values exist.
+        """
+        arr = self.rank_ic["rank_ic"].drop_nulls().to_numpy()
+        finite = arr[np.isfinite(arr)]
+        return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
+>>>>>>> main
