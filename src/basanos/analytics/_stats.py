@@ -34,7 +34,7 @@ def _drawdown_series(series: pl.Series) -> pl.Series:
     Examples:
         >>> import polars as pl
         >>> s = pl.Series([0.0, -0.1, 0.2])
-        >>> _drawdown_series(s).to_list()  # doctest: +NORMALIZE_WHITESPACE
+        >>> [round(x, 10) for x in _drawdown_series(s).to_list()]
         [0.0, 0.1, 0.0]
     """
     nav = 1.0 + series.cast(pl.Float64).cum_sum()
