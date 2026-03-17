@@ -18,6 +18,14 @@ repos:
         entry: Python cache files (__pycache__, .pyc, .pyo, .pyd) must not be committed. Run 'make clean' to remove them.
         files: '(/__pycache__/|\.py[cod]$)'
 
+      - id: ty
+        name: ty (static type checking)
+        language: system
+        entry: uv run ty check src
+        pass_filenames: false
+        files: '^src/'
+        types: [python]
+
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 'v0.15.6'
     hooks:

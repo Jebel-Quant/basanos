@@ -132,6 +132,20 @@ class TestSecurityConfiguration:
             ".github/dependabot.yml should define at least one package-ecosystem entry"
         )
 
+    def test_ty_configured_in_precommit(self) -> None:
+        """Verify that ty (static type checking) is configured in pre-commit hooks.
+
+        This ensures type errors are caught locally before they fail in CI.
+        The actual type checking runs as a pre-commit hook and in the CI typecheck workflow.
+        """
+        repo_root = pathlib.Path(__file__).parent.parent.parent.parent
+        precommit_config = repo_root / ".pre-commit-config.yaml"
+
+        assert precommit_config.exists(), ".pre-commit-config.yaml not found"
+
+        content = precommit_config.read_text()
+        assert "id: ty" in content, "ty (static type checking) should be configured in pre-commit hooks"
+
     def test_test_security_exceptions_documented(self) -> None:
         """Verify that security exceptions in test code are documented.
 
