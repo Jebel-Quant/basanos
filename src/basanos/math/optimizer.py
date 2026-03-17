@@ -677,7 +677,7 @@ class BasanosEngine:
         """
         new_cfg = self.cfg.model_copy(update={"shrink": shrink})
         engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
-        return float(engine.portfolio.stats.sharpe().get("returns", float("nan")))
+        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
 
     @property
     def naive_sharpe(self) -> float:
@@ -722,7 +722,7 @@ class BasanosEngine:
         """
         naive_mu = self.mu.with_columns(pl.lit(1.0).alias(asset) for asset in self.assets)
         engine = BasanosEngine(prices=self.prices, mu=naive_mu, cfg=self.cfg)
-        return float(engine.portfolio.stats.sharpe().get("returns", float("nan")))
+        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
 
     def _ic_series(self, use_rank: bool) -> pl.DataFrame:
         """Compute the cross-sectional IC time series.

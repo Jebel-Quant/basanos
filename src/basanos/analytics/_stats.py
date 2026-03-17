@@ -517,7 +517,7 @@ class Stats:
             for asset in self.assets
         ]
 
-        cols: list[str | pl.Expr] = (["date"] if "date" in self.data.columns else []) + exprs  # type: ignore[assignment]
+        cols: list[str | pl.Expr] = (["date"] if "date" in self.data.columns else []) + exprs
         return self.data.select(cols)
 
     def rolling_volatility(
@@ -553,7 +553,7 @@ class Stats:
 
         exprs = [(pl.col(asset).rolling_std(window_size=window) * factor).alias(asset) for asset in self.assets]
 
-        cols: list[str | pl.Expr] = (["date"] if "date" in self.data.columns else []) + exprs  # type: ignore[assignment]
+        cols: list[str | pl.Expr] = (["date"] if "date" in self.data.columns else []) + exprs
         return self.data.select(cols)
 
     def annual_breakdown(self) -> pl.DataFrame:
