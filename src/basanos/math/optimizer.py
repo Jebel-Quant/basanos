@@ -627,3 +627,98 @@ class BasanosEngine:
             Portfolio: Instance built from cash positions with AUM scaling.
         """
         return Portfolio.from_cash_position(self.prices, self.cash_position * self.cfg.position_scale, aum=self.cfg.aum)
+
+    def sharpe_at_shrink(self, shrink: float) -> float:
+        r"""Return the annualised portfolio Sharpe ratio for the given shrinkage weight.
+
+        Constructs a new :class:`BasanosEngine` with all parameters identical to
+        ``self`` except that ``cfg.shrink`` is replaced by ``shrink``, then
+        returns the annualised Sharpe ratio of the resulting portfolio.
+
+        This is the canonical single-argument callable required by the benchmarks
+        specification: ``f(λ) → Sharpe``.  Use it to sweep λ across ``[0, 1]``
+        and measure whether correlation adjustment adds value over the
+        signal-proportional baseline (λ = 0) or the unregularised limit (λ = 1).
+
+        Corner cases:
+            * **λ = 0** — the shrunk matrix equals the identity, so the
+              optimiser treats all assets as uncorrelated and positions are
+              purely signal-proportional (no correlation adjustment).
+            * **λ = 1** — the raw EWMA correlation matrix is used without
+              shrinkage.
+
+        Args:
+            shrink: Retention weight λ ∈ [0, 1].  See
+                :attr:`BasanosConfig.shrink` for full documentation.
+
+        Returns:
+            Annualised Sharpe ratio of the portfolio returns as a ``float``.
+            Returns ``float("nan")`` when the Sharpe ratio cannot be computed
+            (e.g. zero-variance returns).
+
+        Raises:
+            ValidationError: When ``shrink`` is outside [0, 1] (delegated to
+                :class:`BasanosConfig` field validation).
+
+        Examples:
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
+            >>> dates = pl.Series("date", list(range(200)))
+            >>> rng = np.random.default_rng(0)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
+            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> s = engine.sharpe_at_shrink(0.5)
+            >>> isinstance(s, float)
+            True
+        """
+        new_cfg = self.cfg.model_copy(update={"shrink": shrink})
+        engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
+        return float(engine.portfolio.stats.sharpe().get("returns", float("nan")))
+
+    @property
+    def naive_sharpe(self) -> float:
+        r"""Sharpe ratio of the naïve equal-weight signal (μ = 1 for every asset/timestamp).
+
+        Replaces the expected-return signal ``mu`` with a constant matrix of
+        ones, then runs the optimiser with the current configuration and returns
+        the annualised Sharpe ratio of the resulting portfolio.
+
+        This provides the baseline answer to *"does the signal add value?"*:
+        a real signal should produce a higher Sharpe than the naïve benchmark.
+        Combined with :meth:`sharpe_at_shrink`, this yields a three-way
+        comparison:
+
+        +--------------------+----------------------------------------------+
+        | Benchmark          | What it measures                             |
+        +====================+==============================================+
+        | ``naive_sharpe``   | No signal skill; pure correlation routing   |
+        +--------------------+----------------------------------------------+
+        | ``sharpe_at_shrink(0.0)`` | Signal skill, no correlation adj.  |
+        +--------------------+----------------------------------------------+
+        | ``sharpe_at_shrink(cfg.shrink)`` | Signal + correlation adj.  |
+        +--------------------+----------------------------------------------+
+
+        Returns:
+            Annualised Sharpe ratio of the equal-weight portfolio as a ``float``.
+            Returns ``float("nan")`` when the Sharpe ratio cannot be computed.
+
+        Examples:
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
+            >>> dates = pl.Series("date", list(range(200)))
+            >>> rng = np.random.default_rng(0)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
+            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> s = engine.naive_sharpe
+            >>> isinstance(s, float)
+            True
+        """
+        naive_mu = self.mu.with_columns(pl.lit(1.0).alias(asset) for asset in self.assets)
+        engine = BasanosEngine(prices=self.prices, mu=naive_mu, cfg=self.cfg)
+        return float(engine.portfolio.stats.sharpe().get("returns", float("nan")))
