@@ -301,6 +301,22 @@ def cell_16(portfolio):
 
 
 @app.cell
+def cell_16b(portfolio):
+    """Display the turnover summary table."""
+    mo.vstack(
+        [
+            mo.md("### Turnover Summary"),
+            mo.ui.table(portfolio.turnover_summary()),
+            mo.md(
+                "*`mean_daily_turnover` and `mean_weekly_turnover` are one-way turnover as a "
+                "fraction of AUM.  `turnover_std` is the standard deviation of daily turnover — "
+                "a high value relative to the mean indicates regime switches or unstable positions.*"
+            ),
+        ]
+    )
+
+
+@app.cell
 def cell_17(portfolio):
     """Display the tilt / timing decomposition (last 6 rows)."""
     mo.vstack(

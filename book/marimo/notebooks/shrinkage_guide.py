@@ -146,14 +146,14 @@ def cell_05():
 
 @app.cell
 def cell_06():
-    """Introduce the Sharpe vs. shrinkage sweep."""
+    """Introduce the Sharpe and turnover vs. shrinkage sweep."""
     mo.md(
         r"""
-        ## 🎚️ Sharpe Ratio vs. Shrinkage Intensity
+        ## 🎚️ Sharpe Ratio and Turnover vs. Shrinkage Intensity
 
-        The chart below sweeps $\lambda$ from 0.0 (full shrinkage) to 1.0 (no
-        shrinkage) in steps of 0.05, computing the annualised Sharpe ratio at
-        each level for two lookback regimes:
+        The charts below sweep $\lambda$ from 0.0 (full shrinkage) to 1.0 (no
+        shrinkage) in steps of 0.05, computing the annualised Sharpe ratio and
+        mean daily turnover at each level for two lookback regimes:
 
         - **Short lookback** (`corr=20`) — high concentration ratio, sample matrix is noisy
         - **Long lookback** (`corr=120`) — low concentration ratio, sample matrix is more reliable
@@ -188,12 +188,21 @@ def cell_07():
 
 @app.cell
 def cell_08(clip_sweep, mu, prices, vola_sweep):
-    """Sweep lambda and compute Sharpe ratio for short and long lookbacks."""
+    """Sweep lambda and compute Sharpe ratio and mean daily turnover for short and long lookbacks."""
     _lambdas = np.arange(0.0, 1.05, 0.05).round(2)
-    _results: dict[str, list[float]] = {"lambda": list(_lambdas), "short_corr": [], "long_corr": []}
+    _results: dict[str, list[float]] = {
+        "lambda": list(_lambdas),
+        "short_corr": [],
+        "long_corr": [],
+        "turnover_short": [],
+        "turnover_long": [],
+    }
 
     for _lam in _lambdas:
-        for _corr, _key in [(20, "short_corr"), (120, "long_corr")]:
+        for _corr, _sharpe_key, _to_key in [
+            (20, "short_corr", "turnover_short"),
+            (120, "long_corr", "turnover_long"),
+        ]:
             _eff_corr = max(_corr, vola_sweep.value)
             _cfg = BasanosConfig(
                 vola=vola_sweep.value,
@@ -204,10 +213,14 @@ def cell_08(clip_sweep, mu, prices, vola_sweep):
             )
             try:
                 _eng = BasanosEngine(prices=prices, mu=mu, cfg=_cfg)
-                _sharpe = float(_eng.portfolio.stats.sharpe(periods=252).get("returns", float("nan")))
+                _port = _eng.portfolio
+                _sharpe = float(_port.stats.sharpe(periods=252).get("returns", float("nan")))
+                _turnover = float(_port.turnover["turnover"].mean() or float("nan"))
             except Exception:
                 _sharpe = float("nan")
-            _results[_key].append(_sharpe)
+                _turnover = float("nan")
+            _results[_sharpe_key].append(_sharpe)
+            _results[_to_key].append(_turnover)
 
     sweep_df = pl.DataFrame(_results)
     return (sweep_df,)
@@ -245,6 +258,57 @@ def cell_09(sweep_df):
         height=450,
     )
     mo.ui.plotly(_fig)
+
+
+@app.cell
+def cell_09a(sweep_df):
+    """Render the Mean Daily Turnover (% AUM) vs. lambda chart."""
+    _fig_to = go.Figure()
+    _fig_to.add_trace(
+        go.Scatter(
+            x=sweep_df["lambda"].to_list(),
+            y=(pl.Series(sweep_df["turnover_short"].to_list()) * 100).to_list(),
+            mode="lines+markers",
+            name="Short lookback (corr=20)",
+            line={"color": "#e74c3c", "width": 2},
+            marker={"size": 6},
+        )
+    )
+    _fig_to.add_trace(
+        go.Scatter(
+            x=sweep_df["lambda"].to_list(),
+            y=(pl.Series(sweep_df["turnover_long"].to_list()) * 100).to_list(),
+            mode="lines+markers",
+            name="Long lookback (corr=120)",
+            line={"color": "#2980b9", "width": 2},
+            marker={"size": 6},
+        )
+    )
+    _fig_to.update_layout(
+        title="Mean Daily Turnover (% AUM) vs. Shrinkage Retention Weight (λ)",
+        xaxis_title="λ = cfg.shrink  (0 = full shrinkage, 1 = no shrinkage)",
+        yaxis_title="Mean daily turnover (% AUM)",
+        legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        height=450,
+    )
+    mo.md(
+        r"""
+        ### 🔄 Turnover vs. Shrinkage Intensity
+
+        Lower λ (more shrinkage) tends to reduce turnover by dampening the
+        optimizer's sensitivity to noisy correlation estimates, producing more
+        stable positions.  Higher λ allows the optimizer to exploit richer
+        correlation structure, which can increase turnover — especially with
+        short lookbacks where the sample matrix is noisier.
+
+        The **position-change std dev** (accessible via `portfolio.turnover_summary()`)
+        complements mean turnover: a high ratio of std dev to mean signals regime
+        switches or spikes in trading activity that would amplify transaction costs
+        in live trading.  The interactive panel below also shows all three turnover
+        metrics for the currently selected configuration.
+        """
+    )
+    mo.vstack([mo.ui.plotly(_fig_to)])
 
 
 @app.cell
@@ -418,6 +482,10 @@ def cell_17(clip_sens, corr_sens, mu, prices, shrink_sens, vola_sens):
         else "✅ Concentration ratio is within a manageable range."
     )
     _corr_raised_msg = "⚠️ `corr` was raised to match `vola`." if _eff_corr_s > corr_sens.value else ""
+    _to_summary = port_s.turnover_summary()
+    _mean_daily_to = float(_to_summary.filter(pl.col("metric") == "mean_daily_turnover")["value"][0])
+    _mean_weekly_to = float(_to_summary.filter(pl.col("metric") == "mean_weekly_turnover")["value"][0])
+    _to_std = float(_to_summary.filter(pl.col("metric") == "turnover_std")["value"][0])
     mo.callout(
         mo.md(
             f"""
@@ -431,6 +499,9 @@ def cell_17(clip_sens, corr_sens, mu, prices, shrink_sens, vola_sens):
             | Concentration ratio *n/T* | {_concentration:.3f} |
             | Annualised Sharpe | **{_sharpe_s:.3f}** |
             | Annualised volatility | {_vol_s:.4f} |
+            | Mean daily turnover (% AUM) | {_mean_daily_to * 100:.4f} % |
+            | Mean weekly turnover (% AUM) | {_mean_weekly_to * 100:.4f} % |
+            | Turnover std dev (% AUM) | {_to_std * 100:.4f} % |
 
             {_concentration_msg}
             {_corr_raised_msg}
