@@ -62,6 +62,7 @@ dataset sizes.
 
 import dataclasses
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -80,6 +81,9 @@ from ..exceptions import (
 )
 from ._linalg import inv_a_norm, solve, valid
 from ._signal import shrink2id, vol_adj
+
+if TYPE_CHECKING:
+    from ._config_report import ConfigReport
 
 _MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
 _MAX_NAN_FRACTION: float = 0.9  # raise if more than this fraction of prices in any asset column are null
@@ -348,6 +352,34 @@ class BasanosConfig(BaseModel):
     )
 
     model_config = {"frozen": True, "extra": "forbid"}
+
+    @property
+    def report(self) -> "ConfigReport":
+        """Return a :class:`~basanos.math._config_report.ConfigReport` facade for this config.
+
+        Generates a self-contained HTML report summarising all configuration
+        parameters, a shrinkage-guidance table, and a theory section on
+        Ledoit-Wolf shrinkage.
+
+        To also include a lambda-sweep chart (Sharpe vs λ), use
+        :attr:`BasanosEngine.config_report` instead, which requires price and
+        signal data.
+
+        Returns:
+            basanos.math._config_report.ConfigReport: Report facade with
+            ``to_html()`` and ``save()`` methods.
+
+        Examples:
+            >>> from basanos.math.optimizer import BasanosConfig
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> report = cfg.report
+            >>> html = report.to_html()
+            >>> "Parameters" in html
+            True
+        """
+        from ._config_report import ConfigReport
+
+        return ConfigReport(config=self)
 
     @field_validator("corr")
     @classmethod
@@ -1099,3 +1131,37 @@ class BasanosEngine:
         arr = self.rank_ic["rank_ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
+
+    @property
+    def config_report(self) -> "ConfigReport":
+        """Return a :class:`~basanos.math._config_report.ConfigReport` facade for this engine.
+
+        Returns a :class:`~basanos.math._config_report.ConfigReport` that
+        includes the full **lambda-sweep chart** — an interactive plot of the
+        annualised Sharpe ratio as :attr:`~BasanosConfig.shrink` (λ) is swept
+        across [0, 1] — in addition to the parameter table, shrinkage-guidance
+        table, and theory section available from
+        :attr:`BasanosConfig.report`.
+
+        Returns:
+            basanos.math._config_report.ConfigReport: Report facade with
+            ``to_html()`` and ``save()`` methods.
+
+        Examples:
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
+            >>> dates = pl.Series("date", list(range(200)))
+            >>> rng = np.random.default_rng(0)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
+            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> report = engine.config_report
+            >>> html = report.to_html()
+            >>> "Lambda" in html
+            True
+        """
+        from ._config_report import ConfigReport
+
+        return ConfigReport(config=self.cfg, engine=self)
