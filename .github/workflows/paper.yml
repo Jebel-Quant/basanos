@@ -1,0 +1,54 @@
+# Workflow: Paper
+#
+# Purpose: Compile the LaTeX paper (paper/basanos.tex) to a PDF and publish
+#          it as a downloadable workflow artifact.
+#
+# Trigger: On push and pull requests to main/master branches, or whenever
+#          files under paper/ change.  Also supports manual dispatch.
+
+name: Paper
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'paper/**'
+      - '.github/workflows/paper.yml'
+  pull_request:
+    branches: [ main, master ]
+    paths:
+      - 'paper/**'
+      - '.github/workflows/paper.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-pdf:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Install TeX Live
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            texlive-latex-extra \
+            texlive-fonts-recommended \
+            texlive-bibtex-extra \
+            latexmk
+
+      - name: Compile LaTeX document
+        working-directory: paper
+        run: |
+          latexmk -pdf -interaction=nonstopmode basanos.tex
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: basanos.pdf
+          path: paper/basanos.pdf
+          retention-days: 30
