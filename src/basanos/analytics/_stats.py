@@ -699,7 +699,7 @@ class Stats:
             column per asset, containing the computed statistic values.
 
         """
-        metrics: dict[str, dict[str, float | int | None]] = {
+        metrics: dict[str, dict[str, float | int | None] | dict[str, float | int]] = {
             "avg_return": self.avg_return(),
             "avg_win": self.avg_win(),
             "avg_loss": self.avg_loss(),
