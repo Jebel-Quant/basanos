@@ -611,6 +611,100 @@ class Portfolio:
             }
         )
 
+    def cost_adjusted_returns(self, cost_bps: float) -> pl.DataFrame:
+        """Return daily portfolio returns net of estimated one-way trading costs.
+
+        Trading costs are modelled as a linear function of daily one-way
+        turnover: for every unit of AUM traded, the strategy incurs
+        ``cost_bps`` basis points (i.e. ``cost_bps / 10_000`` fractional cost).
+        The daily cost deduction is therefore::
+
+            daily_cost = turnover * (cost_bps / 10_000)
+
+        where ``turnover`` is the fraction-of-AUM one-way turnover already
+        computed by :py:attr:`turnover`.  The deduction is applied to the
+        ``returns`` column of :py:attr:`returns`, leaving all other columns
+        (including ``date``) untouched.
+
+        Args:
+            cost_bps: One-way trading cost in basis points per unit of AUM
+                traded.  Must be non-negative.
+
+        Returns:
+            pl.DataFrame: Same schema as :py:attr:`returns` but with the
+            ``returns`` column reduced by the per-period trading cost.
+
+        Raises:
+            ValueError: If ``cost_bps`` is negative.
+
+        Examples:
+            >>> import polars as pl
+            >>> from datetime import date
+            >>> _d = [date(2020, 1, 1), date(2020, 1, 2), date(2020, 1, 3)]
+            >>> prices = pl.DataFrame({"date": _d, "A": [100.0, 110.0, 121.0]})
+            >>> pos = pl.DataFrame({"date": _d, "A": [1000.0, 1200.0, 900.0]})
+            >>> pf = Portfolio(prices=prices, cashposition=pos, aum=1e5)
+            >>> adj = pf.cost_adjusted_returns(0.0)
+            >>> float(adj["returns"][1]) == float(pf.returns["returns"][1])
+            True
+        """
+        if cost_bps < 0:
+            raise ValueError
+        base = self.returns
+        daily_cost = self.turnover["turnover"] * (cost_bps / 10_000.0)
+        return base.with_columns((pl.col("returns") - daily_cost).alias("returns"))
+
+    def trading_cost_impact(self, max_bps: int = 20) -> pl.DataFrame:
+        """Estimate the impact of trading costs on the Sharpe ratio.
+
+        Computes the annualised Sharpe ratio of cost-adjusted returns for
+        each integer cost level from 0 up to and including ``max_bps``
+        basis points (1 bp = 0.01 %).  The result lets you quickly assess at
+        what cost level the strategy's edge is eroded.
+
+        Args:
+            max_bps: Maximum one-way trading cost to evaluate, in basis
+                points.  Defaults to 20 (i.e., evaluates 0, 1, 2, …, 20 bps).
+                Must be a positive integer.
+
+        Returns:
+            pl.DataFrame: Frame with columns ``'cost_bps'`` (Int64) and
+            ``'sharpe'`` (Float64), one row per cost level from 0 to
+            ``max_bps`` inclusive.
+
+        Raises:
+            ValueError: If ``max_bps`` is not a positive integer.
+
+        Examples:
+            >>> import polars as pl
+            >>> from datetime import date, timedelta
+            >>> import numpy as np
+            >>> start = date(2020, 1, 1)
+            >>> dates = pl.date_range(
+            ...     start=start, end=start + timedelta(days=99), interval="1d", eager=True
+            ... )
+            >>> rng = np.random.default_rng(0)
+            >>> prices = pl.DataFrame({
+            ...     "date": dates,
+            ...     "A": pl.Series(np.cumprod(1 + rng.normal(0.001, 0.01, 100)) * 100),
+            ... })
+            >>> pos = pl.DataFrame({"date": dates, "A": pl.Series(np.ones(100) * 1000.0)})
+            >>> pf = Portfolio(prices=prices, cashposition=pos, aum=1e5)
+            >>> impact = pf.trading_cost_impact(max_bps=5)
+            >>> list(impact["cost_bps"])
+            [0, 1, 2, 3, 4, 5]
+        """
+        if not isinstance(max_bps, int) or max_bps < 1:
+            raise ValueError
+        cost_levels = list(range(0, max_bps + 1))
+        sharpe_values: list[float] = []
+        for bps in cost_levels:
+            adj = self.cost_adjusted_returns(float(bps))
+            cols = ["date", "returns"] if "date" in adj.columns else ["returns"]
+            sharpe_val = Stats(data=adj.select(cols)).sharpe().get("returns", float("nan"))
+            sharpe_values.append(float(sharpe_val) if sharpe_val is not None else float("nan"))
+        return pl.DataFrame({"cost_bps": pl.Series(cost_levels, dtype=pl.Int64), "sharpe": pl.Series(sharpe_values)})
+
     def correlation(self, frame: pl.DataFrame, name: str = "portfolio") -> pl.DataFrame:
         """Compute a correlation matrix of asset returns plus the portfolio.
 

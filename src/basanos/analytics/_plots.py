@@ -595,3 +595,71 @@ class Plots:
                 fig.layout.yaxis.type = "log"
 
         return fig
+
+    def trading_cost_impact_plot(self, max_bps: int = 20) -> go.Figure:
+        """Plot the Sharpe ratio as a function of one-way trading costs.
+
+        Evaluates the portfolio's annualised Sharpe ratio at each integer
+        cost level from 0 up to ``max_bps`` basis points and renders the
+        result as a line chart.  The zero-cost Sharpe is shown as a
+        reference horizontal line so that the reader can quickly gauge
+        at what cost level the strategy's edge is eroded.
+
+        Args:
+            max_bps: Maximum one-way trading cost to evaluate, in basis
+                points.  Defaults to 20.
+
+        Returns:
+            A Plotly Figure with one line trace showing Sharpe vs. cost.
+
+        Raises:
+            ValueError: If ``max_bps`` is not a positive integer.
+        """
+        impact = self.portfolio.trading_cost_impact(max_bps=max_bps)
+
+        cost_vals = impact["cost_bps"].to_list()
+        sharpe_vals = impact["sharpe"].to_list()
+
+        # Baseline Sharpe at zero cost
+        baseline = float(sharpe_vals[0]) if sharpe_vals and sharpe_vals[0] is not None else float("nan")
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=cost_vals,
+                y=sharpe_vals,
+                mode="lines+markers",
+                name="Sharpe (cost-adjusted)",
+                marker={"size": 6},
+                line={"width": 2, "color": "#1f77b4"},
+            )
+        )
+        if baseline == baseline:  # only add when baseline is finite (NaN != NaN)
+            fig.add_hline(
+                y=baseline,
+                line_width=1,
+                line_dash="dash",
+                line_color="gray",
+                annotation_text="0 bps baseline",
+                annotation_position="top right",
+            )
+
+        fig.update_layout(
+            title=f"Trading Cost Impact on Sharpe Ratio (0\u2013{max_bps} bps)",
+            hovermode="x unified",
+            plot_bgcolor="white",
+        )
+        fig.update_xaxes(
+            title_text="One-way cost (basis points)",
+            showgrid=True,
+            gridwidth=0.5,
+            gridcolor="lightgrey",
+            dtick=1,
+        )
+        fig.update_yaxes(
+            title_text="Annualised Sharpe ratio",
+            showgrid=True,
+            gridwidth=0.5,
+            gridcolor="lightgrey",
+        )
+        return fig
