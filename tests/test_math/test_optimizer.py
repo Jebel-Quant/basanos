@@ -1234,7 +1234,28 @@ class TestDiagnostics:
         er = engine.effective_rank["effective_rank"].slice(warmup).drop_nulls()
         np.testing.assert_allclose(er.to_numpy(), float(n_assets), atol=1e-10)
 
-    # ── solver_residual ───────────────────────────────────────────────────────
+    def test_effective_rank_zero_eigenvalue_sum_returns_nan(self) -> None:
+        """effective_rank returns NaN when the shrunk matrix has all-zero eigenvalues.
+
+        Patches ``BasanosEngine.cor`` to return a zero matrix at every timestamp so
+        that ``eigvals.sum() == 0.0`` after clipping to non-negative values.
+        """
+        from unittest.mock import PropertyMock, patch
+
+        prices, mu = _make_prices_mu(40)
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=1.0, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        n = prices.height
+        n_assets = 2
+        # Build a cor dict whose matrices are all zeros so eigvalsh → [0, 0]
+        zero_matrix = np.zeros((n_assets, n_assets))
+        fake_cor = {prices["date"][i]: zero_matrix for i in range(n)}
+
+        with patch.object(type(engine), "cor", new_callable=PropertyMock, return_value=fake_cor):
+            er = engine.effective_rank["effective_rank"]
+
+        assert er.is_nan().all()
 
     def test_solver_residual_schema(self, engine: BasanosEngine) -> None:
         """solver_residual should have exactly ['date', 'residual'] columns."""
