@@ -28,7 +28,7 @@ dev = [
     "marimo",
     "pandas>=2.0",
     "pyarrow>=14.0",
-    "ty>=0.0.18",
+    "ty>=0.0.23",
 ]
 
 [tool.hatch.build.targets.wheel]
