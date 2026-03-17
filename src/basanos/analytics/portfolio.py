@@ -11,6 +11,7 @@ import polars.selectors as cs
 
 from ..exceptions import IntegerIndexBoundError, MissingDateColumnError
 from ._plots import Plots
+from ._report import Report
 from ._stats import Stats
 
 
@@ -431,6 +432,18 @@ class Portfolio:
             basanos.analytics._plots.Plots: Helper object with plotting methods.
         """
         return Plots(self)
+
+    @property
+    def report(self) -> Report:
+        """Convenience accessor returning a Report facade for this portfolio.
+
+        Use this to generate a self-contained HTML performance report
+        containing statistics tables and interactive charts.
+
+        Returns:
+            basanos.analytics._report.Report: Helper object with report methods.
+        """
+        return Report(self)
 
     @property
     def assets(self) -> list[str]:

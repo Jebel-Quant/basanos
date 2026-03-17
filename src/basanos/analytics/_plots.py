@@ -466,6 +466,67 @@ class Plots:
 
         return fig
 
+    def monthly_returns_heatmap(self) -> go.Figure:
+        """Plot a monthly returns calendar heatmap.
+
+        Groups portfolio returns by calendar year and month, then renders a
+        Plotly heatmap with months on the x-axis and years on the y-axis.
+        Green cells indicate positive months; red cells indicate negative
+        months.  Cell text shows the percentage return for that month.
+
+        Returns:
+            A Plotly Figure with a calendar heatmap of monthly returns.
+
+        Raises:
+            ValueError: If the portfolio has no ``date`` column.
+        """
+        monthly = self.portfolio.monthly
+
+        years = monthly["year"].unique().sort().to_list()
+        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+        z: list[list[float | None]] = []
+        text: list[list[str]] = []
+        for year in years:
+            year_data = monthly.filter(pl.col("year") == year)
+            year_row: list[float | None] = []
+            year_text: list[str] = []
+            for m in range(1, 13):
+                month_data = year_data.filter(pl.col("month") == m)
+                if month_data.is_empty():
+                    year_row.append(None)
+                    year_text.append("")
+                else:
+                    ret = float(month_data["returns"][0])
+                    year_row.append(ret * 100.0)
+                    year_text.append(f"{ret * 100.0:.1f}%")
+            z.append(year_row)
+            text.append(year_text)
+
+        fig = go.Figure(
+            data=go.Heatmap(
+                z=z,
+                x=month_names,
+                y=[str(y) for y in years],
+                text=text,
+                texttemplate="%{text}",
+                colorscale="RdYlGn",
+                zmid=0,
+                colorbar={"title": "Return (%)"},
+                hovertemplate="<b>%{y} %{x}</b><br>Return: %{text}<extra></extra>",
+            )
+        )
+
+        fig.update_layout(
+            title="Monthly Returns Heatmap",
+            xaxis_title="Month",
+            yaxis_title="Year",
+            plot_bgcolor="white",
+            yaxis={"type": "category"},
+        )
+
+        return fig
+
     def smoothed_holdings_performance_plot(
         self,
         windows: list[int] | None = None,
