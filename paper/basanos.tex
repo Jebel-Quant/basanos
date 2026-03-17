@@ -1,0 +1,849 @@
+\documentclass[11pt,a4paper]{article}
+
+% ─── Packages ────────────────────────────────────────────────────────────────
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{bm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage[round]{natbib}
+\usepackage{enumitem}
+\usepackage{listings}
+\usepackage{caption}
+\usepackage{subcaption}
+
+% ─── Hyperref setup ──────────────────────────────────────────────────────────
+\hypersetup{
+  colorlinks  = true,
+  linkcolor   = blue!60!black,
+  citecolor   = teal!70!black,
+  urlcolor    = blue!70!black,
+  pdftitle    = {Basanos: Correlation-Aware Signal Assessment for Systematic Strategies},
+  pdfauthor   = {Jebel Quant},
+}
+
+% ─── Code listing style ──────────────────────────────────────────────────────
+\lstset{
+  basicstyle   = \ttfamily\small,
+  keywordstyle = \bfseries\color{blue!70!black},
+  commentstyle = \itshape\color{gray!70},
+  stringstyle  = \color{teal!70!black},
+  breaklines   = true,
+  frame        = single,
+  framerule    = 0.4pt,
+  xleftmargin  = 1em,
+  xrightmargin = 1em,
+}
+
+% ─── Math macros ─────────────────────────────────────────────────────────────
+\newcommand{\C}{\mathbf{C}}
+\newcommand{\I}{\mathbf{I}}
+\newcommand{\x}{\mathbf{x}}
+\newcommand{\muvec}{\bm{\mu}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\norm}[1]{\left\|#1\right\|}
+\newcommand{\abs}[1]{\left|#1\right|}
+\DeclareMathOperator{\tr}{tr}
+\DeclareMathOperator{\rank}{rank}
+\DeclareMathOperator{\eff}{eff\text{-}rank}
+
+\newtheorem{remark}{Remark}
+\newtheorem{proposition}{Proposition}
+
+% ─── Title ───────────────────────────────────────────────────────────────────
+\title{%
+  \textbf{Basanos: Correlation-Aware Signal Assessment\\
+  for Systematic Strategies}\\[0.5em]
+  \large A Companion Paper
+}
+\author{Jebel Quant}
+\date{\today}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Raw trading signals produced by forecasting models encode directional views
+about asset returns, but they carry no information about portfolio correlation
+structure.  Sizing positions in direct proportion to signal strength
+concentrates risk in correlated clusters and understates true portfolio
+exposure.  This paper describes the problem of signal assessment in the
+presence of non-trivial asset correlations, explains why naive proportional
+sizing and standard production optimisers both make it difficult to evaluate
+pure signal quality, and presents the analytical framework implemented in the
+\textbf{Basanos} library.  Basanos treats position sizing as an inverse
+correlation problem---solving the normalised linear system $\C\,\x = \muvec$
+per timestamp---and couples this with a suite of portfolio-level and
+optimizer-level diagnostics that let a practitioner measure how much of the
+realised performance is attributable to the signal itself.
+\end{abstract}
+
+\tableofcontents
+
+\newpage
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Systematic trading strategies produce a signal vector
+$\muvec_t = (\mu_{1,t}, \dots, \mu_{n,t}) \in \R^n$ at each
+decision time $t$, where $\mu_{i,t}$ encodes the model's view on the
+expected excess return of asset $i$.  The immediate question facing any
+practitioner is: \emph{does this signal contain genuine predictive information,
+and if so, how much?}
+
+At first glance the answer seems straightforward---run the signal on historical
+data, record the P\&L, and compute the Sharpe ratio.  In practice two
+structural complications make this naive assessment misleading:
+
+\begin{enumerate}
+  \item \textbf{Signal-proportional sizing ignores correlations.} If two
+    assets are strongly correlated and both carry a positive signal, placing a
+    large notional in each concentrates risk rather than diversifying it.  The
+    realised Sharpe depends on how the signal interacts with the correlation
+    structure, not on the signal alone.
+
+  \item \textbf{Production optimisers introduce confounders.} A fully
+    constrained Markowitz optimiser---with turnover limits, sector caps,
+    leverage constraints, and factor-neutrality targets---will bend positions
+    away from what the signal implies.  P\&L measured through such a system
+    reflects the interaction between the signal and all those constraints,
+    making it hard to isolate the signal's intrinsic value.
+\end{enumerate}
+
+Basanos addresses both issues through a single, intentionally minimal
+framework.  It solves a normalised inverse-correlation system to map the signal
+into positions that account for portfolio geometry, while deliberately avoiding
+hard constraints so the signal can express itself cleanly.  This makes it a
+natural \emph{first hurdle}: a signal that cannot generate a reasonable
+risk-adjusted return through this framework is unlikely to survive the added
+friction of a production system.
+
+The paper is structured as follows.  Section~\ref{sec:problem} formalises the
+signal assessment problem and the impact of portfolio construction.
+Section~\ref{sec:approach} describes the mathematical approach: volatility
+adjustment, EWMA correlation estimation, shrinkage, and the normalised linear
+solve.  Section~\ref{sec:analytics} documents the analytical tools available in
+the library, distinguishing optimizer-level diagnostics from portfolio-level
+performance analytics.  Section~\ref{sec:usage} illustrates usage with code
+examples.  Section~\ref{sec:conclusion} concludes.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{The Signal Assessment Problem}
+\label{sec:problem}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Notation}
+
+Let $n$ denote the number of assets and $T$ the number of decision timestamps.
+We write:
+\begin{align}
+  \muvec_t &\in \R^n && \text{expected-return signal at time } t, \\
+  \mathbf{r}_t &\in \R^n && \text{vector of asset returns at time } t, \\
+  \C_t &\in \R^{n\times n} && \text{correlation matrix at time } t, \\
+  \bm{\sigma}_t &\in \R^n_{>0} && \text{per-asset return volatilities at time }t.
+\end{align}
+A portfolio is specified by a cash-position vector
+$\mathbf{p}_t \in \R^n$, where $p_{i,t}$ is the dollar notional held in
+asset $i$ at time $t$.
+
+\subsection{Signal-Proportional Sizing and Its Limitations}
+\label{sec:proportional}
+
+The simplest sizing rule is \emph{proportional}: set
+\begin{equation}
+  \label{eq:proportional}
+  p_{i,t} \propto \mu_{i,t}.
+\end{equation}
+This rule is intuitive but problematic.  If assets $i$ and $j$ are highly
+correlated ($C_{ij,t} \approx 1$) and $\mu_{i,t}, \mu_{j,t} > 0$, both
+receive large positive positions and the portfolio's realised exposure to their
+common factor is approximately $p_{i,t} + p_{j,t}$.  The Sharpe ratio of such
+a portfolio depends not just on $\|\muvec_t\|$ but on the angle between
+$\muvec_t$ and the eigenvectors of $\C_t$.
+
+Concretely, suppose the portfolio return at time $t$ is
+\begin{equation}
+  R_t = \mathbf{p}_t^\top \mathbf{r}_t.
+\end{equation}
+Under proportional sizing $\mathbf{p}_t = k\,\muvec_t$ for some scalar $k$,
+\begin{equation}
+  \operatorname{Var}(R_t) = k^2\,\muvec_t^\top \,\bm{\Sigma}_t\,\muvec_t,
+\end{equation}
+where $\bm{\Sigma}_t = \operatorname{diag}(\bm{\sigma}_t)\,\C_t\,
+\operatorname{diag}(\bm{\sigma}_t)$ is the covariance matrix.  The
+information ratio is
+\begin{equation}
+  \operatorname{IR} = \frac{k\,\muvec_t^\top\bm{\mu}_t}
+                          {\sqrt{k^2\,\muvec_t^\top\bm{\Sigma}_t\,\muvec_t}}
+                  = \frac{\norm{\muvec_t}^2}
+                         {\sqrt{\muvec_t^\top\bm{\Sigma}_t\,\muvec_t}}.
+\end{equation}
+When assets are perfectly correlated, $\bm{\Sigma}_t = \sigma^2\mathbf{1}
+\mathbf{1}^\top$ and $\muvec_t^\top\bm{\Sigma}_t\,\muvec_t = \sigma^2
+(\mathbf{1}^\top\muvec_t)^2$, so the IR is determined almost entirely by the
+sum of signals rather than by their individual strengths.  In other words,
+the signal's \emph{correlation structure} dominates the measured performance.
+
+\subsection{Impact of Production Constraints}
+
+A Markowitz optimiser \citep{markowitz1952} with turnover, leverage, sector,
+and factor constraints solves
+\begin{equation}
+  \label{eq:markowitz}
+  \max_{\mathbf{p}} \;\muvec_t^\top \mathbf{p}
+    - \tfrac{1}{2\lambda}\,\mathbf{p}^\top\bm{\Sigma}_t\,\mathbf{p}
+  \quad \text{subject to a set of linear constraints.}
+\end{equation}
+The solution $\mathbf{p}^*_t$ depends on all constraints simultaneously.
+Adding a turnover limit, for example, ties today's portfolio to yesterday's,
+so a signal spike one day will be smoothed over multiple periods.  The
+realised P\&L then reflects the interaction between the signal's
+autocorrelation properties and the turnover budget---not the signal's raw
+predictive content.
+
+This entanglement makes it difficult to answer the core question: does the
+signal have edge?  Basanos deliberately avoids hard constraints to give the
+signal room to express itself, while still handling the correlation geometry
+correctly.  The result is interpretable as the \emph{unconstrained potential}
+of the signal---an upper bound on what a constrained production system can
+achieve from the same alpha source.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{The Basanos Approach}
+\label{sec:approach}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Overview}
+
+Basanos computes cash positions through a three-step pipeline:
+
+\begin{enumerate}
+  \item \textbf{Volatility adjustment} --- normalise returns and compute
+    per-asset EWMA volatility.
+  \item \textbf{Correlation estimation with shrinkage} --- compute the
+    time-varying EWMA correlation matrix and regularise it toward the
+    identity.
+  \item \textbf{Normalised linear solve} --- solve $\C_t\,\x_t = \muvec_t$
+    for the risk position vector, then scale by realised P\&L variance and
+    divide by per-asset volatility to obtain cash positions.
+\end{enumerate}
+
+\subsection{Volatility Adjustment}
+\label{sec:vola}
+
+Let $S_{i,t}$ be the price of asset $i$ at time $t$.  The log return is
+$r_{i,t} = \ln(S_{i,t}/S_{i,t-1})$.  An EWMA volatility estimate with
+half-life $h_\sigma$ (corresponding to the configuration parameter
+\texttt{vola}) is computed as
+\begin{equation}
+  \sigma_{i,t}^2 = \alpha\,r_{i,t}^2 + (1-\alpha)\,\sigma_{i,t-1}^2,
+  \quad \alpha = 1 - e^{-\ln 2/h_\sigma}.
+\end{equation}
+The volatility-adjusted, clipped return is then
+\begin{equation}
+  \tilde{r}_{i,t} = \operatorname{clip}\!\left(\frac{r_{i,t}}{\sigma_{i,t}},\;
+                    -c,\; c\right),
+\end{equation}
+where $c$ is the clipping threshold (\texttt{cfg.clip}).  Clipping limits
+the influence of outliers on the correlation estimate and prevents extreme
+positions when volatility is temporarily suppressed.
+
+\subsection{EWMA Correlation Estimation}
+\label{sec:corr}
+
+The EWMA correlation matrix $\hat{\C}_t$ with half-life $h_\rho$
+(\texttt{cfg.corr}, required $\geq h_\sigma$) is computed component-wise.
+For each pair $(i,j)$:
+\begin{align}
+  E_{i,t}   &= \alpha_\rho\,\tilde{r}_{i,t}   + (1-\alpha_\rho)\,E_{i,t-1}, \\
+  E_{ij,t}  &= \alpha_\rho\,\tilde{r}_{i,t}\tilde{r}_{j,t}
+               + (1-\alpha_\rho)\,E_{ij,t-1}, \\
+  E_{i^2,t} &= \alpha_\rho\,\tilde{r}_{i,t}^2 + (1-\alpha_\rho)\,E_{i^2,t-1},
+\end{align}
+where $\alpha_\rho = 1 - e^{-\ln 2/h_\rho}$.  The correlation is
+\begin{equation}
+  \hat{C}_{ij,t} = \frac{E_{ij,t} - E_{i,t}\,E_{j,t}}
+                        {\sqrt{(E_{i^2,t} - E_{i,t}^2)
+                               (E_{j^2,t} - E_{j,t}^2)}}.
+\end{equation}
+The full set of five running moments ($E_i$, $E_j$, $E_{i^2}$, $E_{j^2}$,
+$E_{ij}$) is computed in parallel across all $n^2$ pairs using
+\texttt{scipy.signal.lfilter}, making the step $O(T n^2)$ in both time and
+memory \citep{hunter1986}.
+
+\subsection{Shrinkage Toward the Identity Matrix}
+\label{sec:shrinkage}
+
+Sample correlation matrices are poorly conditioned when $n$ is large
+relative to $T$: the Marchenko--Pastur law \citep{marchenko1967} shows that
+extreme eigenvalues of the sample matrix are severely biased.  Small
+eigenvalues are deflated, large ones inflated, and directly inverting a
+poorly conditioned matrix amplifies noise.
+
+Basanos applies convex linear shrinkage
+\citep{ledoit2004} toward the identity matrix:
+\begin{equation}
+  \label{eq:shrinkage}
+  \tilde{\C}_t = \lambda\,\hat{\C}_t + (1-\lambda)\,\I_n,
+\end{equation}
+where $\lambda \in [0,1]$ is the shrinkage retention weight
+(\texttt{cfg.shrink}).  Two corner cases are instructive:
+
+\begin{itemize}
+  \item $\lambda = 1$ --- the raw EWMA matrix is used without regularisation.
+    This is numerically unstable when $n/T$ is large.
+  \item $\lambda = 0$ --- $\tilde{\C}_t = \I_n$.  The system $\I\,\x =
+    \muvec$ has the trivial solution $\x = \muvec$, recovering
+    signal-proportional sizing (Eq.~\eqref{eq:proportional}).  This is the
+    uncorrelated baseline and matches what a Markowitz solver produces when all
+    assets are treated as independent.
+\end{itemize}
+
+A useful starting heuristic is
+\begin{equation}
+  \lambda \approx 1 - \frac{n}{2T},
+\end{equation}
+which approximates the Ledoit--Wolf optimal intensity \citep{ledoit2004}.
+Table~\ref{tab:shrinkage_guide} summarises the recommended ranges.
+
+\begin{table}[h]
+  \centering
+  \caption{Shrinkage retention weight $\lambda$ as a function of the
+           concentration ratio $n/T$.}
+  \label{tab:shrinkage_guide}
+  \begin{tabular}{lcc}
+    \toprule
+    \textbf{Regime} & $n / T$ & \textbf{Suggested $\lambda$} \\
+    \midrule
+    Many assets, short lookback   & $> 0.5$    & $0.3$--$0.5$ \\
+    Moderate assets and lookback  & $0.1$--$0.5$ & $0.5$--$0.7$ \\
+    Few assets, long lookback     & $< 0.1$    & $0.7$--$0.9$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{The Normalised Linear Solve}
+\label{sec:solve}
+
+For each timestamp $t$, Basanos solves the linear system
+\begin{equation}
+  \label{eq:system}
+  \tilde{\C}_t\,\x_t = \muvec_t,
+\end{equation}
+where $\tilde{\C}_t$ is the shrunk correlation matrix from
+Eq.~\eqref{eq:shrinkage}.  The solution is computed via Cholesky
+decomposition (falling back to LU if the matrix is not numerically positive
+definite).
+
+\paragraph{Scale invariance.}
+The raw solution $\x_t = \tilde{\C}_t^{-1}\muvec_t$ scales linearly with
+$\|\muvec_t\|$, which would make position sizes depend on the arbitrary
+amplitude of the signal.  To achieve scale invariance, positions are
+normalised by the inverse-matrix norm of $\muvec_t$:
+\begin{equation}
+  \label{eq:norm}
+  \nu_t = \sqrt{\muvec_t^\top \tilde{\C}_t^{-1} \muvec_t},
+\end{equation}
+giving the normalised risk position
+\begin{equation}
+  \label{eq:risk_position}
+  \hat{\x}_t = \frac{\tilde{\C}_t^{-1}\muvec_t}{\nu_t}.
+\end{equation}
+Doubling $\muvec_t$ leaves $\hat{\x}_t$ unchanged because both numerator
+and denominator scale identically.  This separates position sizing (handled
+by the dynamic risk scalar below) from signal direction.
+
+\paragraph{Dynamic risk scaling.}
+A running EMA of realised squared portfolio P\&L,
+\begin{equation}
+  V_t = \beta\,(\hat{\x}_{t-1}^\top \mathbf{r}_t)^2 + (1-\beta)\,V_{t-1},
+  \quad V_0 = V_\text{init},
+\end{equation}
+is maintained with decay factor $\beta$ (\texttt{cfg.profit\_variance\_decay},
+default $0.99$).  Positions are further divided by $V_t$:
+\begin{equation}
+  \label{eq:risk_scaling}
+  \tilde{\x}_t = \frac{\hat{\x}_t}{V_t}.
+\end{equation}
+This adapts risk dynamically: in regimes of high realised P\&L variance the
+system reduces exposure, and in calm regimes it scales up.
+
+\paragraph{Cash positions.}
+Converting risk positions to dollar notionals requires dividing by per-asset
+volatility:
+\begin{equation}
+  \label{eq:cash_position}
+  p_{i,t} = \frac{\tilde{x}_{i,t}}{\sigma_{i,t}} \times \delta,
+\end{equation}
+where $\delta$ is a position-scale constant (\texttt{cfg.position\_scale},
+default $10^6$).
+
+\begin{remark}
+  The normalised risk position in Eq.~\eqref{eq:risk_position} lives on the
+  ellipsoid $\{\x : \x^\top\tilde{\C}_t\,\x = 1\}$.  Geometrically, it is
+  the direction in signal space that maximises the portfolio's
+  information ratio under the given correlation structure.  This is the
+  Markowitz efficient direction in the unconstrained, full-information limit.
+\end{remark}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Available Analytics}
+\label{sec:analytics}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The library exposes two layers of analytics: optimizer-level diagnostics that
+introspect the numerical behaviour of the solve at each timestamp, and
+portfolio-level analytics that measure the risk-adjusted performance of the
+resulting positions.
+
+\subsection{Optimizer-Level Diagnostics}
+\label{sec:diagnostics}
+
+The following properties are available on a \texttt{BasanosEngine} instance.
+Each returns a Polars \texttt{DataFrame} indexed by timestamp.
+
+\subsubsection{Condition Number}
+
+The condition number $\kappa(\tilde{\C}_t)$ of the shrunk correlation matrix
+quantifies numerical sensitivity of the solve:
+\begin{equation}
+  \kappa(\tilde{\C}_t) = \frac{\lambda_{\max}(\tilde{\C}_t)}
+                              {\lambda_{\min}(\tilde{\C}_t)},
+\end{equation}
+where $\lambda_{\max}$ and $\lambda_{\min}$ are the largest and smallest
+eigenvalues respectively.  A value near $n$ is expected for a healthy,
+lightly shrunk matrix.  Values above $10^{12}$ trigger a warning and indicate
+that positions may be numerically unreliable.
+
+\subsubsection{Effective Rank}
+
+The effective rank measures the true dimensionality of the portfolio by
+computing the Shannon entropy of the eigenvalue spectrum of $\tilde{\C}_t$:
+\begin{equation}
+  \eff(\tilde{\C}_t) = \exp\!\left(-\sum_{i=1}^{n} p_i \ln p_i\right),
+  \quad p_i = \frac{\lambda_i}{\sum_j \lambda_j},
+\end{equation}
+where $\lambda_i$ are the eigenvalues of $\tilde{\C}_t$.  A value of $n$
+indicates a perfectly uniform spectrum (identity-like matrix, assets
+effectively independent).  A value near 1 indicates a rank-1 matrix dominated
+by a single common factor.  Monitoring effective rank over time reveals whether
+the portfolio's correlation structure is diversified or concentrated.
+
+\subsubsection{Solver Residual}
+
+After solving the system in Eq.~\eqref{eq:system}, the Euclidean residual
+\begin{equation}
+  \varepsilon_t = \norm{\tilde{\C}_t\,\x_t - \muvec_t}_2
+\end{equation}
+measures numerical accuracy.  For a well-posed, well-conditioned system,
+$\varepsilon_t$ should be near machine epsilon ($\approx 10^{-15}$).  Large
+residuals flag near-singular matrices or solver fallback from Cholesky to LU.
+
+\subsubsection{Signal Utilisation}
+
+For each asset $i$, signal utilisation measures the fraction of the original
+signal that survives the correlation filter:
+\begin{equation}
+  u_{i,t} = \frac{(\tilde{\C}_t^{-1}\muvec_t)_i}{\mu_{i,t}}.
+\end{equation}
+When $\tilde{\C}_t = \I_n$, all assets have $u_{i,t} = 1$.  Off-diagonal
+correlations attenuate some assets ($u_{i,t} < 1$) and may amplify
+negatively correlated ones ($u_{i,t} > 1$).  This diagnostic reveals
+which assets are most affected by the correlation adjustment and by how much.
+
+\subsubsection{Position Leverage}
+
+Gross leverage at each timestamp is the L1 norm of the cash-position vector:
+\begin{equation}
+  L_t = \norm{\mathbf{p}_t}_1 = \sum_{i=1}^{n} \abs{p_{i,t}}.
+\end{equation}
+Monitoring leverage over time reveals whether the correlation adjustment
+amplifies or dampens total exposure relative to the signal-proportional
+baseline.
+
+\subsubsection{Risk Position}
+
+The risk position is the unscaled cash position before dividing by
+per-asset volatility:
+\begin{equation}
+  x_{i,t}^\text{risk} = p_{i,t} \times \sigma_{i,t}.
+\end{equation}
+It is returned as a \texttt{DataFrame} with the same shape as
+\texttt{cash\_position}, and is useful for cross-asset comparison on a
+common volatility-adjusted scale.
+
+\subsection{Portfolio-Level Analytics}
+\label{sec:portfolio_analytics}
+
+After positions are computed, a \texttt{Portfolio} object provides a
+comprehensive set of performance analytics.  The key properties are
+summarised below.
+
+\subsubsection{P\&L and NAV}
+
+\begin{itemize}
+  \item \textbf{profits} --- Per-asset daily cash P\&L:
+    $\pi_{i,t} = p_{i,t-1}\,(S_{i,t}/S_{i,t-1} - 1)$.
+  \item \textbf{profit} --- Aggregate portfolio daily P\&L:
+    $\Pi_t = \sum_i \pi_{i,t}$.
+  \item \textbf{nav\_accumulated} --- Cumulative additive NAV:
+    $\text{NAV}_t = \text{AUM} + \sum_{s\leq t}\Pi_s$.
+  \item \textbf{nav\_compounded} --- Compounded NAV:
+    $\text{NAV}_t^c = \text{AUM}\,\prod_{s\leq t}(1 + \Pi_s/\text{AUM})$.
+\end{itemize}
+
+\subsubsection{Risk and Drawdown}
+
+\begin{itemize}
+  \item \textbf{highwater} --- Running maximum of the accumulated NAV.
+  \item \textbf{drawdown} --- Distance from the high-water mark:
+    $\text{DD}_t = (\text{HWM}_t - \text{NAV}_t)/\text{HWM}_t$.
+  \item \textbf{returns} --- Daily return series: $r_t = \Pi_t / \text{AUM}$.
+\end{itemize}
+
+\subsubsection{Performance Attribution}
+
+Following \citet{brinson1986}, Basanos decomposes the portfolio return into
+two orthogonal components:
+\begin{description}
+  \item[Tilt (allocation effect)] The return due to time-averaged static
+    weights $\bar{\mathbf{p}} = T^{-1}\sum_t \mathbf{p}_t$.  This measures
+    the passive, structural exposure of the portfolio.
+  \item[Timing (selection effect)] The return due to dynamic deviations from
+    the static tilt: $\Delta\mathbf{p}_t = \mathbf{p}_t - \bar{\mathbf{p}}$.
+    This isolates the pure signal-driven, time-varying component of performance.
+\end{description}
+Together they provide a clean decomposition:
+\begin{equation}
+  \Pi_t = \Pi_t^\text{tilt} + \Pi_t^\text{timing}.
+\end{equation}
+A signal with no edge will show a flat or negative timing NAV even if the
+tilt NAV is positive (due to incidental factor exposures), which directly
+answers the question of whether the dynamic component adds value.
+
+\subsubsection{Turnover}
+
+One-way portfolio turnover at time $t$ is
+\begin{equation}
+  \tau_t = \frac{1}{2}\,\norm{\mathbf{p}_t - \mathbf{p}_{t-1}}_1.
+\end{equation}
+High turnover relative to signal magnitude is a warning sign: either the
+signal is noisy or the correlation matrix is changing rapidly.  Turnover also
+provides an upper bound on the transaction costs that would arise in
+production.
+
+\subsection{Statistical Metrics}
+\label{sec:stats}
+
+The \texttt{Stats} class (available as \texttt{portfolio.stats}) computes
+the following metrics on the portfolio returns series.  All metrics are
+available both for the aggregate portfolio and on a per-asset basis.
+
+\paragraph{Risk-adjusted performance.}
+\begin{itemize}
+  \item \textbf{Sharpe ratio} \citep{sharpe1966}:
+    $S = \sqrt{252}\,\bar{r}/\hat{\sigma}$, where $\bar{r}$ is the mean
+    daily return and $\hat{\sigma}$ is the sample standard deviation.
+  \item \textbf{Calmar ratio}: annualised return divided by maximum drawdown.
+  \item \textbf{Recovery factor}: total return divided by maximum drawdown.
+\end{itemize}
+
+\paragraph{Risk metrics.}
+\begin{itemize}
+  \item \textbf{Volatility}: annualised standard deviation of daily returns.
+  \item \textbf{Value at Risk (VaR)}: parametric VaR at a given confidence
+    level, computed from the sample mean and standard deviation assuming
+    Gaussian returns.
+  \item \textbf{Conditional Value at Risk (CVaR)} \citep{rockafellar2000}:
+    expected shortfall beyond the VaR threshold.
+  \item \textbf{Maximum drawdown} and \textbf{average drawdown}: measures
+    of peak-to-trough loss.
+  \item \textbf{Maximum drawdown duration}: longest period spent below the
+    high-water mark.
+\end{itemize}
+
+\paragraph{Distributional properties.}
+\begin{itemize}
+  \item Mean, skewness, excess kurtosis.
+  \item Best and worst single-day returns.
+\end{itemize}
+
+\paragraph{Win/loss analysis.}
+\begin{itemize}
+  \item Win rate: fraction of days with positive P\&L.
+  \item Monthly win rate: fraction of calendar months with positive P\&L.
+  \item Profit factor: gross profit divided by gross loss.
+  \item Payoff ratio: average win divided by average loss.
+  \item Average win and average loss.
+\end{itemize}
+
+\paragraph{Relative performance.}
+\begin{itemize}
+  \item Up-capture and down-capture ratios versus a user-supplied benchmark.
+  \item Worst $k$-period windows for stress testing.
+\end{itemize}
+
+\paragraph{Rolling metrics.}
+\begin{itemize}
+  \item Rolling Sharpe ratio and rolling volatility time series, both with
+    configurable window sizes.  These reveal whether performance is
+    concentrated in a short regime or consistently earned across the history.
+\end{itemize}
+
+\subsection{Visualisations and Reports}
+\label{sec:viz}
+
+The \texttt{Plots} class (available as \texttt{portfolio.plots}) produces
+interactive Plotly figures:
+
+\begin{itemize}
+  \item \textbf{NAV snapshot} (\texttt{snapshot()}): cumulative NAV and
+    drawdown dashboard.
+  \item \textbf{Lead/lag IR plot} (\texttt{lead\_lag\_ir\_plot(start, end)}):
+    Sharpe ratio as a function of position lag, revealing whether the signal
+    has predictive power ahead of or behind the positions as submitted.  A
+    peak at lag~0 is the expected result for a correctly timed signal.
+  \item \textbf{Lagged performance} (\texttt{lagged\_performance\_plot(...)}):
+    NAV curves for multiple position lags overlaid for comparison.
+  \item \textbf{Rolling Sharpe} (\texttt{rolling\_sharpe\_plot(window)}): time
+    series of rolling Sharpe ratio to assess performance stability.
+  \item \textbf{Rolling volatility} (\texttt{rolling\_volatility\_plot(...)}):
+    time series of rolling annualised volatility.
+  \item \textbf{Annual Sharpe} (\texttt{annual\_sharpe\_plot()}): bar chart of
+    Sharpe ratio by calendar year, useful for detecting single-year anomalies.
+  \item \textbf{Correlation heatmap} (\texttt{correlation\_heatmap()}):
+    time-averaged asset correlation matrix.
+\end{itemize}
+
+A one-call \texttt{Report} object (\texttt{portfolio.report}) renders all of
+the above as a self-contained, dark-themed HTML document that can be served
+via an API or saved to disk.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Usage Example}
+\label{sec:usage}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The following example illustrates the complete workflow from price data and a
+signal to a performance report.
+
+\begin{lstlisting}[language=Python,
+                   caption={End-to-end example: optimization and analytics.}]
+import numpy as np
+import polars as pl
+from basanos.math import BasanosConfig, BasanosEngine
+
+# --- Synthetic data ---
+n_days = 500
+rng = np.random.default_rng(42)
+dates = pl.date_range(
+    pl.date(2022, 1, 1),
+    pl.date(2022, 1, 1) + pl.duration(days=n_days - 1),
+    eager=True,
+)
+prices = pl.DataFrame({
+    "date":  dates,
+    "AAPL":  100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
+    "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
+    "MSFT":  200.0 + np.cumsum(rng.normal(0, 0.9, n_days)),
+})
+mu = pl.DataFrame({
+    "date":  dates,
+    "AAPL":  np.tanh(rng.normal(0, 0.5, n_days)),
+    "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
+    "MSFT":  np.tanh(rng.normal(0, 0.5, n_days)),
+})
+
+# --- Configuration ---
+cfg = BasanosConfig(
+    vola=16,    # EWMA half-life for volatility (days)
+    corr=64,    # EWMA half-life for correlations (>= vola)
+    clip=3.5,   # Clipping threshold (standard deviations)
+    shrink=0.6, # Shrinkage retention weight lambda
+    aum=1e6,    # Assets under management
+)
+
+# --- Optimization ---
+engine    = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+positions = engine.cash_position       # Optimized cash positions
+
+# --- Optimizer diagnostics ---
+kappa    = engine.condition_number     # Matrix condition over time
+eff_rank = engine.effective_rank       # Effective rank over time
+residual = engine.solver_residual      # Solve residual over time
+utilisation = engine.signal_utilisation  # Per-asset signal utilisation
+
+# --- Portfolio analytics ---
+portfolio = engine.portfolio
+print(portfolio.stats.sharpe())        # Annualised Sharpe ratio
+print(portfolio.stats.max_drawdown())  # Maximum drawdown
+decomp = portfolio.tilt_timing_decomp  # Tilt vs. timing NAV curves
+
+# --- Visualisation ---
+fig = portfolio.plots.snapshot()           # NAV + drawdown
+fig = portfolio.plots.lead_lag_ir_plot(-5, 15)  # Lead/lag Sharpe
+portfolio.report.save("output/report")    # Full HTML report
+\end{lstlisting}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Shrinkage as a Sensitivity Analysis}
+\label{sec:sensitivity}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Because $\lambda = 0$ recovers signal-proportional sizing and $\lambda = 1$
+uses the raw EWMA matrix, sweeping $\lambda$ between these extremes provides
+a direct measurement of how much value correlation adjustment adds.
+Basanos exposes this as the method
+\texttt{engine.sharpe\_at\_shrink($\lambda$)}, which re-runs the optimiser
+with a given $\lambda$ and returns the annualised Sharpe ratio.
+
+A typical sweep over $\lambda \in [0, 1]$ with fixed prices and signals
+yields a Sharpe curve that either:
+\begin{enumerate}
+  \item \textbf{Peaks at an interior $\lambda$}: correlation adjustment
+    adds value, and the optimal intensity is data-driven.
+  \item \textbf{Monotonically decreases from $\lambda = 0$}: the signal is
+    already well-diversified and the EWMA correlation estimate introduces
+    estimation noise.
+  \item \textbf{Monotonically increases toward $\lambda = 1$}: a strong
+    correlation structure exists in the data that the signal does not yet
+    exploit.
+\end{enumerate}
+This diagnostic is a fast, parameter-free sanity check before committing
+to a production deployment.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Computational Characteristics}
+\label{sec:compute}
+% ─────────────────────────────────────────────────────────────────────────────
+
+Let $N$ denote the number of assets and $T$ the number of timestamps.
+
+\begin{table}[h]
+  \centering
+  \caption{Computational complexity of the main pipeline steps.}
+  \label{tab:complexity}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Step} & \textbf{Complexity} & \textbf{Notes} \\
+    \midrule
+    Volatility adjustment  & $O(TN)$   & EWMA per asset, linear in both \\
+    Correlation estimation & $O(TN^2)$ & $N^2$ pairs; parallelised via \texttt{lfilter} \\
+    Linear solve (per row) & $O(N^3)$  & Cholesky; total $O(TN^3)$ \\
+    Portfolio analytics    & $O(TN)$   & Element-wise P\&L and NAV \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Memory usage is dominated by storing all correlation matrices:
+$O(TN^2)$ \texttt{float64} values, approximately
+$8 T N^2$ bytes.  For $N=50$, $T=1260$ (five years of daily data), this
+is approximately 25~MB.
+
+Practical limits on an 8~GB workstation:
+\begin{itemize}
+  \item $N \leq 150$, $T \leq 1260$: seconds.
+  \item $N \leq 250$, $T \leq 2520$: 10--60~seconds, \textasciitilde12~GB RAM.
+  \item $N > 500$: exceeds 16~GB RAM.
+\end{itemize}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+% ─────────────────────────────────────────────────────────────────────────────
+
+This paper has presented the signal assessment problem that motivates the
+Basanos library, the correlation-aware linear-solve approach it uses to
+handle non-trivial portfolio geometry, and the suite of analytics it makes
+available at both the optimizer and portfolio level.
+
+The key insight is that raw signal-proportional sizing conflates two
+distinct quantities: (i) the predictive content of the signal and (ii) its
+interaction with the portfolio correlation structure.  By inverting the
+correlation matrix explicitly---through a normalised solution of
+$\tilde{\C}_t\,\x_t = \muvec_t$---Basanos disentangles these effects.
+The result is a clean measurement surface on which signal quality can be
+assessed through standard metrics: Sharpe ratio, drawdown, tilt/timing
+decomposition, and lead/lag analysis.
+
+The deliberate absence of hard constraints is a feature, not a
+limitation.  It means the realised P\&L measures the signal's intrinsic
+edge rather than its interaction with a production constraint set.  A signal
+that cannot pass this first hurdle is unlikely to survive the additional
+friction of a full production system.
+
+\appendix
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Configuration Parameters}
+\label{app:config}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{table}[h]
+  \centering
+  \caption{\texttt{BasanosConfig} parameters and their roles.}
+  \label{tab:config}
+  \begin{tabular}{>{\ttfamily}lp{6cm}l}
+    \toprule
+    \normalfont\textbf{Parameter} & \textbf{Description} & \textbf{Default} \\
+    \midrule
+    vola   & EWMA half-life for volatility (days). Required. & --- \\
+    corr   & EWMA half-life for correlation (days, $\geq$ vola). Required. & --- \\
+    clip   & Clipping threshold for vol-adjusted returns ($> 0$). Required. & --- \\
+    shrink & Shrinkage retention weight $\lambda \in [0,1]$. Required. & --- \\
+    aum    & Assets under management for position scaling ($> 0$). Required. & --- \\
+    profit\_variance\_init  & Initial value for P\&L variance EMA. & 1.0 \\
+    profit\_variance\_decay & EMA decay factor for realised P\&L variance. & 0.99 \\
+    denom\_tol & Zero threshold for normalisation denominator. & $10^{-12}$ \\
+    position\_scale & Scaling factor applied before AUM normalisation. & $10^6$ \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Optimizer Diagnostics Summary}
+\label{app:diagnostics}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\begin{table}[h]
+  \centering
+  \caption{Properties available on \texttt{BasanosEngine}.}
+  \label{tab:diagnostics}
+  \begin{tabular}{>{\ttfamily}lp{7.5cm}}
+    \toprule
+    \normalfont\textbf{Property} & \textbf{Description} \\
+    \midrule
+    cash\_position    & Optimized cash positions; the primary output. \\
+    risk\_position    & Cash positions multiplied by per-asset volatility; positions on a common vol-adjusted scale. \\
+    position\_leverage & L1 norm of cash positions (gross leverage) per timestamp. \\
+    condition\_number & Condition number $\kappa(\tilde{\C}_t)$ per timestamp. \\
+    effective\_rank   & Entropy-based effective rank of $\tilde{\C}_t$ per timestamp. \\
+    solver\_residual  & Euclidean residual $\|\tilde{\C}_t\x_t - \muvec_t\|_2$ per timestamp. \\
+    signal\_utilisation & Per-asset fraction of signal surviving the correlation filter. \\
+    portfolio         & \texttt{Portfolio} instance built from the optimized positions. \\
+    cor               & Dict of per-timestamp raw EWMA correlation matrices. \\
+    cor\_tensor       & All correlation matrices as an $(T, N, N)$ NumPy array. \\
+    vola              & Per-asset EWMA volatility estimates. \\
+    ret\_adj          & Volatility-adjusted, clipped log returns. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\bibliographystyle{plainnat}
+\bibliography{basanos}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\end{document}
