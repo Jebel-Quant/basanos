@@ -420,6 +420,7 @@ class Report:
         monthly_heatmap_div = _try_div(pf.plots.monthly_returns_heatmap)
         corr_div = _try_div(pf.plots.correlation_heatmap)
         lead_lag_div = _try_div(pf.plots.lead_lag_ir_plot)
+        trading_cost_div = _try_div(pf.plots.trading_cost_impact_plot)
 
         # ── Stats table ───────────────────────────────────────────────────────
         stats_table = _stats_table_html(pf.stats.summary())
@@ -473,6 +474,7 @@ class Report:
   <a href="#stats-table">Statistics</a>
   <a href="#correlation">Correlation</a>
   <a href="#leadlag">Lead / Lag</a>
+  <a href="#costs">Trading Costs</a>
   <a href="#turnover">Turnover</a>
 </nav>
 
@@ -514,6 +516,11 @@ class Report:
   <section class="section" id="leadlag">
     <h2 class="section-title">Lead / Lag Information Ratio</h2>
     <div class="chart-card">{lead_lag_div}</div>
+  </section>
+
+  <section class="section" id="costs">
+    <h2 class="section-title">Trading Cost Impact</h2>
+    <div class="chart-card">{trading_cost_div}</div>
   </section>
 
   <section class="section" id="turnover">

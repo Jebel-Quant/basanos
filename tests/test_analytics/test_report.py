@@ -115,7 +115,17 @@ def test_to_html_default_title_present(multi_year_portfolio):
 def test_to_html_contains_section_ids(multi_year_portfolio):
     """All expected section ids are present in the HTML output."""
     html = multi_year_portfolio.report.to_html()
-    for section_id in ("performance", "risk", "annual", "monthly", "stats-table", "correlation", "leadlag", "turnover"):
+    for section_id in (
+        "performance",
+        "risk",
+        "annual",
+        "monthly",
+        "stats-table",
+        "correlation",
+        "leadlag",
+        "costs",
+        "turnover",
+    ):
         assert f'id="{section_id}"' in html, f"Missing section id: {section_id}"
 
 
@@ -144,6 +154,7 @@ def test_to_html_contains_toc_links(multi_year_portfolio):
     html = multi_year_portfolio.report.to_html()
     assert 'href="#performance"' in html
     assert 'href="#turnover"' in html
+    assert 'href="#costs"' in html
 
 
 def test_to_html_contains_stats_table(multi_year_portfolio):

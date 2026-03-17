@@ -772,3 +772,123 @@ def test_turnover_summary_without_date_column(int_portfolio):
     """turnover_summary should work for integer-indexed portfolios."""
     summary = int_portfolio.turnover_summary()
     assert list(summary["metric"]) == ["mean_daily_turnover", "mean_weekly_turnover", "turnover_std"]
+
+
+# ── cost_adjusted_returns ────────────────────────────────────────────────────
+
+
+def test_cost_adjusted_returns_zero_bps_equals_base_returns(turnover_portfolio):
+    """cost_adjusted_returns(0) must equal the base returns exactly."""
+    base = turnover_portfolio.returns
+    adj = turnover_portfolio.cost_adjusted_returns(0.0)
+    pt.assert_series_equal(adj["returns"], base["returns"])
+
+
+def test_cost_adjusted_returns_positive_costs_reduce_returns(turnover_portfolio):
+    """Positive trading costs must strictly reduce returns for a portfolio with non-zero turnover."""
+    base = turnover_portfolio.returns["returns"]
+    adj = turnover_portfolio.cost_adjusted_returns(5.0)["returns"]
+    # Sum of adjusted returns must be less than sum of base returns
+    assert float(adj.sum()) < float(base.sum())
+
+
+def test_cost_adjusted_returns_preserves_date_column(turnover_portfolio):
+    """cost_adjusted_returns must preserve the date column when present."""
+    adj = turnover_portfolio.cost_adjusted_returns(10.0)
+    assert "date" in adj.columns
+
+
+def test_cost_adjusted_returns_negative_bps_raises(turnover_portfolio):
+    """cost_adjusted_returns must raise ValueError for negative cost_bps."""
+    with pytest.raises(ValueError, match=r".*"):
+        turnover_portfolio.cost_adjusted_returns(-1.0)
+
+
+def test_cost_adjusted_returns_higher_bps_lower_returns(turnover_portfolio):
+    """Higher basis points must lead to lower (or equal) total adjusted returns."""
+    adj5 = float(turnover_portfolio.cost_adjusted_returns(5.0)["returns"].sum())
+    adj10 = float(turnover_portfolio.cost_adjusted_returns(10.0)["returns"].sum())
+    assert adj10 <= adj5
+
+
+# ── trading_cost_impact ──────────────────────────────────────────────────────
+
+
+def test_trading_cost_impact_columns(turnover_portfolio):
+    """trading_cost_impact must return a DataFrame with 'cost_bps' and 'sharpe' columns."""
+    impact = turnover_portfolio.trading_cost_impact()
+    assert "cost_bps" in impact.columns
+    assert "sharpe" in impact.columns
+
+
+def test_trading_cost_impact_default_range(turnover_portfolio):
+    """trading_cost_impact default runs from 0 to 20 inclusive (21 rows)."""
+    impact = turnover_portfolio.trading_cost_impact()
+    assert impact.height == 21
+    assert int(impact["cost_bps"][0]) == 0
+    assert int(impact["cost_bps"][-1]) == 20
+
+
+def test_trading_cost_impact_custom_max_bps(turnover_portfolio):
+    """trading_cost_impact(max_bps=5) must produce exactly 6 rows (0..5)."""
+    impact = turnover_portfolio.trading_cost_impact(max_bps=5)
+    assert impact.height == 6
+    assert list(impact["cost_bps"].to_list()) == [0, 1, 2, 3, 4, 5]
+
+
+def test_trading_cost_impact_sharpe_decreases_with_cost():
+    """Sharpe ratio must be non-increasing as trading costs increase.
+
+    Uses a portfolio with genuine daily returns so that the cost deduction
+    is meaningful.  A linearly rising price series gives positive returns;
+    constant positions give measurable turnover so costs actually bite.
+    """
+    n = 252
+    start = date(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True).cast(pl.Date)
+    # Steadily rising price → positive returns
+    prices = pl.DataFrame({"date": dates, "A": pl.Series([100.0 * (1.001**i) for i in range(n)])})
+    # Alternating position changes → non-zero daily turnover
+    positions = pl.DataFrame({"date": dates, "A": pl.Series([1000.0 + 100.0 * (i % 2) for i in range(n)])})
+    pf = Portfolio.from_cash_position(prices=prices, cash_position=positions, aum=1e5)
+    impact = pf.trading_cost_impact(max_bps=10)
+    sharpe = [s for s in impact["sharpe"].to_list() if s == s]  # drop NaN
+    # Allow floating-point ties via >= check element-by-element
+    for i in range(len(sharpe) - 1):
+        assert sharpe[i] >= sharpe[i + 1] - 1e-9, f"Sharpe increased at bps={i}: {sharpe[i]} → {sharpe[i + 1]}"
+
+
+def test_trading_cost_impact_invalid_max_bps_raises(turnover_portfolio):
+    """trading_cost_impact must raise ValueError for max_bps=0 or non-integer."""
+    with pytest.raises(ValueError, match=r".*"):
+        turnover_portfolio.trading_cost_impact(max_bps=0)
+    with pytest.raises(ValueError, match=r".*"):
+        turnover_portfolio.trading_cost_impact(max_bps=-1)  # type: ignore[arg-type]
+
+
+# ── Plots.trading_cost_impact_plot ───────────────────────────────────────────
+
+
+def test_trading_cost_impact_plot_returns_figure(turnover_portfolio):
+    """trading_cost_impact_plot must return a Plotly Figure."""
+    fig = turnover_portfolio.plots.trading_cost_impact_plot()
+    assert isinstance(fig, go.Figure)
+
+
+def test_trading_cost_impact_plot_has_one_trace(turnover_portfolio):
+    """trading_cost_impact_plot figure must have exactly one scatter trace."""
+    fig = turnover_portfolio.plots.trading_cost_impact_plot()
+    scatter_traces = [t for t in fig.data if isinstance(t, go.Scatter)]
+    assert len(scatter_traces) == 1
+
+
+def test_trading_cost_impact_plot_x_axis_length(turnover_portfolio):
+    """trading_cost_impact_plot trace x-values must span 0..20 (21 points)."""
+    fig = turnover_portfolio.plots.trading_cost_impact_plot()
+    assert len(fig.data[0].x) == 21
+
+
+def test_trading_cost_impact_plot_title_contains_bps(turnover_portfolio):
+    """trading_cost_impact_plot figure title must mention 'bps'."""
+    fig = turnover_portfolio.plots.trading_cost_impact_plot()
+    assert "bps" in fig.layout.title.text.lower()
