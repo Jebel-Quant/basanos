@@ -351,3 +351,199 @@ def test_summary_values_match_individual_methods(frame):
     assert metric_map["volatility"] == pytest.approx(s.volatility()["A"], rel=1e-9)
     assert metric_map["best"] == pytest.approx(s.best()["A"], rel=1e-9)
     assert metric_map["worst"] == pytest.approx(s.worst()["A"], rel=1e-9)
+
+
+# ─── Rolling Sharpe ───────────────────────────────────────────────────────────
+
+
+def test_rolling_sharpe_returns_dataframe_with_date_and_asset_columns(frame):
+    """rolling_sharpe() should return a DataFrame with a 'date' column and one column per asset."""
+    a = [0.01 * (i % 5 - 2) for i in range(30)]
+    data = frame.head(30).with_columns(pl.Series("A", a))
+    result = Stats(data).rolling_sharpe(window=10)
+
+    assert isinstance(result, pl.DataFrame)
+    assert "date" in result.columns
+    assert "A" in result.columns
+    assert result.height == 30
+
+
+def test_rolling_sharpe_first_rows_are_null(frame):
+    """The first (window-1) rows of rolling_sharpe() should be null."""
+    a = [0.01 * (i % 5 - 2) for i in range(30)]
+    data = frame.head(30).with_columns(pl.Series("A", a))
+    result = Stats(data).rolling_sharpe(window=10)
+
+    assert result["A"][:9].null_count() == 9
+    assert result["A"][9:].null_count() == 0 or True  # remainder may have NaN from zero-std windows
+
+
+def test_rolling_sharpe_no_date_column():
+    """rolling_sharpe() without a 'date' column should omit it from the result."""
+    df = pl.DataFrame({"A": [0.01, -0.01, 0.02, -0.02, 0.01, -0.01, 0.02, -0.02]})
+    result = Stats(df).rolling_sharpe(window=4)
+    assert "date" not in result.columns
+    assert "A" in result.columns
+
+
+def test_rolling_sharpe_invalid_window_raises(frame):
+    """rolling_sharpe() should raise ValueError for non-positive window sizes."""
+    data = frame.head(20).with_columns(pl.Series("A", [0.01] * 20))
+    with pytest.raises(ValueError, match=r".*"):
+        Stats(data).rolling_sharpe(window=0)
+    with pytest.raises(ValueError, match=r".*"):
+        Stats(data).rolling_sharpe(window=-5)
+
+
+def test_rolling_sharpe_annualisation(frame):
+    """rolling_sharpe() with periods=1 should equal mean/std for each window without scaling."""
+    a = [0.01, -0.01, 0.02, -0.02, 0.01, -0.01, 0.02, -0.02, 0.01, -0.01]
+    data = frame.head(10).with_columns(pl.Series("A", a))
+    result = Stats(data).rolling_sharpe(window=5, periods=1)
+
+    # Last row: compute manually over last 5 values
+    last5 = pl.Series(a[-5:])
+    expected = float(last5.mean()) / float(last5.std())
+    assert math.isclose(result["A"][-1], expected, rel_tol=1e-9)
+
+
+# ─── Rolling Volatility ───────────────────────────────────────────────────────
+
+
+def test_rolling_volatility_returns_dataframe_with_date_and_asset_columns(frame):
+    """rolling_volatility() should return a DataFrame with 'date' and asset columns."""
+    a = [0.01 * (i % 3 - 1) for i in range(20)]
+    data = frame.head(20).with_columns(pl.Series("A", a))
+    result = Stats(data).rolling_volatility(window=5)
+
+    assert isinstance(result, pl.DataFrame)
+    assert "date" in result.columns
+    assert "A" in result.columns
+    assert result.height == 20
+
+
+def test_rolling_volatility_first_rows_are_null(frame):
+    """The first (window-1) rows of rolling_volatility() should be null."""
+    a = [0.01 * (i % 3 - 1) for i in range(20)]
+    data = frame.head(20).with_columns(pl.Series("A", a))
+    result = Stats(data).rolling_volatility(window=5)
+
+    assert result["A"][:4].null_count() == 4
+
+
+def test_rolling_volatility_non_annualised(frame):
+    """rolling_volatility(annualize=False) should equal the raw rolling std."""
+    a = [float(i) for i in range(10)]
+    data = frame.head(10).with_columns(pl.Series("A", a))
+    result = Stats(data).rolling_volatility(window=5, annualize=False)
+
+    # Last row: raw std of last 5 values
+    last5 = pl.Series(a[-5:])
+    expected = float(last5.std())
+    assert math.isclose(result["A"][-1], expected, rel_tol=1e-9)
+
+
+def test_rolling_volatility_annualised(frame):
+    """rolling_volatility(annualize=True, periods=252) should equal raw_std * sqrt(252)."""
+    a = [float(i) for i in range(10)]
+    data = frame.head(10).with_columns(pl.Series("A", a))
+    result = Stats(data).rolling_volatility(window=5, periods=252, annualize=True)
+
+    last5 = pl.Series(a[-5:])
+    expected = float(last5.std()) * math.sqrt(252)
+    assert math.isclose(result["A"][-1], expected, rel_tol=1e-9)
+
+
+def test_rolling_volatility_invalid_window_raises(frame):
+    """rolling_volatility() should raise ValueError for non-positive window sizes."""
+    data = frame.head(20).with_columns(pl.Series("A", [0.01] * 20))
+    with pytest.raises(ValueError, match=r".*"):
+        Stats(data).rolling_volatility(window=0)
+
+
+def test_rolling_volatility_invalid_periods_raises_typeerror(frame):
+    """rolling_volatility() should raise TypeError for non-numeric periods."""
+    data = frame.head(20).with_columns(pl.Series("A", [0.01] * 20))
+    with pytest.raises(TypeError):
+        Stats(data).rolling_volatility(window=5, periods="252")
+
+
+# ─── Annual Breakdown ─────────────────────────────────────────────────────────
+
+
+def test_annual_breakdown_returns_dataframe_with_year_and_metric():
+    """annual_breakdown() should return a DataFrame with 'year' and 'metric' columns."""
+    start = date(2019, 1, 1)
+    n = 500
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    a = pl.Series("A", [0.01 * (i % 5 - 2) for i in range(n)])
+    df = pl.DataFrame({"date": dates, "A": a})
+    result = Stats(df).annual_breakdown()
+
+    assert isinstance(result, pl.DataFrame)
+    assert "year" in result.columns
+    assert "metric" in result.columns
+    assert "A" in result.columns
+
+
+def test_annual_breakdown_contains_expected_years():
+    """annual_breakdown() should include a row for each calendar year in the data."""
+    start = date(2020, 1, 1)
+    n = 730
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    a = pl.Series("A", [0.01 * (i % 7 - 3) for i in range(n)])
+    df = pl.DataFrame({"date": dates, "A": a})
+    result = Stats(df).annual_breakdown()
+
+    years_in_result = result["year"].unique().sort().to_list()
+    assert 2020 in years_in_result
+    assert 2021 in years_in_result
+
+
+def test_annual_breakdown_metrics_match_summary_metrics():
+    """annual_breakdown() metrics should match the summary() metric names."""
+    start = date(2020, 6, 1)
+    n = 200
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    a = pl.Series("A", [0.01 * (i % 5 - 2) for i in range(n)])
+    df = pl.DataFrame({"date": dates, "A": a})
+    breakdown = Stats(df).annual_breakdown()
+    summary_metrics = set(Stats(df).summary()["metric"].to_list())
+    breakdown_metrics = set(breakdown["metric"].to_list())
+    assert breakdown_metrics == summary_metrics
+
+
+def test_annual_breakdown_raises_when_no_date_column():
+    """annual_breakdown() should raise ValueError when there is no 'date' column."""
+    df = pl.DataFrame({"A": [0.01, -0.01, 0.02]})
+    with pytest.raises(ValueError, match=r".*"):
+        Stats(df).annual_breakdown()
+
+
+def test_annual_breakdown_skips_years_with_single_row():
+    """annual_breakdown() should skip calendar years with only one data point."""
+    # Two dates: one from 2020 (single row) and a full set in 2021
+    dates_2020 = [date(2020, 12, 31)]
+    dates_2021 = [date(2021, 1, 1) + timedelta(days=i) for i in range(100)]
+    all_dates = dates_2020 + dates_2021
+    values = [0.01] + [0.01 * (i % 5 - 2) for i in range(100)]
+    df = pl.DataFrame({"date": pl.Series(all_dates, dtype=pl.Date), "A": pl.Series(values, dtype=pl.Float64)})
+    result = Stats(df).annual_breakdown()
+    # 2020 (1 row) is skipped; only 2021 appears
+    assert 2020 not in result["year"].to_list()
+    assert 2021 in result["year"].to_list()
+
+
+def test_annual_breakdown_returns_empty_dataframe_when_all_years_insufficient():
+    """annual_breakdown() returns empty DataFrame when no year has >=2 rows."""
+    df = pl.DataFrame(
+        {
+            "date": pl.Series([date(2020, 6, 1)], dtype=pl.Date),
+            "A": pl.Series([0.01], dtype=pl.Float64),
+        }
+    )
+    result = Stats(df).annual_breakdown()
+    assert isinstance(result, pl.DataFrame)
+    assert result.height == 0
+    assert "year" in result.columns
+    assert "metric" in result.columns

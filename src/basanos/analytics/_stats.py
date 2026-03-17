@@ -316,6 +316,113 @@ class Stats:
         factor = periods or 1
         return float(res * np.sqrt(factor))
 
+    def rolling_sharpe(self, window: int = 63, periods: int | float | None = None) -> pl.DataFrame:
+        """Compute rolling annualised Sharpe ratio over a sliding window.
+
+        Args:
+            window: Number of periods in the rolling window. Defaults to 63.
+            periods: Number of periods per year for annualisation. Defaults to
+                ``periods_per_year``.
+
+        Returns:
+            pl.DataFrame: A DataFrame with the date column (when present) and
+                one column per asset.  The first ``window - 1`` rows will be
+                null.
+
+        Raises:
+            ValueError: If ``window`` is not a positive integer.
+
+        """
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError
+
+        scale = np.sqrt(periods or self.periods_per_year)
+
+        exprs = [
+            (
+                pl.col(asset).rolling_mean(window_size=window) / pl.col(asset).rolling_std(window_size=window) * scale
+            ).alias(asset)
+            for asset in self.assets
+        ]
+
+        cols: list[str | pl.Expr] = (["date"] if "date" in self.data.columns else []) + exprs  # type: ignore[assignment]
+        return self.data.select(cols)
+
+    def rolling_volatility(
+        self, window: int = 63, periods: int | float | None = None, annualize: bool = True
+    ) -> pl.DataFrame:
+        """Compute rolling volatility over a sliding window.
+
+        Args:
+            window: Number of periods in the rolling window. Defaults to 63.
+            periods: Number of periods per year for annualisation. Defaults to
+                ``periods_per_year``.
+            annualize: Whether to annualise the result by multiplying by
+                ``sqrt(periods)``. Defaults to True.
+
+        Returns:
+            pl.DataFrame: A DataFrame with the date column (when present) and
+                one column per asset.  The first ``window - 1`` rows will be
+                null.
+
+        Raises:
+            ValueError: If ``window`` is not a positive integer.
+            TypeError: If ``periods`` is not numeric.
+
+        """
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError
+
+        raw_periods = periods or self.periods_per_year
+        if not isinstance(raw_periods, int | float):
+            raise TypeError
+
+        factor = np.sqrt(raw_periods) if annualize else 1.0
+
+        exprs = [(pl.col(asset).rolling_std(window_size=window) * factor).alias(asset) for asset in self.assets]
+
+        cols: list[str | pl.Expr] = (["date"] if "date" in self.data.columns else []) + exprs  # type: ignore[assignment]
+        return self.data.select(cols)
+
+    def annual_breakdown(self) -> pl.DataFrame:
+        """Return summary statistics broken down by calendar year.
+
+        Groups the data by calendar year using the ``date`` column, computes
+        a full :py:meth:`summary` for each year, and stacks the results into
+        a single DataFrame with an additional ``year`` column.
+
+        Returns:
+            pl.DataFrame: A DataFrame with columns ``year``, ``metric``, and
+                one column per asset, sorted by ``year``.
+
+        Raises:
+            ValueError: If the DataFrame has no ``date`` column.
+
+        """
+        if "date" not in self.data.columns:
+            raise ValueError
+
+        years = self.data["date"].dt.year().unique().sort().to_list()
+
+        frames: list[pl.DataFrame] = []
+        for year in years:
+            year_data = self.data.filter(self.data["date"].dt.year() == year)
+            if year_data.height < 2:
+                continue
+            year_summary = Stats(year_data).summary()
+            year_summary = year_summary.with_columns(pl.lit(year).alias("year"))
+            frames.append(year_summary)
+
+        if not frames:
+            # Build empty DataFrame with expected schema
+            schema = {"year": pl.Int32, "metric": pl.String, **dict.fromkeys(self.assets, pl.Float64)}
+            return pl.DataFrame(schema=schema)
+
+        result = pl.concat(frames)
+        # Move 'year' to front
+        ordered = ["year", "metric", *[c for c in result.columns if c not in ("year", "metric")]]
+        return result.select(ordered)
+
     def summary(self) -> pl.DataFrame:
         """Return a DataFrame summarising all statistics for each asset.
 

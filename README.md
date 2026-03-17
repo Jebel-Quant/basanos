@@ -401,6 +401,9 @@ from basanos.analytics import Portfolio
 |--------|-------------|
 | `sharpe(periods)` | Annualized Sharpe ratio |
 | `volatility(periods, annualize)` | Standard deviation of returns |
+| `rolling_sharpe(window, periods)` | Rolling annualised Sharpe ratio time series |
+| `rolling_volatility(window, periods, annualize)` | Rolling volatility time series |
+| `annual_breakdown()` | Full summary statistics broken down by calendar year |
 | `skew()` | Skewness |
 | `kurtosis()` | Excess kurtosis |
 | `value_at_risk(alpha, sigma)` | Parametric VaR |
@@ -410,6 +413,14 @@ from basanos.analytics import Portfolio
 | `avg_loss()` | Mean negative return |
 | `best()` | Maximum single-period return |
 | `worst()` | Minimum single-period return |
+
+**`Plots` methods (rolling & sub-period)**
+
+| Method | Description |
+|--------|-------------|
+| `rolling_sharpe_plot(window)` | Line chart of rolling Sharpe ratio |
+| `rolling_volatility_plot(window)` | Line chart of rolling annualised volatility |
+| `annual_sharpe_plot()` | Bar chart of Sharpe ratio by calendar year |
 
 ## Configuration Reference
 
