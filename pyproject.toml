@@ -16,6 +16,11 @@ dependencies = [
     "scipy>=1.17.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/jebel-quant/basanos"
+Repository = "https://github.com/jebel-quant/basanos"
+Issues = "https://github.com/jebel-quant/basanos/issues-cli"
+
 
 [dependency-groups]
 dev = [
