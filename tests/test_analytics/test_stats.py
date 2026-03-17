@@ -372,6 +372,14 @@ def test_monthly_win_rate_no_date_column_returns_nan():
     assert math.isnan(result["A"])
 
 
+def test_monthly_win_rate_all_null_returns_returns_nan():
+    """monthly_win_rate returns nan when all asset values are null (n_total == 0)."""
+    dates = pl.date_range(start=date(2020, 1, 1), end=date(2020, 1, 10), interval="1d", eager=True)
+    df = pl.DataFrame({"date": dates, "A": pl.Series([None] * 10, dtype=pl.Float64)})
+    result = Stats(df).monthly_win_rate()
+    assert math.isnan(result["A"])
+
+
 # ─── Worst N periods ──────────────────────────────────────────────────────────
 
 
@@ -437,6 +445,48 @@ def test_down_capture_no_down_periods_returns_nan(frame):
     """down_capture returns nan when benchmark never has negative periods."""
     benchmark = pl.Series("bench", [0.01, 0.02, 0.03])
     data = frame.head(3).with_columns(pl.Series("A", [0.01, -0.01, 0.02]))
+    result = Stats(data).down_capture(benchmark)
+    assert math.isnan(result["A"])
+
+
+def test_up_capture_bench_geom_zero_returns_nan(frame):
+    """up_capture returns nan when the benchmark geometric mean rounds to zero.
+
+    Uses sub-epsilon positive returns so that ``1.0 + r == 1.0`` in float64,
+    causing the product to equal 1.0 and ``bench_geom`` to be exactly 0.0.
+    """
+    tiny = 5e-17  # 1.0 + tiny == 1.0 in IEEE 754 float64
+    benchmark = pl.Series("bench", [tiny, tiny, tiny])
+    data = frame.head(3).with_columns(pl.Series("A", [0.01, 0.02, 0.03]))
+    result = Stats(data).up_capture(benchmark)
+    assert math.isnan(result["A"])
+
+
+def test_up_capture_strategy_null_during_up_periods_returns_nan(frame):
+    """up_capture returns nan per-asset when strategy values are all null in up periods."""
+    benchmark = pl.Series("bench", [0.01, 0.02, 0.03])
+    data = frame.head(3).with_columns(pl.Series("A", [None, None, None], dtype=pl.Float64))
+    result = Stats(data).up_capture(benchmark)
+    assert math.isnan(result["A"])
+
+
+def test_down_capture_bench_geom_zero_returns_nan(frame):
+    """down_capture returns nan when the benchmark geometric mean rounds to zero.
+
+    Uses sub-epsilon negative returns so that ``1.0 + r == 1.0`` in float64,
+    causing the product to equal 1.0 and ``bench_geom`` to be exactly 0.0.
+    """
+    tiny = -5e-17  # 1.0 + tiny == 1.0 in IEEE 754 float64
+    benchmark = pl.Series("bench", [tiny, tiny, tiny])
+    data = frame.head(3).with_columns(pl.Series("A", [-0.01, -0.02, -0.03]))
+    result = Stats(data).down_capture(benchmark)
+    assert math.isnan(result["A"])
+
+
+def test_down_capture_strategy_null_during_down_periods_returns_nan(frame):
+    """down_capture returns nan per-asset when strategy values are all null in down periods."""
+    benchmark = pl.Series("bench", [-0.01, -0.02, -0.03])
+    data = frame.head(3).with_columns(pl.Series("A", [None, None, None], dtype=pl.Float64))
     result = Stats(data).down_capture(benchmark)
     assert math.isnan(result["A"])
 
