@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import numpy as np
 import plotly.graph_objects as go
+import polars as pl
 import pytest
 
 from basanos.analytics import Portfolio
@@ -143,4 +146,82 @@ def test_correlation_heatmap_custom_args_title_and_name(portfolio):
     assert isinstance(fig, go.Figure)
     assert fig.layout.title.text == custom_title
     assert isinstance(fig.data[0], go.Heatmap)
+    _ = fig.to_dict()
+
+
+# ─── Fixtures for rolling / multi-year tests ─────────────────────────────────
+
+
+@pytest.fixture
+def long_portfolio() -> Portfolio:
+    """Three-year portfolio used to test rolling and annual-breakdown plots."""
+    n = 756  # ~3 years of trading days
+    start = date(2020, 1, 1)
+    end = start + timedelta(days=n - 1)
+    dates = pl.date_range(start=start, end=end, interval="1d", eager=True).cast(pl.Date)
+
+    a = pl.Series([100.0 * (1.001**i) for i in range(n)], dtype=pl.Float64)
+    b = pl.Series([200.0 + 5.0 * np.sin(0.1 * i) for i in range(n)], dtype=pl.Float64)
+    prices = pl.DataFrame({"date": dates, "A": a, "B": b})
+
+    pos_a = pl.Series([1000.0 + float(i % 10) for i in range(n)], dtype=pl.Float64)
+    pos_b = pl.Series([500.0 + float(i % 5) for i in range(n)], dtype=pl.Float64)
+    positions = pl.DataFrame({"date": dates, "A": pos_a, "B": pos_b})
+
+    return Portfolio.from_cash_position(prices=prices, cash_position=positions, aum=1e6)
+
+
+# ─── Rolling Sharpe plot ──────────────────────────────────────────────────────
+
+
+def test_rolling_sharpe_plot_returns_figure_with_traces(long_portfolio):
+    """rolling_sharpe_plot returns a Figure with one trace per asset."""
+    fig = long_portfolio.plots.rolling_sharpe_plot(window=63)
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) >= 1
+    for trace in fig.data:
+        assert isinstance(trace, go.Scatter)
+    assert "Rolling Sharpe" in fig.layout.title.text
+    _ = fig.to_dict()
+
+
+def test_rolling_sharpe_plot_invalid_window_raises(long_portfolio):
+    """rolling_sharpe_plot should raise ValueError for non-positive window."""
+    with pytest.raises(ValueError, match=r".*"):
+        _ = long_portfolio.plots.rolling_sharpe_plot(window=0)
+    with pytest.raises(ValueError, match=r".*"):
+        _ = long_portfolio.plots.rolling_sharpe_plot(window=-1)
+
+
+# ─── Rolling Volatility plot ──────────────────────────────────────────────────
+
+
+def test_rolling_volatility_plot_returns_figure_with_traces(long_portfolio):
+    """rolling_volatility_plot returns a Figure with one trace per asset."""
+    fig = long_portfolio.plots.rolling_volatility_plot(window=63)
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) >= 1
+    for trace in fig.data:
+        assert isinstance(trace, go.Scatter)
+    assert "Rolling Volatility" in fig.layout.title.text
+    _ = fig.to_dict()
+
+
+def test_rolling_volatility_plot_invalid_window_raises(long_portfolio):
+    """rolling_volatility_plot should raise ValueError for non-positive window."""
+    with pytest.raises(ValueError, match=r".*"):
+        _ = long_portfolio.plots.rolling_volatility_plot(window=0)
+
+
+# ─── Annual Sharpe plot ───────────────────────────────────────────────────────
+
+
+def test_annual_sharpe_plot_returns_figure_with_bars(long_portfolio):
+    """annual_sharpe_plot returns a bar Figure with year labels on x-axis."""
+    fig = long_portfolio.plots.annual_sharpe_plot()
+    assert isinstance(fig, go.Figure)
+    assert len(fig.data) >= 1
+    for trace in fig.data:
+        assert isinstance(trace, go.Bar)
+    assert "Annual Sharpe" in fig.layout.title.text
     _ = fig.to_dict()

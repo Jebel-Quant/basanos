@@ -261,6 +261,166 @@ class Plots:
 
         return fig
 
+    def rolling_sharpe_plot(self, window: int = 63) -> go.Figure:
+        """Plot rolling annualised Sharpe ratio over time.
+
+        Computes the rolling Sharpe for each asset column using the given
+        window and renders one line per asset.
+
+        Args:
+            window: Rolling-window size in periods. Defaults to 63.
+
+        Returns:
+            A Plotly Figure with one trace per asset.
+
+        Raises:
+            ValueError: If ``window`` is not a positive integer.
+        """
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError
+
+        rolling = self.portfolio.stats.rolling_sharpe(window=window)
+
+        fig = go.Figure()
+        date_col = rolling["date"] if "date" in rolling.columns else None
+        for col in rolling.columns:
+            if col == "date":
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=date_col,
+                    y=rolling[col],
+                    mode="lines",
+                    name=col,
+                    line={"width": 1},
+                )
+            )
+
+        fig.add_hline(y=0, line_width=1, line_dash="dash", line_color="gray")
+
+        fig.update_layout(
+            title=f"Rolling Sharpe Ratio ({window}-period window)",
+            hovermode="x unified",
+            plot_bgcolor="white",
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+            xaxis={
+                "rangeselector": {
+                    "buttons": [
+                        {"count": 6, "label": "6m", "step": "month", "stepmode": "backward"},
+                        {"count": 1, "label": "1y", "step": "year", "stepmode": "backward"},
+                        {"count": 3, "label": "3y", "step": "year", "stepmode": "backward"},
+                        {"step": "year", "stepmode": "todate", "label": "YTD"},
+                        {"step": "all", "label": "All"},
+                    ]
+                },
+                "rangeslider": {"visible": False},
+                "type": "date",
+            },
+        )
+        fig.update_yaxes(title_text="Sharpe ratio")
+        fig.update_xaxes(showgrid=True, gridwidth=0.5, gridcolor="lightgrey")
+        fig.update_yaxes(showgrid=True, gridwidth=0.5, gridcolor="lightgrey")
+        return fig
+
+    def rolling_volatility_plot(self, window: int = 63) -> go.Figure:
+        """Plot rolling annualised volatility over time.
+
+        Computes the rolling volatility for each asset column using the given
+        window and renders one line per asset.
+
+        Args:
+            window: Rolling-window size in periods. Defaults to 63.
+
+        Returns:
+            A Plotly Figure with one trace per asset.
+
+        Raises:
+            ValueError: If ``window`` is not a positive integer.
+        """
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError
+
+        rolling = self.portfolio.stats.rolling_volatility(window=window)
+
+        fig = go.Figure()
+        date_col = rolling["date"] if "date" in rolling.columns else None
+        for col in rolling.columns:
+            if col == "date":
+                continue
+            fig.add_trace(
+                go.Scatter(
+                    x=date_col,
+                    y=rolling[col],
+                    mode="lines",
+                    name=col,
+                    line={"width": 1},
+                )
+            )
+
+        fig.update_layout(
+            title=f"Rolling Volatility ({window}-period window)",
+            hovermode="x unified",
+            plot_bgcolor="white",
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+            xaxis={
+                "rangeselector": {
+                    "buttons": [
+                        {"count": 6, "label": "6m", "step": "month", "stepmode": "backward"},
+                        {"count": 1, "label": "1y", "step": "year", "stepmode": "backward"},
+                        {"count": 3, "label": "3y", "step": "year", "stepmode": "backward"},
+                        {"step": "year", "stepmode": "todate", "label": "YTD"},
+                        {"step": "all", "label": "All"},
+                    ]
+                },
+                "rangeslider": {"visible": False},
+                "type": "date",
+            },
+        )
+        fig.update_yaxes(title_text="Annualised volatility")
+        fig.update_xaxes(showgrid=True, gridwidth=0.5, gridcolor="lightgrey")
+        fig.update_yaxes(showgrid=True, gridwidth=0.5, gridcolor="lightgrey")
+        return fig
+
+    def annual_sharpe_plot(self) -> go.Figure:
+        """Plot annualised Sharpe ratio broken down by calendar year.
+
+        Computes the Sharpe ratio for each calendar year from the portfolio
+        returns and renders a grouped bar chart with one bar per year per
+        asset.
+
+        Returns:
+            A Plotly Figure with one bar group per asset.
+        """
+        breakdown = self.portfolio.stats.annual_breakdown()
+
+        # Extract the sharpe row for each year
+        sharpe_rows = breakdown.filter(pl.col("metric") == "sharpe")
+        asset_cols = [c for c in sharpe_rows.columns if c not in ("year", "metric")]
+
+        fig = go.Figure()
+        for asset in asset_cols:
+            fig.add_trace(
+                go.Bar(
+                    x=sharpe_rows["year"],
+                    y=sharpe_rows[asset],
+                    name=asset,
+                )
+            )
+
+        fig.add_hline(y=0, line_width=1, line_color="gray")
+
+        fig.update_layout(
+            title="Annual Sharpe Ratio by Year",
+            barmode="group",
+            hovermode="x unified",
+            plot_bgcolor="white",
+            legend={"orientation": "h", "yanchor": "bottom", "y": 1.02, "xanchor": "right", "x": 1},
+        )
+        fig.update_yaxes(title_text="Sharpe ratio")
+        fig.update_xaxes(showgrid=True, gridwidth=0.5, gridcolor="lightgrey", title_text="Year")
+        fig.update_yaxes(showgrid=True, gridwidth=0.5, gridcolor="lightgrey")
+        return fig
+
     def correlation_heatmap(
         self,
         frame: pl.DataFrame | None = None,

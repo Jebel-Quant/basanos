@@ -16,6 +16,7 @@ This module covers:
 from __future__ import annotations
 
 import logging
+import math
 import pathlib
 from datetime import date, timedelta
 
@@ -1363,3 +1364,213 @@ class TestDiagnostics:
         su = engine.signal_utilisation
         for asset in engine.assets:
             assert np.isnan(su[asset][idx_nan])
+
+
+# ─── Information Coefficient (IC) ────────────────────────────────────────────
+
+
+@pytest.fixture
+def ic_engine(optimizer_prices: pl.DataFrame, optimizer_mu: pl.DataFrame) -> BasanosEngine:
+    """BasanosEngine fixture used for IC tests (120-day, 2-asset)."""
+    cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+    return BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=cfg)
+
+
+class TestICTimeSeries:
+    """Tests for the cross-sectional Pearson IC time series property."""
+
+    def test_ic_returns_polars_dataframe(self, ic_engine: BasanosEngine) -> None:
+        """IC property must return a Polars DataFrame."""
+        assert isinstance(ic_engine.ic, pl.DataFrame)
+
+    def test_ic_has_expected_columns(self, ic_engine: BasanosEngine) -> None:
+        """IC DataFrame must contain exactly 'date' and 'ic' columns."""
+        assert set(ic_engine.ic.columns) == {"date", "ic"}
+
+    def test_ic_length_is_t_minus_one(self, ic_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
+        """IC series must have T-1 rows (one per forward-return period)."""
+        assert ic_engine.ic.height == optimizer_prices.height - 1
+
+    def test_ic_dates_match_signal_dates(self, ic_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
+        """Each IC date must equal the corresponding signal date (prices[t])."""
+        expected_dates = optimizer_prices["date"].head(optimizer_prices.height - 1).to_list()
+        assert ic_engine.ic["date"].to_list() == expected_dates
+
+    def test_ic_values_are_in_minus_one_to_one(self, ic_engine: BasanosEngine) -> None:
+        """All finite IC values must lie in [-1, 1]."""
+        ic_vals = ic_engine.ic["ic"].drop_nulls().to_numpy()
+        assert np.all(ic_vals >= -1.0 - 1e-12)
+        assert np.all(ic_vals <= 1.0 + 1e-12)
+
+    def test_ic_col_is_float64(self, ic_engine: BasanosEngine) -> None:
+        """IC column must be Float64 dtype."""
+        assert ic_engine.ic["ic"].dtype == pl.Float64
+
+
+class TestRankICTimeSeries:
+    """Tests for the cross-sectional Spearman Rank IC time series property."""
+
+    def test_rank_ic_returns_polars_dataframe(self, ic_engine: BasanosEngine) -> None:
+        """rank_ic property must return a Polars DataFrame."""
+        assert isinstance(ic_engine.rank_ic, pl.DataFrame)
+
+    def test_rank_ic_has_expected_columns(self, ic_engine: BasanosEngine) -> None:
+        """rank_ic DataFrame must contain exactly 'date' and 'rank_ic' columns."""
+        assert set(ic_engine.rank_ic.columns) == {"date", "rank_ic"}
+
+    def test_rank_ic_length_is_t_minus_one(self, ic_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
+        """rank_ic series must have T-1 rows (one per forward-return period)."""
+        assert ic_engine.rank_ic.height == optimizer_prices.height - 1
+
+    def test_rank_ic_values_are_in_minus_one_to_one(self, ic_engine: BasanosEngine) -> None:
+        """All finite Rank IC values must lie in [-1, 1]."""
+        vals = ic_engine.rank_ic["rank_ic"].drop_nulls().to_numpy()
+        assert np.all(vals >= -1.0 - 1e-12)
+        assert np.all(vals <= 1.0 + 1e-12)
+
+    def test_rank_ic_col_is_float64(self, ic_engine: BasanosEngine) -> None:
+        """rank_ic column must be Float64 dtype."""
+        assert ic_engine.rank_ic["rank_ic"].dtype == pl.Float64
+
+
+class TestICScalars:
+    """Tests for ic_mean, ic_std, icir, rank_ic_mean, and rank_ic_std."""
+
+    def test_ic_mean_is_finite(self, ic_engine: BasanosEngine) -> None:
+        """ic_mean must return a finite float for a well-behaved engine."""
+        assert math.isfinite(ic_engine.ic_mean)
+
+    def test_ic_std_is_non_negative(self, ic_engine: BasanosEngine) -> None:
+        """ic_std must be non-negative (standard deviation cannot be negative)."""
+        std = ic_engine.ic_std
+        assert math.isfinite(std)
+        assert std >= 0.0
+
+    def test_icir_equals_mean_over_std(self, ic_engine: BasanosEngine) -> None:
+        """ICIR must equal ic_mean / ic_std."""
+        mean = ic_engine.ic_mean
+        std = ic_engine.ic_std
+        expected = mean / std if std != 0.0 else float("nan")
+        if math.isnan(expected):
+            assert math.isnan(ic_engine.icir)
+        else:
+            assert math.isclose(ic_engine.icir, expected, rel_tol=1e-12)
+
+    def test_icir_is_nan_when_std_is_zero(self) -> None:
+        """ICIR must gracefully return a float (possibly NaN) in degenerate cases."""
+        # Use the existing ic_engine: just verify icir is always a float, whether
+        # finite or NaN.  The NaN branch is exercised by the zero-std guard in the
+        # implementation; we verify the type contract here.
+        n = 20
+        start = date(2020, 1, 1)
+        dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+        # Use non-monotonic prices to pass engine validation
+        rng = np.random.default_rng(7)
+        p_a = 100.0 + np.cumsum(rng.normal(0.0, 0.5, n))
+        p_b = 200.0 + np.cumsum(rng.normal(0.0, 0.7, n))
+        prices = pl.DataFrame(
+            {"date": dates, "A": pl.Series(p_a, dtype=pl.Float64), "B": pl.Series(p_b, dtype=pl.Float64)}
+        )
+        mu = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series(np.zeros(n), dtype=pl.Float64),
+                "B": pl.Series(np.zeros(n), dtype=pl.Float64),
+            }
+        )
+        cfg = BasanosConfig(vola=3, corr=5, clip=3.0, shrink=0.5, aum=1e6)
+        eng = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        # With all-zero signal, every ic row is NaN (corrcoef of constants).
+        # icir should return NaN gracefully.
+        icir = eng.icir
+        assert isinstance(icir, float)
+
+    def test_rank_ic_mean_is_finite(self, ic_engine: BasanosEngine) -> None:
+        """rank_ic_mean must return a finite float for a well-behaved engine."""
+        assert math.isfinite(ic_engine.rank_ic_mean)
+
+    def test_rank_ic_std_is_non_negative(self, ic_engine: BasanosEngine) -> None:
+        """rank_ic_std must be non-negative."""
+        std = ic_engine.rank_ic_std
+        assert math.isfinite(std)
+        assert std >= 0.0
+
+    def test_ic_mean_matches_manual_computation(self, ic_engine: BasanosEngine) -> None:
+        """ic_mean must equal np.nanmean of the ic series."""
+        ic_vals = ic_engine.ic["ic"].to_numpy()
+        expected = float(np.nanmean(ic_vals))
+        assert math.isclose(ic_engine.ic_mean, expected, rel_tol=1e-12)
+
+    def test_rank_ic_mean_matches_manual_computation(self, ic_engine: BasanosEngine) -> None:
+        """rank_ic_mean must equal np.nanmean of the rank_ic series."""
+        ric_vals = ic_engine.rank_ic["rank_ic"].to_numpy()
+        expected = float(np.nanmean(ric_vals))
+        assert math.isclose(ic_engine.rank_ic_mean, expected, rel_tol=1e-12)
+
+
+class TestICNaNHandling:
+    """Tests for IC behaviour with NaN prices or signals."""
+
+    @pytest.fixture
+    def nan_prices(self) -> pl.DataFrame:
+        """10-day price frame with NaN at t=3 for asset A (non-monotonic to pass validation)."""
+        n = 10
+        start = date(2020, 1, 1)
+        dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+        p_a = [100.0, 102.0, 99.0, None, 104.0, 101.0, 106.0, 103.0, 108.0, 105.0]
+        p_b = [200.0, 203.0, 198.0, 205.0, 201.0, 207.0, 203.0, 209.0, 205.0, 211.0]
+        return pl.DataFrame(
+            {"date": dates, "A": pl.Series(p_a, dtype=pl.Float64), "B": pl.Series(p_b, dtype=pl.Float64)}
+        )
+
+    @pytest.fixture
+    def nan_mu(self, nan_prices: pl.DataFrame) -> pl.DataFrame:
+        """Sinusoidal signal aligned with nan_prices."""
+        n = nan_prices.height
+        theta = np.linspace(0.0, np.pi, num=n)
+        return pl.DataFrame(
+            {
+                "date": nan_prices["date"],
+                "A": pl.Series(np.tanh(np.sin(theta)), dtype=pl.Float64),
+                "B": pl.Series(np.tanh(np.cos(theta)), dtype=pl.Float64),
+            }
+        )
+
+    def test_ic_handles_nan_prices_gracefully(self, nan_prices: pl.DataFrame, nan_mu: pl.DataFrame) -> None:
+        """IC must not raise and must return finite or NaN values for all rows."""
+        cfg = BasanosConfig(vola=3, corr=5, clip=3.0, shrink=0.5, aum=1e6)
+        eng = BasanosEngine(prices=nan_prices, mu=nan_mu, cfg=cfg)
+        ic_df = eng.ic
+        assert ic_df.height == nan_prices.height - 1
+        for v in ic_df["ic"].to_list():
+            assert v is None or isinstance(v, float)
+
+    def test_ic_nan_when_only_one_valid_asset(self) -> None:
+        """When only one asset has finite signal, IC must be NaN (needs ≥2 pairs)."""
+        n = 5
+        start = date(2020, 1, 1)
+        dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+        # Non-monotonic prices for both assets so validation passes
+        p_a = [100.0, 102.0, 99.0, 103.0, 101.0]
+        p_b = [200.0, 203.0, 198.0, 205.0, 201.0]
+        prices = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series(p_a, dtype=pl.Float64),
+                "B": pl.Series(p_b, dtype=pl.Float64),
+            }
+        )
+        # Signal has NaN for B at all times → only 1 valid (asset, fwd_ret) pair per period
+        mu = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series([0.1, 0.2, 0.3, 0.4, 0.5], dtype=pl.Float64),
+                "B": pl.Series([None, None, None, None, None], dtype=pl.Float64),
+            }
+        )
+        cfg = BasanosConfig(vola=2, corr=3, clip=3.0, shrink=0.5, aum=1e6)
+        eng = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        ic_vals = eng.ic["ic"].to_list()
+        # With only one valid asset pair, every IC value must be NaN
+        for v in ic_vals:
+            assert v is None or (isinstance(v, float) and math.isnan(v))

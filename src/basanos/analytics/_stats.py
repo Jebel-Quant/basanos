@@ -16,6 +16,37 @@ import polars as pl
 from scipy.stats import norm
 
 
+def _drawdown_series(series: pl.Series) -> pl.Series:
+    """Compute the drawdown percentage series from a returns series.
+
+    Treats ``series`` as additive daily returns and builds a normalised NAV
+    starting at 1.0.  The high-water mark is the running maximum of that NAV;
+    drawdown is expressed as the fraction below the high-water mark.
+
+    Args:
+        series: A Polars Series of additive returns (profit / AUM).
+
+    Returns:
+        A Polars Float64 Series whose values are in [0, 1].  A value of 0
+        means the NAV is at its all-time high; a value of 0.2 means the NAV
+        is 20 % below its previous peak.
+
+    Examples:
+        >>> import polars as pl
+        >>> s = pl.Series([0.0, -0.1, 0.2])
+        >>> [round(x, 10) for x in _drawdown_series(s).to_list()]
+        [0.0, 0.1, 0.0]
+    """
+    nav = 1.0 + series.cast(pl.Float64).cum_sum()
+    hwm = nav.cum_max()
+    # Guard against division by zero: a NAV of exactly 0 would make the
+    # drawdown fraction undefined.  In practice NAV starts at 1.0 so this can
+    # only occur for extremely large cumulative losses; the 1e-10 floor avoids
+    # a ZeroDivisionError while having no effect on normal data.
+    hwm_safe = hwm.clip(lower_bound=1e-10)
+    return ((hwm - nav) / hwm_safe).clip(lower_bound=0.0)
+
+
 def _to_float(value: object) -> float:
     """Safely convert a Polars aggregation result to float.
 
@@ -316,6 +347,254 @@ class Stats:
         factor = periods or 1
         return float(res * np.sqrt(factor))
 
+    @columnwise_stat
+    def max_drawdown(self, series: pl.Series) -> float:
+        """Maximum drawdown as a fraction of the high-water mark.
+
+        Computes the largest peak-to-trough decline in the cumulative additive
+        NAV (starting at 1.0) expressed as a percentage of the peak.
+
+        Args:
+            series (pl.Series): Series of additive daily returns.
+
+        Returns:
+            float: Maximum drawdown in the range [0, 1].
+
+        """
+        return _to_float(_drawdown_series(series).max())
+
+    @columnwise_stat
+    def avg_drawdown(self, series: pl.Series) -> float:
+        """Average drawdown across all underwater periods.
+
+        Computes the mean drawdown percentage for every observation where the
+        portfolio is below its previous peak.  Returns 0.0 if there are no
+        underwater periods.
+
+        Args:
+            series (pl.Series): Series of additive daily returns.
+
+        Returns:
+            float: Mean drawdown in the range [0, 1].
+
+        """
+        dd = _drawdown_series(series)
+        in_dd = dd.filter(dd > 0)
+        if in_dd.is_empty():
+            return 0.0
+        return _to_float(in_dd.mean())
+
+    def max_drawdown_duration(self) -> dict[str, float | int | None]:
+        """Maximum drawdown duration in calendar days (or periods) per asset.
+
+        Identifies consecutive runs of observations where the portfolio NAV is
+        below its high-water mark and returns the length of the longest such
+        run.
+
+        When a ``date`` column is present the duration is expressed as the
+        number of calendar days spanned by the run (inclusive of both
+        endpoints).  When no ``date`` column exists each row counts as one
+        period, so the result is a count of consecutive underwater periods.
+
+        Returns:
+            dict[str, float | int | None]: Mapping from asset name to maximum
+            drawdown duration.  Returns 0 when there are no underwater
+            periods.
+
+        """
+        has_date = "date" in self.data.columns
+        result: dict[str, float | int | None] = {}
+        for asset in self.assets:
+            series = self.data[asset]
+            nav = 1.0 + series.cast(pl.Float64).cum_sum()
+            hwm = nav.cum_max()
+            in_dd = nav < hwm
+
+            if not in_dd.any():
+                result[asset] = 0
+                continue
+
+            if has_date:
+                frame = pl.DataFrame({"date": self.data["date"], "in_dd": in_dd})
+            else:
+                frame = pl.DataFrame({"date": pl.Series(list(range(len(series))), dtype=pl.Int64), "in_dd": in_dd})
+
+            frame = frame.with_columns(pl.col("in_dd").rle_id().alias("run_id"))
+
+            dd_runs = (
+                frame.filter(pl.col("in_dd"))
+                .group_by("run_id")
+                .agg(
+                    [
+                        pl.col("date").min().alias("start"),
+                        pl.col("date").max().alias("end"),
+                    ]
+                )
+            )
+
+            if has_date:
+                dd_runs = dd_runs.with_columns(
+                    ((pl.col("end") - pl.col("start")).dt.total_days() + 1).alias("duration")
+                )
+            else:
+                dd_runs = dd_runs.with_columns((pl.col("end") - pl.col("start") + 1).alias("duration"))
+
+            result[asset] = int(_to_float(dd_runs["duration"].max()))
+
+        return result
+
+    @columnwise_stat
+    def calmar(self, series: pl.Series, periods: int | float | None = None) -> float:
+        """Calmar ratio (annualized return divided by maximum drawdown).
+
+        A standard complement to the Sharpe ratio for trend-following and
+        momentum strategies.  Returns ``nan`` when the maximum drawdown is
+        zero (no drawdown observed).
+
+        Args:
+            series (pl.Series): Series of additive daily returns.
+            periods (int | float | None): Annualisation factor (observations
+                per year).  Defaults to ``periods_per_year``.
+
+        Returns:
+            float: Calmar ratio, or ``nan`` if max drawdown is zero.
+
+        """
+        raw_periods = periods or self.periods_per_year
+        max_dd = _to_float(_drawdown_series(series).max())
+        if max_dd <= 0:
+            return float("nan")
+        ann_return = _to_float(series.mean()) * raw_periods
+        return ann_return / max_dd
+
+    @columnwise_stat
+    def recovery_factor(self, series: pl.Series) -> float:
+        """Recovery factor (total return divided by maximum drawdown).
+
+        A robustness signal for systematic strategies: values well above 1
+        indicate that cumulative profits are large relative to the worst
+        historical loss.  Returns ``nan`` when the maximum drawdown is zero.
+
+        Args:
+            series (pl.Series): Series of additive daily returns.
+
+        Returns:
+            float: Recovery factor, or ``nan`` if max drawdown is zero.
+
+        """
+        max_dd = _to_float(_drawdown_series(series).max())
+        if max_dd <= 0:
+            return float("nan")
+        total_return = _to_float(series.sum())
+        return total_return / max_dd
+
+    def rolling_sharpe(self, window: int = 63, periods: int | float | None = None) -> pl.DataFrame:
+        """Compute rolling annualised Sharpe ratio over a sliding window.
+
+        Args:
+            window: Number of periods in the rolling window. Defaults to 63.
+            periods: Number of periods per year for annualisation. Defaults to
+                ``periods_per_year``.
+
+        Returns:
+            pl.DataFrame: A DataFrame with the date column (when present) and
+                one column per asset.  The first ``window - 1`` rows will be
+                null.
+
+        Raises:
+            ValueError: If ``window`` is not a positive integer.
+
+        """
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError
+
+        scale = np.sqrt(periods or self.periods_per_year)
+
+        exprs = [
+            (
+                pl.col(asset).rolling_mean(window_size=window) / pl.col(asset).rolling_std(window_size=window) * scale
+            ).alias(asset)
+            for asset in self.assets
+        ]
+
+        cols: list[str | pl.Expr] = (["date"] if "date" in self.data.columns else []) + exprs  # type: ignore[assignment]
+        return self.data.select(cols)
+
+    def rolling_volatility(
+        self, window: int = 63, periods: int | float | None = None, annualize: bool = True
+    ) -> pl.DataFrame:
+        """Compute rolling volatility over a sliding window.
+
+        Args:
+            window: Number of periods in the rolling window. Defaults to 63.
+            periods: Number of periods per year for annualisation. Defaults to
+                ``periods_per_year``.
+            annualize: Whether to annualise the result by multiplying by
+                ``sqrt(periods)``. Defaults to True.
+
+        Returns:
+            pl.DataFrame: A DataFrame with the date column (when present) and
+                one column per asset.  The first ``window - 1`` rows will be
+                null.
+
+        Raises:
+            ValueError: If ``window`` is not a positive integer.
+            TypeError: If ``periods`` is not numeric.
+
+        """
+        if not isinstance(window, int) or window <= 0:
+            raise ValueError
+
+        raw_periods = periods or self.periods_per_year
+        if not isinstance(raw_periods, int | float):
+            raise TypeError
+
+        factor = np.sqrt(raw_periods) if annualize else 1.0
+
+        exprs = [(pl.col(asset).rolling_std(window_size=window) * factor).alias(asset) for asset in self.assets]
+
+        cols: list[str | pl.Expr] = (["date"] if "date" in self.data.columns else []) + exprs  # type: ignore[assignment]
+        return self.data.select(cols)
+
+    def annual_breakdown(self) -> pl.DataFrame:
+        """Return summary statistics broken down by calendar year.
+
+        Groups the data by calendar year using the ``date`` column, computes
+        a full :py:meth:`summary` for each year, and stacks the results into
+        a single DataFrame with an additional ``year`` column.
+
+        Returns:
+            pl.DataFrame: A DataFrame with columns ``year``, ``metric``, and
+                one column per asset, sorted by ``year``.
+
+        Raises:
+            ValueError: If the DataFrame has no ``date`` column.
+
+        """
+        if "date" not in self.data.columns:
+            raise ValueError
+
+        years = self.data["date"].dt.year().unique().sort().to_list()
+
+        frames: list[pl.DataFrame] = []
+        for year in years:
+            year_data = self.data.filter(self.data["date"].dt.year() == year)
+            if year_data.height < 2:
+                continue
+            year_summary = Stats(year_data).summary()
+            year_summary = year_summary.with_columns(pl.lit(year).alias("year"))
+            frames.append(year_summary)
+
+        if not frames:
+            # Build empty DataFrame with expected schema
+            schema = {"year": pl.Int32, "metric": pl.String, **dict.fromkeys(self.assets, pl.Float64)}
+            return pl.DataFrame(schema=schema)
+
+        result = pl.concat(frames)
+        # Move 'year' to front
+        ordered = ["year", "metric", *[c for c in result.columns if c not in ("year", "metric")]]
+        return result.select(ordered)
+
     def summary(self) -> pl.DataFrame:
         """Return a DataFrame summarising all statistics for each asset.
 
@@ -339,6 +618,11 @@ class Stats:
             "kurtosis": self.kurtosis(),
             "value_at_risk": self.value_at_risk(),
             "conditional_value_at_risk": self.conditional_value_at_risk(),
+            "max_drawdown": self.max_drawdown(),
+            "avg_drawdown": self.avg_drawdown(),
+            "max_drawdown_duration": self.max_drawdown_duration(),
+            "calmar": self.calmar(),
+            "recovery_factor": self.recovery_factor(),
         }
 
         rows: list[dict[str, object]] = [
