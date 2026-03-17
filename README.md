@@ -60,6 +60,7 @@ The output of the solve is a *risk position* (units of volatility). Dividing by 
 - **Portfolio Analytics** — Sharpe, VaR, CVaR, drawdown, skew, kurtosis, and more
 - **Performance Attribution** — Tilt/timing decomposition to isolate allocation vs. selection effects
 - **Interactive Visualizations** — Plotly dashboards for NAV, drawdown, lead/lag analysis, and correlation heatmaps
+- **HTML Reports** — One-call self-contained dark-themed HTML report with statistics tables and interactive Plotly charts
 - **Polars-Native** — Built on Polars DataFrames for high-performance, memory-efficient computation
 
 ## Installation
@@ -166,6 +167,37 @@ fig = portfolio.plots.lagged_performance_plot(lags=[0, 1, 2, 3, 4])
 fig = portfolio.plots.correlation_heatmap()
 # fig.show()
 ```
+
+### Generating Reports
+
+`portfolio.report` returns a `Report` facade that produces a self-contained, dark-themed HTML document with a performance-statistics table and multiple interactive Plotly charts.
+
+```python
+report = portfolio.report
+
+# Render to a string (e.g. to serve via an API or display in a notebook)
+html_str = report.to_html()
+
+# Or save directly to disk — a .html extension is added automatically
+saved_path = report.save("output/report")
+# → saves to output/report.html
+
+# Customize the page title
+report.save("output/my_report.html", title="My Strategy Report")
+```
+
+The generated report contains the following sections:
+
+| Section | Content |
+|---------|---------|
+| **Performance** | Cumulative NAV + drawdown snapshot |
+| **Risk Analysis** | Rolling Sharpe ratio and rolling volatility charts |
+| **Annual Breakdown** | Sharpe ratio by calendar year |
+| **Monthly Returns** | Monthly returns heatmap |
+| **Performance Statistics** | Full statistics table (returns, drawdown, risk-adjusted, distribution) |
+| **Correlation Analysis** | Asset correlation heatmap |
+| **Lead / Lag** | Lead/lag information ratio chart |
+| **Turnover Summary** | Portfolio turnover metrics |
 
 ## How It Works
 
@@ -377,6 +409,7 @@ from basanos.analytics import Portfolio
 | `Portfolio` | Central data model for P&L, NAV, and attribution |
 | `Stats` | Statistical risk/return metrics |
 | `Plots` | Plotly-based interactive visualizations |
+| `Report` | HTML report facade; produces self-contained dark-themed reports |
 
 **`Portfolio` properties**
 
@@ -394,6 +427,7 @@ from basanos.analytics import Portfolio
 | `timing` | Dynamic timing (deviation from average) |
 | `stats` | `Stats` instance |
 | `plots` | `Plots` instance |
+| `report` | `Report` instance for HTML report generation |
 
 **`Stats` methods**
 
@@ -433,6 +467,20 @@ from basanos.analytics import Portfolio
 | `rolling_sharpe_plot(window)` | Line chart of rolling Sharpe ratio |
 | `rolling_volatility_plot(window)` | Line chart of rolling annualised volatility |
 | `annual_sharpe_plot()` | Bar chart of Sharpe ratio by calendar year |
+
+---
+
+### `basanos.analytics.Report`
+
+Accessed via `portfolio.report`.  Produces a self-contained HTML document with
+dark-themed styling, a statistics table, and embedded interactive Plotly charts.
+
+**`Report` methods**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `to_html` | `to_html(title="Basanos Portfolio Report") -> str` | Returns the complete HTML document as a string.  Plotly.js is loaded once from the CDN. |
+| `save` | `save(path, title="Basanos Portfolio Report") -> Path` | Writes the HTML document to *path*.  A `.html` suffix is appended when the path has no extension. |
 
 ## Configuration Reference
 
