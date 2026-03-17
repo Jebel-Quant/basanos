@@ -1102,6 +1102,270 @@ class TestProfitVarianceEMA:
             )
 
 
+# ─── Diagnostics properties ───────────────────────────────────────────────────
+
+
+class TestDiagnostics:
+    """Tests for BasanosEngine diagnostic properties."""
+
+    @pytest.fixture
+    def engine(self) -> BasanosEngine:
+        """120-row, 2-asset engine used across all diagnostic tests."""
+        prices, mu = _make_prices_mu(120)
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+        return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+    # ── risk_position ─────────────────────────────────────────────────────────
+
+    def test_risk_position_schema_matches_prices(self, engine: BasanosEngine) -> None:
+        """risk_position should have the same columns as prices."""
+        rp = engine.risk_position
+        assert rp.columns == engine.prices.columns
+
+    def test_risk_position_equals_cash_times_vola(self, engine: BasanosEngine) -> None:
+        """risk_position[i] == cash_position[i] * vola[i] element-wise."""
+        assets = engine.assets
+        rp = engine.risk_position.select(assets).to_numpy()
+        cp = engine.cash_position.select(assets).to_numpy()
+        vola = engine.vola.select(assets).to_numpy()
+        with np.errstate(invalid="ignore"):
+            expected = cp * vola
+        np.testing.assert_allclose(
+            np.nan_to_num(rp, nan=0.0),
+            np.nan_to_num(expected, nan=0.0),
+            rtol=1e-12,
+        )
+
+    def test_risk_position_has_finite_values_after_warmup(self, engine: BasanosEngine) -> None:
+        """After the warmup window, risk positions should be finite."""
+        warmup = engine.cfg.corr
+        rp = engine.risk_position
+        for asset in engine.assets:
+            tail = rp[asset].slice(warmup)
+            assert tail.is_finite().all(), f"Non-finite risk_position for {asset} after warmup"
+
+    # ── position_leverage ─────────────────────────────────────────────────────
+
+    def test_position_leverage_schema(self, engine: BasanosEngine) -> None:
+        """position_leverage should have exactly ['date', 'leverage'] columns."""
+        lev = engine.position_leverage
+        assert lev.columns == ["date", "leverage"]
+
+    def test_position_leverage_height_matches_prices(self, engine: BasanosEngine) -> None:
+        """position_leverage should have the same number of rows as prices."""
+        assert engine.position_leverage.height == engine.prices.height
+
+    def test_position_leverage_non_negative(self, engine: BasanosEngine) -> None:
+        """L1 norm is always ≥ 0."""
+        lev = engine.position_leverage["leverage"].drop_nulls()
+        assert (lev >= 0).all()
+
+    def test_position_leverage_finite_after_warmup(self, engine: BasanosEngine) -> None:
+        """Leverage should be finite after the warmup window."""
+        warmup = engine.cfg.corr
+        tail = engine.position_leverage["leverage"].slice(warmup)
+        assert tail.is_finite().all()
+
+    def test_position_leverage_equals_sum_of_abs_cash_positions(self, engine: BasanosEngine) -> None:
+        """leverage[t] should equal sum(|cash_pos_i[t]|) ignoring NaN."""
+        assets = engine.assets
+        cp_np = engine.cash_position.select(assets).to_numpy()
+        expected = np.nansum(np.abs(cp_np), axis=1)
+        actual = engine.position_leverage["leverage"].to_numpy()
+        np.testing.assert_allclose(actual, expected, rtol=1e-12)
+
+    # ── condition_number ──────────────────────────────────────────────────────
+
+    def test_condition_number_schema(self, engine: BasanosEngine) -> None:
+        """condition_number should have exactly ['date', 'condition_number'] columns."""
+        cn = engine.condition_number
+        assert cn.columns == ["date", "condition_number"]
+
+    def test_condition_number_height_matches_prices(self, engine: BasanosEngine) -> None:
+        """condition_number should have the same number of rows as prices."""
+        assert engine.condition_number.height == engine.prices.height
+
+    def test_condition_number_positive_after_warmup(self, engine: BasanosEngine) -> None:
+        """Condition numbers must be strictly positive after the warmup window."""
+        warmup = engine.cfg.corr
+        cn = engine.condition_number["condition_number"].slice(warmup)
+        assert (cn.drop_nulls() > 0).all()
+
+    def test_condition_number_ge_one_for_correlation_matrices(self, engine: BasanosEngine) -> None:
+        """Condition number of any valid correlation matrix is ≥ 1."""
+        cn = engine.condition_number["condition_number"].drop_nulls()
+        assert (cn >= 1.0 - 1e-10).all()
+
+    def test_condition_number_is_one_for_identity_shrink(self) -> None:
+        """When shrink=0 the matrix is the identity; κ should equal 1."""
+        prices, mu = _make_prices_mu(80)
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.0, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        warmup = cfg.corr
+        cn = engine.condition_number["condition_number"].slice(warmup).drop_nulls()
+        np.testing.assert_allclose(cn.to_numpy(), 1.0, atol=1e-10)
+
+    # ── effective_rank ────────────────────────────────────────────────────────
+
+    def test_effective_rank_schema(self, engine: BasanosEngine) -> None:
+        """effective_rank should have exactly ['date', 'effective_rank'] columns."""
+        er = engine.effective_rank
+        assert er.columns == ["date", "effective_rank"]
+
+    def test_effective_rank_height_matches_prices(self, engine: BasanosEngine) -> None:
+        """effective_rank should have the same number of rows as prices."""
+        assert engine.effective_rank.height == engine.prices.height
+
+    def test_effective_rank_bounded_after_warmup(self, engine: BasanosEngine) -> None:
+        """Effective rank must be in (0, n_assets] after the warmup window."""
+        warmup = engine.cfg.corr
+        n_assets = len(engine.assets)
+        er = engine.effective_rank["effective_rank"].slice(warmup).drop_nulls()
+        assert (er > 0).all()
+        assert (er <= n_assets + 1e-10).all()
+
+    def test_effective_rank_equals_n_for_identity_shrink(self) -> None:
+        """When shrink=0 the matrix is the identity; effective rank equals n_assets."""
+        prices, mu = _make_prices_mu(80)
+        n_assets = 2
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.0, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        warmup = cfg.corr
+        er = engine.effective_rank["effective_rank"].slice(warmup).drop_nulls()
+        np.testing.assert_allclose(er.to_numpy(), float(n_assets), atol=1e-10)
+
+    # ── solver_residual ───────────────────────────────────────────────────────
+
+    def test_solver_residual_schema(self, engine: BasanosEngine) -> None:
+        """solver_residual should have exactly ['date', 'residual'] columns."""
+        sr = engine.solver_residual
+        assert sr.columns == ["date", "residual"]
+
+    def test_solver_residual_height_matches_prices(self, engine: BasanosEngine) -> None:
+        """solver_residual should have the same number of rows as prices."""
+        assert engine.solver_residual.height == engine.prices.height
+
+    def test_solver_residual_non_negative(self, engine: BasanosEngine) -> None:
+        """Residual norms are always ≥ 0."""
+        res = engine.solver_residual["residual"].drop_nulls()
+        assert (res >= 0).all()
+
+    def test_solver_residual_near_zero_after_warmup(self, engine: BasanosEngine) -> None:
+        """For a well-conditioned system the residual should be near machine epsilon."""
+        warmup = engine.cfg.corr
+        res = engine.solver_residual["residual"].slice(warmup).drop_nulls()
+        np.testing.assert_array_less(res.to_numpy(), 1e-10)
+
+    def test_solver_residual_zero_for_zero_mu(self) -> None:
+        """When μ=0 at every timestamp the residual is exactly 0."""
+        prices, _ = _make_prices_mu(80)
+        n = prices.height
+        dates = prices["date"]
+        mu_zero = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series(np.zeros(n), dtype=pl.Float64),
+                "B": pl.Series(np.zeros(n), dtype=pl.Float64),
+            }
+        )
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu_zero, cfg=cfg)
+        res = engine.solver_residual["residual"].drop_nulls()
+        np.testing.assert_array_equal(res.to_numpy(), 0.0)
+
+    # ── signal_utilisation ────────────────────────────────────────────────────
+
+    def test_signal_utilisation_schema_matches_prices(self, engine: BasanosEngine) -> None:
+        """signal_utilisation should have the same columns as prices."""
+        su = engine.signal_utilisation
+        assert su.columns == engine.prices.columns
+
+    def test_signal_utilisation_height_matches_prices(self, engine: BasanosEngine) -> None:
+        """signal_utilisation should have the same number of rows as prices."""
+        assert engine.signal_utilisation.height == engine.prices.height
+
+    def test_signal_utilisation_is_one_for_identity_shrink(self) -> None:
+        """When shrink=0 (identity matrix), each asset's utilisation is 1."""
+        prices, mu = _make_prices_mu(80)
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.0, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        warmup = cfg.corr
+        assets = engine.assets
+        su = engine.signal_utilisation
+        for asset in assets:
+            col = su[asset].slice(warmup).drop_nulls()
+            # μ=0 slots are NaN-or-zero; we only check where utilisation is defined
+            finite = col.filter(col.is_not_nan())
+            np.testing.assert_allclose(finite.to_numpy(), 1.0, atol=1e-10)
+
+    def test_signal_utilisation_zero_mu_yields_zero(self) -> None:
+        """When μ=0 signal utilisation is 0 (not NaN), consistent with zero positions."""
+        prices, _ = _make_prices_mu(80)
+        n = prices.height
+        dates = prices["date"]
+        mu_zero = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series(np.zeros(n), dtype=pl.Float64),
+                "B": pl.Series(np.zeros(n), dtype=pl.Float64),
+            }
+        )
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu_zero, cfg=cfg)
+        warmup = cfg.corr
+        su = engine.signal_utilisation
+        for asset in engine.assets:
+            col = su[asset].slice(warmup).drop_nulls()
+            np.testing.assert_array_equal(col.to_numpy(), 0.0)
+
+    def test_diagnostics_yield_nan_for_all_nan_price_rows(self) -> None:
+        """Diagnostics should return NaN for timestamps where all asset prices are NaN.
+
+        Covers the ``not mask.any()`` guard in condition_number, effective_rank,
+        solver_residual, and signal_utilisation (also the ``continue`` path in
+        signal_utilisation).
+        """
+        n = 40
+        start = date(2020, 1, 1)
+        dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+        rng = np.random.default_rng(99)
+        a = list(100.0 + np.cumsum(rng.normal(0.0, 0.5, size=n)))
+        b = list(200.0 + np.cumsum(rng.normal(0.0, 0.7, size=n)))
+        idx_nan = n - 1  # last row all-NaN
+        a[idx_nan] = None  # type: ignore[assignment]
+        b[idx_nan] = None  # type: ignore[assignment]
+        prices = pl.DataFrame({"date": dates, "A": a, "B": b}).with_columns(
+            pl.col("A").cast(pl.Float64), pl.col("B").cast(pl.Float64)
+        )
+        theta = np.linspace(0.0, np.pi, num=n)
+        mu = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series(np.tanh(np.sin(theta)), dtype=pl.Float64),
+                "B": pl.Series(np.tanh(np.cos(theta)), dtype=pl.Float64),
+            }
+        )
+        cfg = BasanosConfig(vola=3, corr=5, clip=3.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        # condition_number: NaN at the all-NaN row
+        cn = engine.condition_number["condition_number"]
+        assert np.isnan(cn[idx_nan])
+
+        # effective_rank: NaN at the all-NaN row
+        er = engine.effective_rank["effective_rank"]
+        assert np.isnan(er[idx_nan])
+
+        # solver_residual: NaN at the all-NaN row
+        sr = engine.solver_residual["residual"]
+        assert np.isnan(sr[idx_nan])
+
+        # signal_utilisation: NaN at the all-NaN row for every asset
+        su = engine.signal_utilisation
+        for asset in engine.assets:
+            assert np.isnan(su[asset][idx_nan])
+
+
 # ─── Information Coefficient (IC) ────────────────────────────────────────────
 
 
