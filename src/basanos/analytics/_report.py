@@ -16,7 +16,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeGuard
 
 import plotly.graph_objects as go
 import plotly.io as pio
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 # ── Formatting helpers ────────────────────────────────────────────────────────
 
 
-def _is_finite(v: object) -> bool:
+def _is_finite(v: object) -> TypeGuard[int | float]:
     """Return True when *v* is a real, finite number."""
     if not isinstance(v, (int, float)):
         return False
@@ -344,7 +344,7 @@ def _figure_div(fig: go.Figure, include_plotlyjs: bool | str) -> str:
     return pio.to_html(
         fig,
         full_html=False,
-        include_plotlyjs=include_plotlyjs,  # type: ignore[arg-type]
+        include_plotlyjs=include_plotlyjs,
     )
 
 
