@@ -546,5 +546,6 @@ class Report:
         p = Path(path)
         if not p.suffix:
             p = p.with_suffix(".html")
+        p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(self.to_html(title=title), encoding="utf-8")
         return p
