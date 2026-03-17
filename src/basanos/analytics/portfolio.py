@@ -582,10 +582,15 @@ class Portfolio:
             ['mean_daily_turnover', 'mean_weekly_turnover', 'turnover_std']
         """
         daily_col = self.turnover["turnover"]
-        mean_daily = float(daily_col.mean() or 0.0)
-        std_daily = float(daily_col.std() or 0.0)
+        _mean = daily_col.mean()
+        mean_daily = float(_mean) if isinstance(_mean, (int, float)) else 0.0
+        _std = daily_col.std()
+        std_daily = float(_std) if isinstance(_std, (int, float)) else 0.0
         weekly_col = self.turnover_weekly["turnover"].drop_nulls()
-        mean_weekly = float(weekly_col.mean()) if weekly_col.len() > 0 else float("nan")
+        _weekly_mean = weekly_col.mean()
+        mean_weekly = (
+            float(_weekly_mean) if weekly_col.len() > 0 and isinstance(_weekly_mean, (int, float)) else float("nan")
+        )
         return pl.DataFrame(
             {
                 "metric": ["mean_daily_turnover", "mean_weekly_turnover", "turnover_std"],
