@@ -413,6 +413,11 @@ from basanos.analytics import Portfolio
 | `avg_loss()` | Mean negative return |
 | `best()` | Maximum single-period return |
 | `worst()` | Minimum single-period return |
+| `max_drawdown()` | Largest peak-to-trough decline as a fraction of peak |
+| `avg_drawdown()` | Mean drawdown across all underwater periods |
+| `max_drawdown_duration()` | Longest consecutive underwater period (calendar days) |
+| `calmar(periods)` | Annualized return divided by max drawdown |
+| `recovery_factor()` | Total return divided by max drawdown |
 
 **`Plots` methods (rolling & sub-period)**
 

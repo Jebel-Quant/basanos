@@ -335,6 +335,11 @@ def test_summary_metric_names(frame):
         "kurtosis",
         "value_at_risk",
         "conditional_value_at_risk",
+        "max_drawdown",
+        "avg_drawdown",
+        "max_drawdown_duration",
+        "calmar",
+        "recovery_factor",
     }
     assert set(metric_names) == expected
 
@@ -547,3 +552,129 @@ def test_annual_breakdown_returns_empty_dataframe_when_all_years_insufficient():
     assert result.height == 0
     assert "year" in result.columns
     assert "metric" in result.columns
+
+
+# ─── Drawdown measures ────────────────────────────────────────────────────────
+
+
+def test_max_drawdown_zero_when_monotonically_increasing(frame):
+    """max_drawdown() should be 0 when returns are non-negative (no underwater period)."""
+    data = frame.head(5).with_columns(pl.Series("A", [0.0, 0.01, 0.02, 0.03, 0.04]))
+    result = Stats(data).max_drawdown()
+    assert result["A"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_max_drawdown_basic(frame):
+    """max_drawdown() should capture the largest drawdown correctly."""
+    # nav = 1, 0.9, 0.85, 1.05, 0.95 → max dd at nav=0.85, hwm=1.0 → 15%
+    returns = [0.0, -0.1, -0.05, 0.2, -0.1]
+    data = frame.head(5).with_columns(pl.Series("A", returns))
+    result = Stats(data).max_drawdown()
+    assert result["A"] == pytest.approx(0.15, abs=1e-12)
+
+
+def test_max_drawdown_is_fraction_in_0_1(frame):
+    """max_drawdown() should always return a value in [0, 1]."""
+    rng = np.random.default_rng(0)
+    returns = rng.normal(0, 0.01, 100).tolist()
+    data = frame.head(100).with_columns(pl.Series("A", returns))
+    mdd = Stats(data).max_drawdown()["A"]
+    assert 0.0 <= mdd <= 1.0
+
+
+def test_avg_drawdown_zero_when_no_underwater_period(frame):
+    """avg_drawdown() should return 0.0 when no drawdown periods exist."""
+    data = frame.head(5).with_columns(pl.Series("A", [0.0, 0.05, 0.05, 0.05, 0.05]))
+    result = Stats(data).avg_drawdown()
+    assert result["A"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_avg_drawdown_less_than_or_equal_to_max_drawdown(frame):
+    """avg_drawdown() should never exceed max_drawdown()."""
+    returns = [0.0, -0.1, -0.05, 0.3, -0.08, -0.03, 0.2]
+    data = frame.head(7).with_columns(pl.Series("A", returns))
+    s = Stats(data)
+    assert s.avg_drawdown()["A"] <= s.max_drawdown()["A"] + 1e-12
+
+
+def test_max_drawdown_duration_zero_when_no_underwater_period(frame):
+    """max_drawdown_duration() should be 0 when there are no underwater periods."""
+    data = frame.head(5).with_columns(pl.Series("A", [0.0, 0.05, 0.05, 0.05, 0.05]))
+    result = Stats(data).max_drawdown_duration()
+    assert result["A"] == 0
+
+
+def test_max_drawdown_duration_with_dates(frame):
+    """max_drawdown_duration() should count calendar days for date-indexed data."""
+    # returns: [0.0, -0.1, 0.2] → nav: [1.0, 0.9, 1.08] → in_dd: [F, T, F]
+    # duration = 1 day (row 1 is underwater, spanning a single date)
+    data = frame.head(3).with_columns(pl.Series("A", [0.0, -0.1, 0.2]))
+    result = Stats(data).max_drawdown_duration()
+    assert result["A"] == 1
+
+
+def test_max_drawdown_duration_without_dates():
+    """max_drawdown_duration() should count periods when no date column is present."""
+    # No date column: count rows
+    df = pl.DataFrame({"A": [0.0, -0.1, -0.05, 0.3, -0.1, -0.1, 0.05]})
+    s = Stats(df)
+    dur = s.max_drawdown_duration()["A"]
+    # nav = [1.0, 0.9, 0.85, 1.15, 1.05, 0.95, 1.0]; hwm = [1, 1, 1, 1.15, 1.15, 1.15, 1.15]
+    # in_dd: [F, T, T, F, T, T, T] → max run of T = 3
+    assert dur == 3
+
+
+def test_calmar_nan_when_no_drawdown(frame):
+    """calmar() should return nan when max drawdown is zero."""
+    data = frame.head(5).with_columns(pl.Series("A", [0.0, 0.01, 0.02, 0.03, 0.04]))
+    result = Stats(data).calmar()
+    assert math.isnan(result["A"])
+
+
+def test_calmar_positive_for_positive_returns_with_drawdown(frame):
+    """calmar() should be positive when mean return is positive and there is a drawdown."""
+    # Alternating ups and downs but net positive trend
+    returns = [0.0, -0.05, 0.06, -0.04, 0.07, -0.03, 0.08]
+    data = frame.head(7).with_columns(pl.Series("A", returns))
+    result = Stats(data).calmar()
+    assert result["A"] > 0
+
+
+def test_calmar_uses_custom_periods(frame):
+    """calmar() with custom periods should scale the annualised return."""
+    returns = [0.0, -0.1, 0.05, -0.02, 0.08]
+    data = frame.head(5).with_columns(pl.Series("A", returns))
+    s = Stats(data)
+    c1 = s.calmar(periods=252)["A"]
+    c2 = s.calmar(periods=504)["A"]
+    # Doubling periods should double the calmar (max_dd is the same)
+    assert math.isfinite(c1)
+    assert math.isfinite(c2)
+    assert c2 == pytest.approx(c1 * 2, rel=1e-9)
+
+
+def test_recovery_factor_nan_when_no_drawdown(frame):
+    """recovery_factor() should return nan when max drawdown is zero."""
+    data = frame.head(5).with_columns(pl.Series("A", [0.0, 0.01, 0.02, 0.03, 0.04]))
+    result = Stats(data).recovery_factor()
+    assert math.isnan(result["A"])
+
+
+def test_recovery_factor_positive_for_net_positive_returns(frame):
+    """recovery_factor() should be positive when total return is positive and there is a drawdown."""
+    returns = [0.0, -0.1, 0.15, -0.05, 0.1]
+    data = frame.head(5).with_columns(pl.Series("A", returns))
+    result = Stats(data).recovery_factor()
+    assert result["A"] > 0
+
+
+def test_recovery_factor_formula(frame):
+    """recovery_factor() should equal total_return / max_drawdown."""
+    returns = [0.0, -0.1, 0.05, -0.02, 0.08]
+    data = frame.head(5).with_columns(pl.Series("A", returns))
+    s = Stats(data)
+    rf = s.recovery_factor()["A"]
+    mdd = s.max_drawdown()["A"]
+    total_ret = float(pl.Series(returns).sum())
+    assert math.isfinite(rf)
+    assert rf == pytest.approx(total_ret / mdd, rel=1e-9)
