@@ -408,8 +408,15 @@ from basanos.analytics import Portfolio
 | `avg_return()` | Mean return (zeros excluded) |
 | `avg_win()` | Mean positive return |
 | `avg_loss()` | Mean negative return |
+| `win_rate()` | Fraction of profitable periods |
+| `profit_factor()` | Gross wins / absolute gross losses |
+| `payoff_ratio()` | Average win / absolute average loss |
+| `monthly_win_rate()` | Fraction of profitable calendar months |
 | `best()` | Maximum single-period return |
 | `worst()` | Minimum single-period return |
+| `worst_n_periods(n)` | *N* worst return periods (default 5) |
+| `up_capture(benchmark)` | Up-market capture ratio vs. benchmark |
+| `down_capture(benchmark)` | Down-market capture ratio vs. benchmark |
 
 ## Configuration Reference
 

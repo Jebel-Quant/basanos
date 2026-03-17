@@ -280,6 +280,167 @@ def test_value_at_risk_sigma_parameter_scales_tail(frame):
     assert var2 < var1
 
 
+# ─── Win rate / Profit factor / Payoff ratio ──────────────────────────────────
+
+
+def test_win_rate_basic(frame):
+    """win_rate returns fraction of strictly positive periods, ignoring nulls."""
+    a = [0.1, -0.2, 0.0, 0.3, None, -0.1, 0.05]
+    data = frame.head(7).with_columns(pl.Series("A", a))
+    result = Stats(data).win_rate()
+    # Positive: 0.1, 0.3, 0.05  → 3 out of 6 non-null → 0.5
+    assert math.isclose(result["A"], 3 / 6, rel_tol=1e-12)
+
+
+def test_win_rate_all_positive(frame):
+    """win_rate returns 1.0 when all returns are positive."""
+    data = frame.head(4).with_columns(pl.Series("A", [0.01, 0.02, 0.03, 0.04]))
+    assert Stats(data).win_rate()["A"] == 1.0
+
+
+def test_win_rate_all_negative(frame):
+    """win_rate returns 0.0 when all returns are negative."""
+    data = frame.head(4).with_columns(pl.Series("A", [-0.01, -0.02, -0.03, -0.04]))
+    assert Stats(data).win_rate()["A"] == 0.0
+
+
+def test_win_rate_all_nulls_returns_nan(frame):
+    """win_rate returns NaN when the series is entirely null."""
+    data = frame.head(3).with_columns(pl.Series("A", [None, None, None], dtype=pl.Float64))
+    assert math.isnan(Stats(data).win_rate()["A"])
+
+
+def test_profit_factor_basic(frame):
+    """profit_factor equals sum(positive) / abs(sum(negative))."""
+    a = [0.2, 0.1, -0.1, -0.05, 0.0]
+    data = frame.head(5).with_columns(pl.Series("A", a))
+    expected = 0.3 / 0.15
+    assert math.isclose(Stats(data).profit_factor()["A"], expected, rel_tol=1e-12)
+
+
+def test_profit_factor_no_losses_returns_inf(frame):
+    """profit_factor returns inf when there are no losing periods."""
+    data = frame.head(4).with_columns(pl.Series("A", [0.1, 0.2, 0.0, 0.3]))
+    assert math.isinf(Stats(data).profit_factor()["A"])
+
+
+def test_profit_factor_no_wins_returns_zero(frame):
+    """profit_factor returns 0.0 when there are no winning periods."""
+    data = frame.head(4).with_columns(pl.Series("A", [-0.1, -0.2, 0.0, -0.3]))
+    assert Stats(data).profit_factor()["A"] == pytest.approx(0.0)
+
+
+def test_payoff_ratio_basic(frame):
+    """payoff_ratio equals mean(positive) / abs(mean(negative))."""
+    a = [0.2, 0.4, -0.1, -0.3]
+    data = frame.head(4).with_columns(pl.Series("A", a))
+    avg_w = (0.2 + 0.4) / 2  # 0.3
+    avg_l = (-0.1 + -0.3) / 2  # -0.2
+    expected = avg_w / abs(avg_l)  # 1.5
+    assert math.isclose(Stats(data).payoff_ratio()["A"], expected, rel_tol=1e-12)
+
+
+def test_payoff_ratio_no_losses_returns_nan(frame):
+    """payoff_ratio returns nan when there are no losing periods."""
+    data = frame.head(3).with_columns(pl.Series("A", [0.1, 0.2, 0.3]))
+    assert math.isnan(Stats(data).payoff_ratio()["A"])
+
+
+# ─── Monthly win rate ──────────────────────────────────────────────────────────
+
+
+def test_monthly_win_rate_basic():
+    """monthly_win_rate returns fraction of months with positive compounded return."""
+    # 3 months: Jan +, Feb -, Mar +  → 2/3
+    dates = pl.date_range(start=date(2020, 1, 1), end=date(2020, 3, 31), interval="1d", eager=True)
+    # Small positive return for Jan and Mar, small negative for Feb
+    returns = []
+    for d in dates.to_list():
+        if d.month == 2:
+            returns.append(-0.001)
+        else:
+            returns.append(0.001)
+    df = pl.DataFrame({"date": dates, "A": returns})
+    result = Stats(df).monthly_win_rate()
+    assert math.isclose(result["A"], 2 / 3, rel_tol=1e-9)
+
+
+def test_monthly_win_rate_no_date_column_returns_nan():
+    """monthly_win_rate returns nan for each asset when there is no date column."""
+    df = pl.DataFrame({"steps": [1, 2, 3], "A": [0.01, 0.02, -0.01]})
+    result = Stats(df).monthly_win_rate()
+    assert math.isnan(result["A"])
+
+
+# ─── Worst N periods ──────────────────────────────────────────────────────────
+
+
+def test_worst_n_periods_returns_n_smallest(frame):
+    """worst_n_periods returns the N smallest values sorted ascending."""
+    a = [0.05, -0.03, 0.10, -0.08, 0.02, -0.01]
+    data = frame.head(6).with_columns(pl.Series("A", a))
+    result = Stats(data).worst_n_periods(n=3)
+    assert result["A"] == pytest.approx([-0.08, -0.03, -0.01], rel=1e-12)
+
+
+def test_worst_n_periods_pads_with_none_when_fewer_observations(frame):
+    """worst_n_periods pads list with None when series has fewer than n values."""
+    data = frame.head(2).with_columns(pl.Series("A", [-0.1, 0.2]))
+    result = Stats(data).worst_n_periods(n=5)
+    assert result["A"][0] == pytest.approx(-0.1)
+    assert result["A"][1] == pytest.approx(0.2)
+    assert result["A"][2] is None
+    assert len(result["A"]) == 5
+
+
+def test_worst_n_periods_default_is_5(frame):
+    """worst_n_periods defaults to returning 5 periods."""
+    a = list(range(-10, 10, 1))
+    data = frame.head(20).with_columns(pl.Series("A", [float(x) / 100 for x in a]))
+    result = Stats(data).worst_n_periods()
+    assert len(result["A"]) == 5
+    assert result["A"][0] <= result["A"][1]  # sorted ascending
+
+
+# ─── Up / Down capture ratio ──────────────────────────────────────────────────
+
+
+def test_up_capture_ratio_basic(frame):
+    """up_capture > 1 when strategy beats benchmark in up periods."""
+    benchmark = pl.Series("bench", [0.01, 0.02, -0.01, 0.03, -0.005])
+    # Strategy returns 2x benchmark on up days
+    strategy = [0.02, 0.04, -0.005, 0.06, -0.002]
+    data = frame.head(5).with_columns(pl.Series("A", strategy))
+    result = Stats(data).up_capture(benchmark)
+    assert result["A"] > 1.0
+
+
+def test_down_capture_ratio_basic(frame):
+    """down_capture < 1 when strategy loses less than benchmark in down periods."""
+    benchmark = pl.Series("bench", [0.01, -0.02, -0.03, 0.04, -0.01])
+    # Strategy loses half as much on down days
+    strategy = [0.005, -0.01, -0.015, 0.02, -0.005]
+    data = frame.head(5).with_columns(pl.Series("A", strategy))
+    result = Stats(data).down_capture(benchmark)
+    assert result["A"] < 1.0
+
+
+def test_up_capture_no_up_periods_returns_nan(frame):
+    """up_capture returns nan when benchmark never has positive periods."""
+    benchmark = pl.Series("bench", [-0.01, -0.02, -0.03])
+    data = frame.head(3).with_columns(pl.Series("A", [0.01, -0.01, 0.02]))
+    result = Stats(data).up_capture(benchmark)
+    assert math.isnan(result["A"])
+
+
+def test_down_capture_no_down_periods_returns_nan(frame):
+    """down_capture returns nan when benchmark never has negative periods."""
+    benchmark = pl.Series("bench", [0.01, 0.02, 0.03])
+    data = frame.head(3).with_columns(pl.Series("A", [0.01, -0.01, 0.02]))
+    result = Stats(data).down_capture(benchmark)
+    assert math.isnan(result["A"])
+
+
 # ─── Best / Worst ─────────────────────────────────────────────────────────────
 
 
@@ -321,12 +482,17 @@ def test_summary_has_metric_column_and_asset_columns(frame):
 
 def test_summary_metric_names(frame):
     """summary() should include expected metric names as rows."""
-    data = frame.head(20).with_columns(pl.Series("A", [0.01 * i for i in range(1, 21)]))
+    dates = pl.date_range(start=date(2020, 1, 1), end=date(2020, 1, 20), interval="1d", eager=True)
+    data = pl.DataFrame({"date": dates, "A": [0.01 * i for i in range(1, 21)]})
     metric_names = Stats(data).summary()["metric"].to_list()
     expected = {
         "avg_return",
         "avg_win",
         "avg_loss",
+        "win_rate",
+        "profit_factor",
+        "payoff_ratio",
+        "monthly_win_rate",
         "best",
         "worst",
         "volatility",

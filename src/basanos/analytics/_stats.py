@@ -290,6 +290,206 @@ class Stats:
         return _to_float_or_none(series.min())
 
     @columnwise_stat
+    def win_rate(self, series: pl.Series) -> float:
+        """Calculate the win rate (fraction of profitable periods).
+
+        Counts the proportion of non-null periods where the return is strictly
+        positive.
+
+        Args:
+            series (pl.Series): The series to calculate win rate for.
+
+        Returns:
+            float: Win rate in [0, 1], or NaN when the series contains no
+            non-null observations.
+
+        """
+        non_null = series.drop_nulls()
+        if non_null.is_empty():
+            return float("nan")
+        n_positive = int((non_null > 0).sum())
+        return n_positive / len(non_null)
+
+    @columnwise_stat
+    def profit_factor(self, series: pl.Series) -> float:
+        """Calculate the profit factor (gross wins / absolute gross losses).
+
+        A profit factor greater than 1.0 indicates the strategy produces more
+        gross profit than gross loss. Returns ``inf`` when there are no losing
+        periods, ``0.0`` when there are no winning periods, and ``nan`` when
+        there are neither wins nor losses (and no losses).
+
+        Args:
+            series (pl.Series): The series to calculate profit factor for.
+
+        Returns:
+            float: The profit factor.
+
+        """
+        gross_wins = _to_float(series.filter(series > 0).sum())
+        gross_losses = abs(_to_float(series.filter(series < 0).sum()))
+        if gross_losses == 0.0:
+            return float("inf") if gross_wins > 0 else float("nan")
+        return gross_wins / gross_losses
+
+    @columnwise_stat
+    def payoff_ratio(self, series: pl.Series) -> float:
+        """Calculate the payoff ratio (average win / absolute average loss).
+
+        Separates edge type — a high payoff ratio implies the strategy wins
+        infrequently but with large magnitude; a low payoff ratio implies
+        frequent small wins.  Returns ``nan`` when either the average win or
+        the average loss is zero (no profitable / no losing periods).
+
+        Args:
+            series (pl.Series): The series to calculate payoff ratio for.
+
+        Returns:
+            float: The payoff ratio.
+
+        """
+        avg_w = self._mean_positive_expr(series)
+        avg_l = self._mean_negative_expr(series)
+        if avg_l == 0.0:
+            return float("nan")
+        return avg_w / abs(avg_l)
+
+    def monthly_win_rate(self) -> dict[str, float]:
+        """Calculate the monthly win rate (fraction of profitable months).
+
+        Groups the daily returns data by calendar month, computes the
+        compounded return for each month, then returns the fraction of months
+        that had a positive compounded return.
+
+        Requires a ``date`` column in ``self.data``.  When no ``date`` column
+        is present, each asset entry is ``nan``.
+
+        Returns:
+            dict[str, float]: Monthly win rate in [0, 1] per asset.
+
+        """
+        if "date" not in self.data.columns:
+            return {asset: float("nan") for asset in self.assets}
+
+        result: dict[str, float] = {}
+        for asset in self.assets:
+            df = (
+                self.data.select(["date", asset])
+                .drop_nulls()
+                .with_columns(
+                    [
+                        pl.col("date").dt.year().alias("_year"),
+                        pl.col("date").dt.month().alias("_month"),
+                    ]
+                )
+            )
+            monthly = (
+                df.group_by(["_year", "_month"])
+                .agg((pl.col(asset) + 1.0).product().alias("gross"))
+                .with_columns((pl.col("gross") - 1.0).alias("monthly_return"))
+            )
+            n_total = len(monthly)
+            if n_total == 0:
+                result[asset] = float("nan")
+            else:
+                n_positive = int((monthly["monthly_return"] > 0).sum())
+                result[asset] = n_positive / n_total
+        return result
+
+    def worst_n_periods(self, n: int = 5) -> dict[str, list[float | None]]:
+        """Return the N worst return periods per asset.
+
+        Sorts each asset's returns in ascending order and returns the first
+        ``n`` values.  If the series has fewer than ``n`` non-null
+        observations the list is padded with ``None`` on the right.
+
+        Args:
+            n (int, optional): Number of worst periods to return. Defaults to 5.
+
+        Returns:
+            dict[str, list[float | None]]: Sorted worst returns per asset.
+
+        """
+        result: dict[str, list[float | None]] = {}
+        for asset in self.assets:
+            series = self.data[asset].drop_nulls()
+            worst: list[float | None] = series.sort(descending=False).head(n).to_list()
+            while len(worst) < n:
+                worst.append(None)
+            result[asset] = worst
+        return result
+
+    def up_capture(self, benchmark: pl.Series) -> dict[str, float]:
+        """Calculate the up-market capture ratio relative to a benchmark.
+
+        Measures the fraction of the benchmark's upside that the strategy
+        captures.  Uses geometric means over benchmark up-periods
+        (benchmark > 0).  A value greater than 1.0 means the strategy
+        outperformed the benchmark in rising markets.
+
+        Args:
+            benchmark (pl.Series): Benchmark return series aligned row-by-row
+                with ``self.data``.
+
+        Returns:
+            dict[str, float]: Up capture ratio per asset.
+
+        """
+        result: dict[str, float] = {}
+        up_mask = benchmark > 0
+        bench_up = benchmark.filter(up_mask).drop_nulls()
+        if bench_up.is_empty():
+            return {asset: float("nan") for asset in self.assets}
+
+        bench_geom = float((bench_up + 1.0).product()) ** (1.0 / len(bench_up)) - 1.0
+        if bench_geom == 0.0:
+            return {asset: float("nan") for asset in self.assets}
+
+        for asset in self.assets:
+            strat_up = self.data[asset].filter(up_mask).drop_nulls()
+            if strat_up.is_empty():
+                result[asset] = float("nan")
+            else:
+                strat_geom = float((strat_up + 1.0).product()) ** (1.0 / len(strat_up)) - 1.0
+                result[asset] = strat_geom / bench_geom
+        return result
+
+    def down_capture(self, benchmark: pl.Series) -> dict[str, float]:
+        """Calculate the down-market capture ratio relative to a benchmark.
+
+        Measures the fraction of the benchmark's downside that the strategy
+        captures.  Uses geometric means over benchmark down-periods
+        (benchmark < 0).  A value less than 1.0 means the strategy lost less
+        than the benchmark in falling markets (a desirable property).
+
+        Args:
+            benchmark (pl.Series): Benchmark return series aligned row-by-row
+                with ``self.data``.
+
+        Returns:
+            dict[str, float]: Down capture ratio per asset.
+
+        """
+        result: dict[str, float] = {}
+        down_mask = benchmark < 0
+        bench_down = benchmark.filter(down_mask).drop_nulls()
+        if bench_down.is_empty():
+            return {asset: float("nan") for asset in self.assets}
+
+        bench_geom = float((bench_down + 1.0).product()) ** (1.0 / len(bench_down)) - 1.0
+        if bench_geom == 0.0:
+            return {asset: float("nan") for asset in self.assets}
+
+        for asset in self.assets:
+            strat_down = self.data[asset].filter(down_mask).drop_nulls()
+            if strat_down.is_empty():
+                result[asset] = float("nan")
+            else:
+                strat_geom = float((strat_down + 1.0).product()) ** (1.0 / len(strat_down)) - 1.0
+                result[asset] = strat_geom / bench_geom
+        return result
+
+    @columnwise_stat
     def sharpe(self, series: pl.Series, periods: int | float | None = None) -> float:
         """Calculate the Sharpe ratio of asset returns.
 
@@ -331,6 +531,10 @@ class Stats:
             "avg_return": self.avg_return(),
             "avg_win": self.avg_win(),
             "avg_loss": self.avg_loss(),
+            "win_rate": self.win_rate(),
+            "profit_factor": self.profit_factor(),
+            "payoff_ratio": self.payoff_ratio(),
+            "monthly_win_rate": self.monthly_win_rate(),
             "best": self.best(),
             "worst": self.worst(),
             "volatility": self.volatility(),
