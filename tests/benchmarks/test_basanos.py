@@ -201,13 +201,13 @@ class TestStatsBenchmarks:
         """Benchmark full stats summary on 252-day returns."""
         result = benchmark(stats_252_5.summary)
         assert isinstance(result, pl.DataFrame)
-        assert result.shape[0] == 11
+        assert result.shape[0] == 20
 
     def test_summary_1260(self, benchmark, stats_1260_5):
         """Benchmark full stats summary on 1260-day returns."""
         result = benchmark(stats_1260_5.summary)
         assert isinstance(result, pl.DataFrame)
-        assert result.shape[0] == 11
+        assert result.shape[0] == 20
 
 
 # ─── BasanosEngine benchmarks ─────────────────────────────────────────────────
