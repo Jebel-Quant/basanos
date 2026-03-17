@@ -839,13 +839,10 @@ class BasanosEngine:
         Returns:
             Portfolio: Instance built from cash positions with AUM scaling.
         """
-<<<<<<< copilot/implement-turnover-measures
         cp = self.cash_position
         assets = [c for c in cp.columns if c != "date" and cp[c].dtype.is_numeric()]
         scaled = cp.with_columns(pl.col(a) * self.cfg.position_scale for a in assets)
         return Portfolio.from_cash_position(self.prices, scaled, aum=self.cfg.aum)
-=======
-        return Portfolio.from_cash_position(self.prices, self.cash_position * self.cfg.position_scale, aum=self.cfg.aum)
 
     def sharpe_at_shrink(self, shrink: float) -> float:
         r"""Return the annualised portfolio Sharpe ratio for the given shrinkage weight.
@@ -1102,4 +1099,3 @@ class BasanosEngine:
         arr = self.rank_ic["rank_ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
->>>>>>> main
