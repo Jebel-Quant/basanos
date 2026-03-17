@@ -626,4 +626,7 @@ class BasanosEngine:
         Returns:
             Portfolio: Instance built from cash positions with AUM scaling.
         """
-        return Portfolio.from_cash_position(self.prices, self.cash_position * self.cfg.position_scale, aum=self.cfg.aum)
+        cp = self.cash_position
+        assets = [c for c in cp.columns if c != "date" and cp[c].dtype.is_numeric()]
+        scaled = cp.with_columns(pl.col(a) * self.cfg.position_scale for a in assets)
+        return Portfolio.from_cash_position(self.prices, scaled, aum=self.cfg.aum)

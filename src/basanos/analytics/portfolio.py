@@ -550,7 +550,7 @@ class Portfolio:
                 is absent.
         """
         daily = self.turnover
-        if "date" not in daily.columns:
+        if "date" not in daily.columns or not daily["date"].dtype.is_temporal():
             return daily.with_columns(pl.col("turnover").rolling_sum(window_size=5, min_samples=5))
         return daily.group_by_dynamic("date", every="1w").agg(pl.col("turnover").sum()).sort("date")
 
