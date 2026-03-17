@@ -352,6 +352,7 @@ from basanos.math import BasanosConfig, BasanosEngine
 |-------|-------------|
 | `BasanosConfig` | Immutable configuration (Pydantic model) |
 | `BasanosEngine` | Core optimizer; produces positions and a `Portfolio` |
+| `AsyncBasanosEngine` | Non-blocking async facade around `BasanosEngine` |
 
 **`BasanosEngine` properties**
 
@@ -364,17 +365,51 @@ from basanos.math import BasanosConfig, BasanosEngine
 | `cash_position` | `pl.DataFrame` | Optimized cash positions |
 | `portfolio` | `Portfolio` | Ready-to-use portfolio for analytics |
 
+**`AsyncBasanosEngine` — async API**
+
+`AsyncBasanosEngine` accepts the same arguments as `BasanosEngine` and exposes
+every expensive property as an `async` method backed by
+[`asyncio.to_thread`](https://docs.python.org/3/library/asyncio-task.html#asyncio.to_thread).
+Use it in Marimo notebooks, FastAPI endpoints, or any other `asyncio`-based
+application to keep the event loop responsive while heavy computation runs in
+a worker thread.
+
+```python
+import asyncio
+from basanos.math import AsyncBasanosEngine, BasanosConfig
+
+cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
+engine = AsyncBasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+# Await individual properties
+portfolio = await engine.portfolio()
+cor       = await engine.cor()
+
+# Or run several concurrently
+vola, cash_pos = await asyncio.gather(engine.vola(), engine.cash_position())
+```
+
+| Async method | Returns | Sync equivalent |
+|--------------|---------|-----------------|
+| `await ret_adj()` | `pl.DataFrame` | `engine.ret_adj` |
+| `await vola()` | `pl.DataFrame` | `engine.vola` |
+| `await cor()` | `dict[date, np.ndarray]` | `engine.cor` |
+| `await cor_tensor()` | `np.ndarray` | `engine.cor_tensor` |
+| `await cash_position()` | `pl.DataFrame` | `engine.cash_position` |
+| `await portfolio()` | `Portfolio` | `engine.portfolio` |
+
 ---
 
 ### `basanos.analytics`
 
 ```python
-from basanos.analytics import Portfolio
+from basanos.analytics import Portfolio, AsyncPortfolio
 ```
 
 | Class | Description |
 |-------|-------------|
 | `Portfolio` | Central data model for P&L, NAV, and attribution |
+| `AsyncPortfolio` | Non-blocking async facade around `Portfolio` |
 | `Stats` | Statistical risk/return metrics |
 | `Plots` | Plotly-based interactive visualizations |
 
@@ -394,6 +429,49 @@ from basanos.analytics import Portfolio
 | `timing` | Dynamic timing (deviation from average) |
 | `stats` | `Stats` instance |
 | `plots` | `Plots` instance |
+
+**`AsyncPortfolio` — async API**
+
+`AsyncPortfolio` wraps any `Portfolio` instance and exposes every property as
+an `async` method backed by `asyncio.to_thread`.  Methods that return a new
+portfolio (e.g. `tilt`, `timing`, `truncate`, `lag`, `smoothed_holding`) return
+an `AsyncPortfolio` so you can continue chaining async calls.
+
+```python
+from basanos.analytics import AsyncPortfolio, Portfolio
+
+pf = AsyncPortfolio(portfolio)           # wrap an existing Portfolio
+# or use the class-method mirrors:
+pf = AsyncPortfolio.from_cash_position(prices=prices, cash_position=pos)
+
+nav    = await pf.nav_accumulated()
+dd     = await pf.drawdown()
+tilt   = await pf.tilt()                 # returns AsyncPortfolio
+timing = await tilt.timing()             # chain async calls
+
+# Run several concurrently
+profits, stats = await asyncio.gather(pf.profits(), pf.stats())
+```
+
+| Async method | Returns | Sync equivalent |
+|--------------|---------|-----------------|
+| `await profits()` | `pl.DataFrame` | `portfolio.profits` |
+| `await profit()` | `pl.DataFrame` | `portfolio.profit` |
+| `await nav_accumulated()` | `pl.DataFrame` | `portfolio.nav_accumulated` |
+| `await returns()` | `pl.DataFrame` | `portfolio.returns` |
+| `await monthly()` | `pl.DataFrame` | `portfolio.monthly` |
+| `await nav_compounded()` | `pl.DataFrame` | `portfolio.nav_compounded` |
+| `await highwater()` | `pl.DataFrame` | `portfolio.highwater` |
+| `await drawdown()` | `pl.DataFrame` | `portfolio.drawdown` |
+| `await all()` | `pl.DataFrame` | `portfolio.all` |
+| `await stats()` | `Stats` | `portfolio.stats` |
+| `await tilt()` | `AsyncPortfolio` | `portfolio.tilt` |
+| `await timing()` | `AsyncPortfolio` | `portfolio.timing` |
+| `await tilt_timing_decomp()` | `pl.DataFrame` | `portfolio.tilt_timing_decomp` |
+| `await correlation(frame)` | `pl.DataFrame` | `portfolio.correlation(frame)` |
+| `await truncate(start, end)` | `AsyncPortfolio` | `portfolio.truncate(start, end)` |
+| `await lag(n)` | `AsyncPortfolio` | `portfolio.lag(n)` |
+| `await smoothed_holding(n)` | `AsyncPortfolio` | `portfolio.smoothed_holding(n)` |
 
 **`Stats` methods**
 

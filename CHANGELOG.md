@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `[project.urls]` added to `pyproject.toml` (Homepage, Repository, Issues).
 - `Idea` section added to README explaining the core concept and C=I corner case.
+- **Async API**: `AsyncBasanosEngine` in `basanos.math` and `AsyncPortfolio` in
+  `basanos.analytics` wrap every expensive property with `asyncio.to_thread` so
+  CPU-bound computations run in a worker thread and never block the event loop.
+  Designed for Marimo dashboards, FastAPI services, and any other asyncio-based
+  application.
 
 ## [0.2.3] - 2026-03-16
 

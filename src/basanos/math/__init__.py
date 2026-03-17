@@ -7,6 +7,7 @@ and links are hierarchical in pdoc.
 
 Public API:
 - basanos.math.optimizer
+- basanos.math._async
 
 Private modules (subject to change):
 - basanos.math._linalg
@@ -20,11 +21,19 @@ Usage:
     >>> issubclass(BasanosConfig, object) and issubclass(BasanosEngine, object)
     True
 
+    For async (non-blocking) usage in event-loop applications:
+
+    >>> from basanos.math import AsyncBasanosEngine  # doctest: +SKIP
+    >>> from basanos.math import AsyncBasanosEngine
+    >>> issubclass(AsyncBasanosEngine, object)
+    True
+
 Notes:
     These re-exports are stable; private modules are implementation details
     and may change without notice.
 """
 
 # Public re-exports (explicit aliases so linters recognize intent)
+from ._async import AsyncBasanosEngine as AsyncBasanosEngine
 from .optimizer import BasanosConfig as BasanosConfig
 from .optimizer import BasanosEngine as BasanosEngine
