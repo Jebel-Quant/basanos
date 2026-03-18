@@ -231,6 +231,8 @@ fig = portfolio.plots.trading_cost_impact_plot(max_bps=20)
 When accessed from `BasanosEngine`, the report additionally includes an **interactive lambda-sweep chart** — the annualised Sharpe ratio as the shrinkage parameter λ is swept across [0, 1].
 
 ```python
+import numpy as np
+import polars as pl
 from basanos.math import BasanosConfig, BasanosEngine
 
 cfg = BasanosConfig(vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6)
@@ -240,8 +242,13 @@ html_str = cfg.report.to_html()
 cfg.report.save("output/config_report")  # → output/config_report.html
 
 # Engine report (includes lambda-sweep chart)
-engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-engine.config_report.save("output/config_with_sweep")
+n = 100
+_dates = pl.date_range(pl.date(2023, 1, 1), pl.date(2023, 1, 1) + pl.duration(days=n - 1), eager=True)
+_rng = np.random.default_rng(0)
+_prices = pl.DataFrame({"date": _dates, "AAPL": 100.0 + np.cumsum(_rng.normal(0, 1.0, n)), "GOOGL": 150.0 + np.cumsum(_rng.normal(0, 1.2, n))})
+_mu = pl.DataFrame({"date": _dates, "AAPL": np.tanh(_rng.normal(0, 0.5, n)), "GOOGL": np.tanh(_rng.normal(0, 0.5, n))})
+cfg_engine = BasanosEngine(prices=_prices, mu=_mu, cfg=cfg)
+cfg_engine.config_report.save("output/config_with_sweep")
 ```
 
 ## How It Works
