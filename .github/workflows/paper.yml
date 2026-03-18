@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-pdf:
@@ -52,3 +52,20 @@ jobs:
           name: basanos.pdf
           path: paper/basanos.pdf
           retention-days: 30
+
+      - name: Push PDF to paper branch
+        if: github.event_name != 'pull_request'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin paper 2>/dev/null || true
+          if git show-ref --verify --quiet refs/remotes/origin/paper; then
+            git checkout -b paper origin/paper
+          else
+            git checkout --orphan paper
+            git rm -rf --quiet .
+          fi
+          cp paper/basanos.pdf basanos.pdf
+          git add basanos.pdf
+          git diff --staged --quiet || git commit -m "Update basanos.pdf [skip ci]"
+          git push origin paper
