@@ -160,15 +160,15 @@ class TestMakefile:
 
     def test_coverage_badge_target_dry_run(self, logger, tmp_path):
         """Coverage-badge target should invoke genbadge via uvx in dry-run output."""
-        # Create a mock coverage JSON file so the target proceeds past the guard
+        # Create a mock coverage XML file so the target proceeds past the guard
         tests_dir = tmp_path / "_tests"
         tests_dir.mkdir(exist_ok=True)
-        (tests_dir / "coverage.json").write_text("{}")
+        (tests_dir / "coverage.xml").write_text("<coverage></coverage>")
 
         proc = run_make(logger, ["coverage-badge"])
         out = proc.stdout
-        assert "genbadge coverage" in out
-        assert "_tests/coverage.json" in out
+        assert "genbadge[coverage]" in out
+        assert "_tests/coverage.xml" in out
         assert "assets/coverage-badge.svg" in out
 
 
