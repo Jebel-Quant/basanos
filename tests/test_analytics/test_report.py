@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
 import pytest
 
 from basanos.analytics import Portfolio
+from basanos.analytics._plots import Plots
 from basanos.analytics._report import Report, _fmt, _stats_table_html
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
