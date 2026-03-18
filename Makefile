@@ -14,6 +14,8 @@ include .rhiza/rhiza.mk
 
 ## Hooks
 
+# CI equivalent: .github/workflows/rhiza_typecheck.yml runs `make typecheck`
+# on every push and pull_request to main/master.
 post-validate:: typecheck ## run type checking as part of make validate
 
 ## Custom targets

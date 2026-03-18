@@ -7,6 +7,10 @@
 #          ty (https://github.com/astral-sh/ty) is a fast Python type checker
 #          from the Astral team (same team as ruff/uv).
 #
+#          Type-checker settings live in [tool.ty.environment] in pyproject.toml.
+#          Locally, `make typecheck` runs the same check; it is also wired into
+#          `make validate` via the `post-validate::` hook in the repo Makefile.
+#
 # Trigger: On push and pull requests to main/master branches.
 
 name: "(RHIZA) TYPECHECK"
@@ -35,7 +39,9 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
 
-      - name: Run typecheck
+      - name: Run ty type checker (make typecheck)
+        # Runs `uv run ty check src/` as defined in .rhiza/make.d/test.mk.
+        # ty is configured via [tool.ty.environment] in pyproject.toml.
         env:
           UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
         run: make typecheck
