@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
 import pytest
 
 from basanos.analytics import Portfolio
+from basanos.analytics._plots import Plots
 from basanos.analytics._report import Report, _fmt, _stats_table_html
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -280,3 +282,76 @@ def test_stats_table_html_contains_asset_headers(multi_year_portfolio):
     html = _stats_table_html(summary)
     for asset in multi_year_portfolio.assets:
         assert asset in html
+
+
+def test_stats_table_html_skips_missing_metric():
+    """_stats_table_html skips metrics absent from the summary DataFrame (line 140).
+
+    When a metric listed in _CATEGORIES is not present in the summary rows,
+    the ``continue`` branch is taken and no row is rendered for that metric.
+    """
+    # Only 'sharpe' is present; all Return-category metrics are absent.
+    summary = pl.DataFrame({"metric": ["sharpe"], "A": [1.5], "B": [1.2]})
+    html = _stats_table_html(summary)
+    assert "<table" in html
+    # The present metric must appear.
+    assert "Sharpe Ratio" in html
+    # Absent metric must not appear.
+    assert "Avg Return" not in html
+
+
+# ── dateless portfolio ────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def dateless_portfolio() -> Portfolio:
+    """100-row, 2-asset portfolio whose prices frame has no 'date' column."""
+    n = 100
+    rng = np.random.default_rng(7)
+    a = pl.Series((100.0 + np.cumsum(rng.normal(0, 0.5, n))).tolist(), dtype=pl.Float64)
+    b = pl.Series((200.0 + np.cumsum(rng.normal(0, 0.7, n))).tolist(), dtype=pl.Float64)
+    prices = pl.DataFrame({"A": a, "B": b})
+    positions = pl.DataFrame(
+        {
+            "A": pl.Series([1000.0] * n, dtype=pl.Float64),
+            "B": pl.Series([500.0] * n, dtype=pl.Float64),
+        }
+    )
+    return Portfolio.from_cash_position(prices=prices, cash_position=positions, aum=1e6)
+
+
+def test_to_html_dateless_portfolio_shows_period_count(dateless_portfolio):
+    """to_html uses '<n> periods' format when prices has no date column (lines 392-394)."""
+    html = dateless_portfolio.report.to_html()
+    assert isinstance(html, str)
+    assert "100 periods" in html
+
+
+def test_to_html_dateless_portfolio_omits_date_range(dateless_portfolio):
+    """to_html omits the date-range arrow when prices has no date column."""
+    html = dateless_portfolio.report.to_html()
+    assert "\u2192" not in html  # → (the date-range arrow)
+
+
+# ── _try_div exception handler ────────────────────────────────────────────────
+
+
+def test_to_html_chart_unavailable_on_plot_error(multi_year_portfolio):
+    """_try_div catches plot exceptions and embeds a notice (lines 413-414)."""
+    with patch.object(Plots, "snapshot", side_effect=RuntimeError("boom")):
+        html = multi_year_portfolio.report.to_html()
+    assert 'class="chart-unavailable"' in html
+    assert "Chart unavailable" in html
+    assert "boom" in html
+
+
+# ── turnover_summary exception handler ───────────────────────────────────────
+
+
+def test_to_html_turnover_unavailable_on_error(multi_year_portfolio):
+    """to_html catches turnover_summary exceptions and embeds a notice (lines 445-446)."""
+    with patch.object(Portfolio, "turnover_summary", side_effect=RuntimeError("no data")):
+        html = multi_year_portfolio.report.to_html()
+    assert 'class="chart-unavailable"' in html
+    assert "Turnover data unavailable" in html
+    assert "no data" in html
