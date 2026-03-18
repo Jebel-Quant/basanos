@@ -86,7 +86,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: _tests/coverage.json
+          path: _tests/coverage.xml
           overwrite: true
           if-no-files-found: ignore
 
@@ -139,7 +139,7 @@ jobs:
       - name: Generate coverage badge
         run: |
           mkdir -p assets
-          uvx genbadge coverage -i _tests/coverage.json -o assets/coverage-badge.svg
+          uvx "genbadge[coverage]" coverage -i _tests/coverage.xml -o assets/coverage-badge.svg
 
       - name: Commit coverage badge
         run: |

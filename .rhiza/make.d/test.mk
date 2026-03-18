@@ -37,6 +37,7 @@ test:: install ## run all tests
 	  --cov-report=html:_tests/html-coverage \
 	  --cov-fail-under=$(COVERAGE_FAIL_UNDER) \
 	  --cov-report=json:_tests/coverage.json \
+	  --cov-report=xml:_tests/coverage.xml \
 	  --html=_tests/html-report/report.html; \
 	else \
 	  printf "${YELLOW}[WARN] Source folder ${SOURCE_FOLDER} not found, running tests without coverage${RESET}\n"; \
@@ -122,18 +123,18 @@ hypothesis-test:: install ## run property-based tests with Hypothesis
 	fi; \
 	exit $$exit_code
 
-# The 'coverage-badge' target generates an SVG coverage badge from the JSON coverage report.
-# 1. Checks if the coverage JSON file exists.
+# The 'coverage-badge' target generates an SVG coverage badge from the XML coverage report.
+# 1. Checks if the coverage XML file exists.
 # 2. Creates the assets/ directory if needed.
-# 3. Runs genbadge via uvx to produce the SVG badge.
-coverage-badge: test ## generate coverage badge from _tests/coverage.json
-	@if [ ! -f _tests/coverage.json ]; then \
-	  printf "${RED}[ERROR] Coverage report not found at _tests/coverage.json, run 'make test' first.${RESET}\n"; \
+# 3. Runs genbadge[coverage] via uvx to produce the SVG badge.
+coverage-badge: test ## generate coverage badge from _tests/coverage.xml
+	@if [ ! -f _tests/coverage.xml ]; then \
+	  printf "${RED}[ERROR] Coverage report not found at _tests/coverage.xml, run 'make test' first.${RESET}\n"; \
 	  exit 1; \
 	fi; \
 	mkdir -p assets; \
 	printf "${BLUE}[INFO] Generating coverage badge...${RESET}\n"; \
-	${UVX_BIN} genbadge coverage -i _tests/coverage.json -o assets/coverage-badge.svg; \
+	${UVX_BIN} "genbadge[coverage]" coverage -i _tests/coverage.xml -o assets/coverage-badge.svg; \
 	printf "${GREEN}[SUCCESS] Coverage badge saved to assets/coverage-badge.svg${RESET}\n"
 
 # The 'stress' target runs stress/load tests.
