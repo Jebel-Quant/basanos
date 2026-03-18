@@ -121,6 +121,41 @@ class TestJSONFormatterExtraFields:
         data = json.loads(raw)
         assert data["context"]["denom"] == "nan"
 
+    def test_list_and_tuple_values_serialised(self) -> None:
+        """List and tuple extra values are recursively serialised."""
+        formatter = JSONFormatter()
+        record = _make_record(
+            "event",
+            extra={"items": [1.0, float("inf"), (2.0, float("nan"))]},
+        )
+        data = json.loads(formatter.format(record))
+        assert data["items"][0] == 1.0
+        assert data["items"][1] == "inf"
+        assert data["items"][2][1] == "nan"
+
+    def test_exc_info_included_when_present(self) -> None:
+        """exc_info is formatted and included in the JSON payload."""
+        import sys
+
+        formatter = JSONFormatter()
+        exc_info = None
+        try:
+            _ = 1 / 0
+        except ZeroDivisionError:
+            exc_info = sys.exc_info()
+        record = logging.LogRecord(
+            name="test",
+            level=logging.ERROR,
+            pathname="",
+            lineno=0,
+            msg="error",
+            args=(),
+            exc_info=exc_info,
+        )
+        data = json.loads(formatter.format(record))
+        assert "exc_info" in data
+        assert "ZeroDivisionError" in data["exc_info"]
+
     def test_stdlib_attrs_not_duplicated(self) -> None:
         """Standard LogRecord attributes should not appear as extra keys."""
         formatter = JSONFormatter()

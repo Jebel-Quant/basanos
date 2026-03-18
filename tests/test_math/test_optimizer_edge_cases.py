@@ -16,11 +16,13 @@ random input space of the property tests:
 from __future__ import annotations
 
 import logging
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
 import pytest
 
+from basanos.exceptions import SingularMatrixError
 from basanos.math import BasanosConfig, BasanosEngine
 
 # ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -333,3 +335,62 @@ class TestSingleNonNullAssetPerRow:
         even_indices = [i for i in range(engine.prices.height) if i % 2 == 0]
         for i in even_indices:
             assert np.isnan(vals_b[i]), f"Expected NaN for asset B at even row {i}, got {vals_b[i]}"
+
+
+# ─── Edge case 5: SingularMatrixError in solver_residual ─────────────────────
+
+
+def test_solver_residual_singular_matrix_returns_nan(caplog: pytest.LogCaptureFixture) -> None:
+    """solver_residual returns NaN and logs a warning when solve raises SingularMatrixError (lines 898-900).
+
+    Mocking ``solve`` to always raise forces every row that would normally
+    compute a residual to take the exception branch and emit a NaN sentinel.
+    """
+    cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6)
+    prices = _non_monotonic_prices(40, 2)
+    mu = _sinusoidal_mu(prices)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+    with (
+        patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError("degenerate")),
+        caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+    ):
+        result = engine.solver_residual
+
+    residuals = result["residual"].to_numpy()
+    # With solve always raising, every non-zero-mu row must become NaN.
+    # Zero-mu rows short-circuit before solve and return 0.0, so allow those.
+    assert np.all(np.isnan(residuals) | np.isclose(residuals, 0.0, atol=1e-14))
+
+    warnings = [r for r in caplog.records if "SingularMatrixError" in r.message and "solver_residual" in r.message]
+    assert len(warnings) > 0, "Expected at least one SingularMatrixError warning from solver_residual"
+
+
+# ─── Edge case 6: SingularMatrixError in signal_utilisation ──────────────────
+
+
+def test_signal_utilisation_singular_matrix_returns_nan(caplog: pytest.LogCaptureFixture) -> None:
+    """signal_utilisation returns NaN and logs a warning when solve raises SingularMatrixError (lines 954-955).
+
+    Mocking ``solve`` to always raise ensures every row that reaches the solve
+    call is left as NaN (the array is pre-filled with NaN in that branch).
+    """
+    cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6)
+    prices = _non_monotonic_prices(40, 2)
+    mu = _sinusoidal_mu(prices)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+    with (
+        patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError("degenerate")),
+        caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+    ):
+        result = engine.signal_utilisation
+
+    # With solve always raising, no asset should have a finite non-zero utilisation.
+    for asset in engine.assets:
+        vals = result[asset].to_numpy()
+        finite_nonzero = vals[np.isfinite(vals) & (vals != 0.0)]
+        assert len(finite_nonzero) == 0, f"Unexpected finite non-zero utilisation for {asset!r}: {finite_nonzero}"
+
+    warnings = [r for r in caplog.records if "SingularMatrixError" in r.message and "signal_utilisation" in r.message]
+    assert len(warnings) > 0, "Expected at least one SingularMatrixError warning from signal_utilisation"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
@@ -234,3 +235,15 @@ def test_save_with_engine(tmp_path: Path, engine: BasanosEngine) -> None:
     assert result.exists()
     content = result.read_text(encoding="utf-8")
     assert "plotly" in content.lower()
+
+
+# ── _lambda_sweep_fig exception handler ───────────────────────────────────────
+
+
+def test_to_html_lambda_sweep_unavailable_on_error(engine: BasanosEngine) -> None:
+    """to_html catches _lambda_sweep_fig exceptions and embeds a notice (lines 564-565)."""
+    with patch("basanos.math._config_report._lambda_sweep_fig", side_effect=RuntimeError("sweep failed")):
+        html = engine.config_report.to_html()
+    assert 'class="chart-unavailable"' in html
+    assert "Lambda sweep unavailable" in html
+    assert "sweep failed" in html
