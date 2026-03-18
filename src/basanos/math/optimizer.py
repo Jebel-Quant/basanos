@@ -704,6 +704,14 @@ class BasanosEngine:
             containing the per-timestamp cash positions (risk divided by EWMA
             volatility).
 
+        Note:
+            ``cfg.shrink`` has no effect when a ``factor_model`` is provided.
+            Shrinkage regularizes the EWMA-estimated correlation matrix to
+            compensate for estimation error; a user-supplied factor model
+            already encodes the intended covariance structure so no further
+            regularization is applied.  To add regularization with a factor
+            model, adjust the loadings or specific variances directly.
+
         Performance:
             *EWMA path* — dominant cost is ``self.cor`` (O(T·N²) time,
             O(T·N²) memory).  The per-timestamp Cholesky solve adds O(N³)

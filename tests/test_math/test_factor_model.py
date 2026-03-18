@@ -360,6 +360,22 @@ def test_engine_factor_model_portfolio_accessible() -> None:
     assert portfolio is not None
 
 
+def test_factor_model_unaffected_by_shrink_config() -> None:
+    """cfg.shrink must have no effect when factor_model is provided."""
+    prices, mu, _ = _make_engine(n=2, t=80)
+    rng = np.random.default_rng(5)
+    B = rng.normal(0, 0.5, (2, 2))  # noqa: N806
+    fm = FactorModel(loadings=B)
+    cfg_lo = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.1, aum=1e6)
+    cfg_hi = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.9, aum=1e6)
+    cp_lo = BasanosEngine(prices=prices, mu=mu, cfg=cfg_lo, factor_model=fm).cash_position
+    cp_hi = BasanosEngine(prices=prices, mu=mu, cfg=cfg_hi, factor_model=fm).cash_position
+    np.testing.assert_array_equal(
+        cp_lo.select(["A", "B"]).to_numpy(),
+        cp_hi.select(["A", "B"]).to_numpy(),
+    )
+
+
 # ─── LargeUniverseWarning ─────────────────────────────────────────────────────
 
 
