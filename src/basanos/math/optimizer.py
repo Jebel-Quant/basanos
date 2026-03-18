@@ -18,8 +18,8 @@ Let *N* be the number of assets and *T* the number of timestamps.
 | EWM volatility (``ret_adj``,     | O(T·N)           | Linear in both T and N; negligible   |
 | ``vola``)                        |                  |                                      |
 +----------------------------------+------------------+--------------------------------------+
-| EWM correlation (``cor``)        | O(T·N²)          | ``lfilter`` over all N² asset pairs  |
-|                                  |                  | simultaneously                       |
+| EWM correlation (``cor``)        | O(T·N²)          | Incremental O(N²) state update per   |
+|                                  |                  | timestep via ``_EwmCorrState``       |
 +----------------------------------+------------------+--------------------------------------+
 | Linear solve per timestamp       | O(N³)            | Cholesky / LU per row in             |
 | (``cash_position``)              | * T solves       | ``cash_position``                    |
@@ -27,32 +27,34 @@ Let *N* be the number of assets and *T* the number of timestamps.
 
 **Memory usage** (peak, approximate)
 
-``_ewm_corr_numpy`` allocates roughly **14 float64 arrays** of shape
-``(T, N, N)`` at peak (input sequences, IIR filter outputs, EWM components,
-and the result tensor).  Peak RAM ≈ **112 * T * N²** bytes.  Typical
-working sizes on a 16 GB machine:
+``_ewm_corr_numpy`` maintains a compact O(N²) running state and writes
+directly into a single output array of shape ``(T, N, N)``.  Peak RAM ≈
+**8 * T * N²** bytes (one float64 array) plus a negligible O(N²) constant
+for the five state arrays.  Typical working sizes:
 
 +--------+--------------------------+------------------------------------+
 | N      | T (daily rows)           | Peak memory (approx.)              |
 +========+==========================+====================================+
-| 50     | 252 (~1 yr)              | ~70 MB                             |
+| 50     | 252 (~1 yr)              | ~5 MB                              |
 +--------+--------------------------+------------------------------------+
-| 100    | 252 (~1 yr)              | ~280 MB                            |
+| 100    | 252 (~1 yr)              | ~20 MB                             |
 +--------+--------------------------+------------------------------------+
-| 100    | 2 520 (~10 yr)           | ~2.8 GB                            |
+| 100    | 2 520 (~10 yr)           | ~200 MB                            |
 +--------+--------------------------+------------------------------------+
-| 200    | 2 520 (~10 yr)           | ~11 GB                             |
+| 200    | 2 520 (~10 yr)           | ~800 MB                            |
 +--------+--------------------------+------------------------------------+
-| 500    | 2 520 (~10 yr)           | ~70 GB ⚠ exceeds typical RAM       |
+| 500    | 2 520 (~10 yr)           | ~5 GB                              |
 +--------+--------------------------+------------------------------------+
+
+When ``cash_position`` is called, the correlation state is maintained
+incrementally inside the solver loop so only O(N²) correlation memory is
+needed — the full ``(T, N, N)`` tensor is never materialised.
 
 **Practical limits (daily data)**
 
-* **≤ 150 assets, ≤ 5 years** — well within reach on an 8 GB laptop.
-* **≤ 250 assets, ≤ 10 years** — requires ~11-12 GB; feasible on a 16 GB
-  workstation.
-* **> 500 assets with multi-year history** — peak memory exceeds 16 GB;
-  reduce the time range or switch to a chunked / streaming approach.
+* **≤ 500 assets, ≤ 10 years** — well within reach on a 16 GB machine.
+* **> 500 assets** — the O(N³) per-solve cost in ``cash_position`` becomes
+  the dominant bottleneck; correlation memory is no longer the constraint.
 * **> 1 000 assets** — the O(N³) per-solve cost alone makes real-time
   optimization impractical even with adequate RAM.
 
@@ -67,7 +69,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
-from scipy.signal import lfilter
 from scipy.stats import spearmanr
 
 from ..analytics import Portfolio
@@ -87,6 +88,146 @@ if TYPE_CHECKING:
     from ._config_report import ConfigReport
 
 _logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class _EwmCorrState:
+    """Incremental EWM correlation state for streaming O(N**2) computation.
+
+    Maintains five running (N, N) accumulators and advances them one row at a
+    time via :meth:`step`.  Each call to :meth:`step` returns the full (N, N)
+    correlation matrix for the current timestep without storing any
+    historical data, keeping memory usage at O(N**2) regardless of the
+    number of timesteps processed.
+
+    The update rule ``s[t] = beta*s[t-1] + v[t]`` is applied element-wise to
+    every (i, j) pair simultaneously using vectorised NumPy operations, so
+    there is no Python loop over assets.  This is numerically equivalent to
+    ``scipy.signal.lfilter([1], [1, -beta], v, axis=0)`` applied to the full
+    ``(T, N, N)`` input block, but uses O(N**2) memory instead of O(T*N**2).
+
+    Args:
+        n_assets: Number of assets N.
+        com: EWM centre-of-mass (``alpha = 1 / (1 + com)``).
+        min_periods: Minimum joint-finite observations before a correlation
+            value is emitted; earlier values are NaN.
+        min_corr_denom: Guard threshold below which the correlation
+            denominator is treated as zero (result -> NaN).  Defaults to
+            ``1e-14``.
+
+    Examples:
+        Process a 3-asset return matrix row by row::
+
+            import numpy as np
+            from basanos.math.optimizer import _EwmCorrState
+
+            rng = np.random.default_rng(0)
+            data = rng.normal(size=(50, 3))
+            state = _EwmCorrState(n_assets=3, com=10, min_periods=10)
+            for row in data:
+                corr = state.step(row)  # (3, 3) correlation matrix
+    """
+
+    n_assets: int
+    com: int
+    min_periods: int
+    min_corr_denom: float = 1e-14
+
+    # Private running-state arrays; shape (N, N); initialised in __post_init__
+    _s_x: np.ndarray = dataclasses.field(init=False, repr=False)
+    _s_x2: np.ndarray = dataclasses.field(init=False, repr=False)
+    _s_xy: np.ndarray = dataclasses.field(init=False, repr=False)
+    _s_w: np.ndarray = dataclasses.field(init=False, repr=False)
+    _count: np.ndarray = dataclasses.field(init=False, repr=False)
+    _beta: float = dataclasses.field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        n = self.n_assets
+        self._s_x = np.zeros((n, n))
+        self._s_x2 = np.zeros((n, n))
+        self._s_xy = np.zeros((n, n))
+        self._s_w = np.zeros((n, n))
+        self._count = np.zeros((n, n), dtype=np.int64)
+        self._beta = self.com / (1.0 + self.com)
+
+    def step(self, x: np.ndarray) -> np.ndarray:
+        """Advance the state by one timestep and return the current correlation matrix.
+
+        Args:
+            x: Float array of shape ``(N,)`` containing the current row of
+               (volatility-adjusted) returns.  NaN entries are treated as
+               missing: a pair (i, j) only accumulates weight at timesteps
+               where **both** ``x[i]`` and ``x[j]`` are finite.
+
+        Returns:
+            np.ndarray of shape ``(N, N)``: EWM correlation matrix for the
+            current timestep.  Entries are NaN before ``min_periods`` joint
+            finite observations have been seen for the respective pair.
+        """
+        beta = self._beta
+
+        fin = np.isfinite(x)  # (N,) bool
+        xt_f = np.where(fin, x, 0.0)  # (N,) zeroed where not finite
+
+        # joint_fin[i, j] = True iff both asset i and j are finite at this step
+        joint_fin = fin[:, np.newaxis] & fin[np.newaxis, :]  # (N, N) bool
+
+        # Build per-pair input sequences and advance the IIR recurrence
+        # s[t] = β·s[t-1] + v[t] for every (i, j) pair simultaneously.
+        #
+        # v_x[i, j]  = x_i    where pair (i,j) jointly finite, else 0
+        # v_x2[i, j] = x_i²   where pair (i,j) jointly finite, else 0
+        # v_xy[i, j] = x_i·x_j  (xt_f is 0 for non-finite, so implicit mask)
+        # v_w[i, j]  = 1       where pair (i,j) jointly finite, else 0
+        #
+        # By symmetry _s_x[j, i] carries x_j for pair (i, j), so .T gives
+        # the EWM numerator of x_j without a separate accumulator.
+        v_x = xt_f[:, np.newaxis] * joint_fin  # (N, N)
+        v_x2 = (xt_f * xt_f)[:, np.newaxis] * joint_fin  # (N, N)
+        v_xy = xt_f[:, np.newaxis] * xt_f[np.newaxis, :]  # (N, N)
+        v_w = joint_fin.astype(np.float64)  # (N, N)
+
+        self._s_x = beta * self._s_x + v_x
+        self._s_x2 = beta * self._s_x2 + v_x2
+        self._s_xy = beta * self._s_xy + v_xy
+        self._s_w = beta * self._s_w + v_w
+        self._count += joint_fin
+
+        return self._current_corr()
+
+    def _current_corr(self) -> np.ndarray:
+        """Return the (N, N) correlation matrix for the current accumulated state."""
+        n = self.n_assets
+        diag_idx = np.arange(n)
+
+        # _s_w is symmetric (joint_fin is symmetric), so _s_w == _s_w.T and
+        # pos_w can be used as a shared mask for both (i,j) and (j,i) directions.
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pos_w = self._s_w > 0
+            # _s_x[i, j] = EWM numerator of x_i for pair (i, j)
+            # _s_x.T[i, j] = _s_x[j, i] = EWM numerator of x_j for pair (i, j)
+            ewm_x = np.where(pos_w, self._s_x / self._s_w, np.nan)
+            ewm_y = np.where(pos_w, self._s_x.T / self._s_w, np.nan)
+            ewm_x2 = np.where(pos_w, self._s_x2 / self._s_w, np.nan)
+            ewm_y2 = np.where(pos_w, self._s_x2.T / self._s_w, np.nan)
+            ewm_xy = np.where(pos_w, self._s_xy / self._s_w, np.nan)
+
+        var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
+        var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
+        denom = np.sqrt(var_x * var_y)
+        cov = ewm_xy - ewm_x * ewm_y
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            result = np.where(denom > self.min_corr_denom, cov / denom, np.nan)
+
+        result = np.clip(result, -1.0, 1.0)
+        result[self._count < self.min_periods] = np.nan
+
+        # Diagonal is exactly 1.0 where the asset has sufficient observations
+        diag_count = self._count[diag_idx, diag_idx]  # (N,)
+        result[diag_idx, diag_idx] = np.where(diag_count >= self.min_periods, 1.0, np.nan)
+
+        return result
 
 
 def _ewm_corr_numpy(
@@ -109,9 +250,9 @@ def _ewm_corr_numpy(
     a result the correlation for a pair is frozen once either asset goes
     missing, exactly mirroring pandas behaviour.
 
-    The EWM recurrence ``s[t] = β·s[t-1] + v[t]`` is an IIR filter and is
-    solved for **all N² pairs simultaneously** via ``scipy.signal.lfilter``
-    — no Python loop over the T timesteps.
+    The EWM recurrence ``s[t] = beta*s[t-1] + v[t]`` is advanced one row at a
+    time via :class:`_EwmCorrState`, which keeps five (N, N) running accumulators
+    instead of expanding the full ``(T, N, N)`` input block into memory.
 
     Args:
         data: Float array of shape ``(T, N)`` - typically volatility-adjusted
@@ -129,78 +270,27 @@ def _ewm_corr_numpy(
         warm-up).
 
     Performance:
-        **Time** — O(T·N²): ``lfilter`` processes all N² pairs simultaneously,
-        so wall-clock time scales linearly with both T and N².
+        **Time** — O(T·N²): the state update and correlation computation each
+        perform O(N²) work per timestep, so wall-clock time scales linearly
+        with both T and N².
 
-        **Memory** — approximately 14 float64 arrays of shape ``(T, N, N)``
-        exist at peak, giving roughly ``112 * T * N²`` bytes.  For 100 assets
-        over 2 520 trading days (~10 years) that is ≈ 2.8 GB; for 500 assets
-        the same period requires ≈ 70 GB, which exceeds typical workstation
-        RAM.  Reduce T or N before calling this function when working with
-        large universes.
+        **Memory** — one output array of shape ``(T, N, N)`` plus five O(N²)
+        state arrays.  Peak RAM ≈ **8 * T * N²** bytes (one float64 array).
+        For 100 assets over 2 520 trading days (~10 years) that is ≈ 200 MB;
+        for 500 assets the same period requires ≈ 5 GB.  When only the
+        current-timestep correlation matrix is needed, use
+        :class:`_EwmCorrState` directly to avoid allocating the output tensor.
     """
-    _t_len, n_assets = data.shape
-    beta = com / (1.0 + com)
-
-    fin = np.isfinite(data)  # (T, N) bool
-    xt_f = np.where(fin, data, 0.0)  # (T, N) float - zeroed where not finite
-
-    # joint_fin[t, i, j] = True iff assets i and j are both finite at t
-    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
-
-    # Build per-pair input sequences for the recurrence s[t] = beta*s[t-1] + v[t].
-    #
-    # v_x[t, i, j]  = x_i[t]    where pair (i,j) jointly finite, else 0
-    # v_x2[t, i, j] = x_i[t]^2  where jointly finite, else 0
-    # v_xy[t, i, j] = x_i[t]*x_j[t]  (xt_f is 0 for non-finite, so implicit mask)
-    # v_w[t, i, j]  = 1          where jointly finite, else 0  (weight indicator)
-    #
-    # By symmetry v_x[t,j,i] carries x_j[t] for pair (i,j), so s_x.swapaxes(1,2)
-    # gives the EWM numerator of x_j without a separate v_y array.
-    v_x = xt_f[:, :, np.newaxis] * joint_fin  # (T, N, N)
-    v_x2 = (xt_f * xt_f)[:, :, np.newaxis] * joint_fin  # (T, N, N)
-    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]  # (T, N, N)
-    v_w = joint_fin.astype(np.float64)  # (T, N, N)
-
-    # Solve the IIR recurrence for every (i, j) pair in parallel.
-    # lfilter([1], [1, -beta], v, axis=0) computes s[t] = beta*s[t-1] + v[t].
-    filt_a = np.array([1.0, -beta])
-    s_x = lfilter([1.0], filt_a, v_x, axis=0)  # (T, N, N)
-    s_x2 = lfilter([1.0], filt_a, v_x2, axis=0)  # (T, N, N)
-    s_xy = lfilter([1.0], filt_a, v_xy, axis=0)  # (T, N, N)
-    s_w = lfilter([1.0], filt_a, v_w, axis=0)  # (T, N, N)
-
-    # Joint finite observation count per pair at each timestep (for min_periods)
-    count = np.cumsum(joint_fin, axis=0)  # (T, N, N) int64
-
-    # EWM means: running numerator / running weight denominator.
-    # s_x.swapaxes(1,2)[t,i,j] = s_x[t,j,i] = EWM numerator of x_j for pair (i,j).
-    with np.errstate(divide="ignore", invalid="ignore"):
-        pos_w = s_w > 0
-        ewm_x = np.where(pos_w, s_x / s_w, np.nan)  # EWM(x_i)
-        ewm_y = np.where(pos_w, s_x.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j)
-        ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)  # EWM(x_i^2)
-        ewm_y2 = np.where(pos_w, s_x2.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j^2)
-        ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)  # EWM(x_i*x_j)
-
-    var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
-    var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
-    denom = np.sqrt(var_x * var_y)
-    cov = ewm_xy - ewm_x * ewm_y
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        result = np.where(denom > min_corr_denom, cov / denom, np.nan)
-
-    result = np.clip(result, -1.0, 1.0)
-
-    # Apply min_periods mask for all pairs
-    result[count < min_periods] = np.nan
-
-    # Diagonal is exactly 1.0 where the asset has sufficient observations
-    diag_idx = np.arange(n_assets)
-    diag_count = count[:, diag_idx, diag_idx]  # (T, N)
-    result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
-
+    t_len, n_assets = data.shape
+    state = _EwmCorrState(
+        n_assets=n_assets,
+        com=com,
+        min_periods=min_periods,
+        min_corr_denom=min_corr_denom,
+    )
+    result = np.empty((t_len, n_assets, n_assets))
+    for t in range(t_len):
+        result[t] = state.step(data[t])
     return result
 
 
@@ -644,19 +734,21 @@ class BasanosEngine:
     def cash_position(self) -> pl.DataFrame:
         """Optimize correlation-aware risk positions for each timestamp.
 
-        Computes EWMA correlations (via ``self.cor``), applies shrinkage toward
-        the identity matrix with intensity ``cfg.shrink``, and solves a
-        normalized linear system A x = mu per timestamp to obtain stable,
-        scale-invariant positions. Non-finite or ill-posed cases yield zero
-        positions for safety.
+        Computes EWMA correlations incrementally via :class:`_EwmCorrState`,
+        applies shrinkage toward the identity matrix with intensity
+        ``cfg.shrink``, and solves a normalized linear system A x = mu per
+        timestamp to obtain stable, scale-invariant positions.  Non-finite or
+        ill-posed cases yield zero positions for safety.
 
         Returns:
             pl.DataFrame: DataFrame with columns ['date'] + asset names containing
             the per-timestamp cash positions (risk divided by EWMA volatility).
 
         Performance:
-            Dominant cost is ``self.cor`` (O(T·N²) time, O(T·N²) memory — see
-            :func:`_ewm_corr_numpy`).  The per-timestamp linear solve via
+            Correlation state is maintained in an O(N²) :class:`_EwmCorrState`
+            object that is advanced one row at a time — the full ``(T, N, N)``
+            correlation tensor is never materialised, so correlation memory is
+            O(N²) rather than O(T·N²).  The per-timestamp linear solve via
             Cholesky / LU decomposition adds O(N³) per row for a total solve
             cost of O(T·N³).  For *N* = 100 and *T* = 2 520 (~10 years daily)
             the solve contributes approximately 2.52 * 10^9 floating-point
@@ -664,9 +756,11 @@ class BasanosEngine:
             this rises to roughly 2.52 * 10^12, making the per-row solve the
             dominant compute bottleneck for large universes.
         """
-        # compute the correlation matrices
-        cor = self.cor
         assets = self.assets
+
+        # Pre-compute volatility-adjusted returns for the incremental EWM state.
+        ret_adj_np = self.ret_adj.select(assets).to_numpy()
+        dates = self.prices["date"]
 
         # Compute risk positions row-by-row using correlation shrinkage (NumPy)
         prices_num = self.prices.select(assets).to_numpy()
@@ -681,7 +775,16 @@ class BasanosEngine:
         profit_variance = self.cfg.profit_variance_init
         lamb = self.cfg.profit_variance_decay
 
-        for i, t in enumerate(cor.keys()):
+        # Incremental EWM correlation state — O(N²) memory, no full tensor needed.
+        corr_state = _EwmCorrState(
+            n_assets=len(assets),
+            com=self.cfg.corr,
+            min_periods=self.cfg.corr,
+            min_corr_denom=self.cfg.min_corr_denom,
+        )
+
+        for i in range(len(dates)):
+            t = dates[i]
             # get the mask of finite prices for this timestamp
             mask = np.isfinite(prices_num[i])
 
@@ -696,12 +799,13 @@ class BasanosEngine:
                     rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
                     profit = lhs @ rhs
                     profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
+
+            # Advance the EWM correlation state by one step (O(N²) work).
+            corr_n = corr_state.step(ret_adj_np[i])
+
             # we have no price data at all for this timestamp
             if not mask.any():
                 continue
-
-            # get the correlation matrix for this timestamp
-            corr_n = cor[t]
 
             # shrink the correlation matrix towards identity
             matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]

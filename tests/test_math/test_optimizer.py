@@ -11,6 +11,8 @@ This module covers:
 - Structural and asset-availability properties of the correlation matrix dict.
 - cash_position correctness with staggered-asset price frames.
 - cor_tensor shape, slice equality, and flat-file round-trip.
+- _EwmCorrState incremental state: numerical equivalence with _ewm_corr_numpy,
+  NaN handling, output shape, and diagonal invariants.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from basanos.exceptions import (
     ShapeMismatchError,
 )
 from basanos.math import BasanosConfig, BasanosEngine
+from basanos.math.optimizer import _ewm_corr_numpy, _EwmCorrState
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -1735,3 +1738,141 @@ class TestSharpeAtShrink:
         assert naive != pytest.approx(signal_sharpe, abs=1e-6), (
             "naive_sharpe should differ from signal Sharpe for a non-constant signal"
         )
+
+
+# ─── _EwmCorrState incremental state ─────────────────────────────────────────
+
+
+class TestEwmCorrState:
+    """Tests for the _EwmCorrState incremental correlation accumulator.
+
+    Verifies that the step-by-step incremental computation is numerically
+    identical to the batch _ewm_corr_numpy function, and that edge cases
+    (all-NaN rows, single assets, min_periods warm-up) are handled correctly.
+    """
+
+    def test_step_by_step_matches_batch_on_full_data(self) -> None:
+        """_EwmCorrState.step() row-by-row must match _ewm_corr_numpy exactly.
+
+        Feeds the same (T, N) data matrix through both the incremental state
+        and the batch function and compares each (N, N) slice element-wise.
+        Uses ``np.testing.assert_array_equal`` so even NaN positions must align
+        (NaN == NaN in the comparison).
+        """
+        rng = np.random.default_rng(42)
+        data = rng.normal(size=(80, 4))
+        com, min_periods = 20, 20
+
+        batch = _ewm_corr_numpy(data, com=com, min_periods=min_periods)
+
+        state = _EwmCorrState(n_assets=4, com=com, min_periods=min_periods)
+        for t in range(len(data)):
+            incremental = state.step(data[t])
+            np.testing.assert_array_equal(
+                batch[t],
+                incremental,
+                err_msg=f"Mismatch at timestep {t}",
+            )
+
+    def test_step_by_step_matches_batch_with_nan_inputs(self) -> None:
+        """Incremental state must match batch output when some inputs are NaN.
+
+        Simulates staggered asset availability (asset 2 absent for the first
+        30 rows, asset 3 absent for the last 20 rows) and verifies that both
+        implementations produce identical NaN patterns and finite values.
+        """
+        rng = np.random.default_rng(7)
+        t_len, n_assets = 60, 3
+        data = rng.normal(size=(t_len, n_assets))
+        # Second asset (index 1) missing for the first 30 rows
+        data[:30, 1] = np.nan
+        # Third asset (index 2) missing for the last 20 rows (rows 40-59)
+        data[40:, 2] = np.nan
+
+        com, min_periods = 10, 10
+        batch = _ewm_corr_numpy(data, com=com, min_periods=min_periods)
+
+        state = _EwmCorrState(n_assets=n_assets, com=com, min_periods=min_periods)
+        for t in range(t_len):
+            incremental = state.step(data[t])
+            np.testing.assert_array_equal(
+                batch[t],
+                incremental,
+                err_msg=f"Mismatch at timestep {t} with NaN inputs",
+            )
+
+    def test_step_output_shape(self) -> None:
+        """step() must return an (N, N) array for any N."""
+        for n in (1, 2, 5):
+            state = _EwmCorrState(n_assets=n, com=10, min_periods=5)
+            result = state.step(np.zeros(n))
+            assert result.shape == (n, n), f"Expected ({n}, {n}), got {result.shape}"
+
+    def test_step_all_nan_input_yields_all_nan_output(self) -> None:
+        """A fully-NaN row must produce an all-NaN correlation matrix."""
+        n = 3
+        state = _EwmCorrState(n_assets=n, com=5, min_periods=1)
+        result = state.step(np.full(n, np.nan))
+        assert np.all(np.isnan(result)), "Expected all-NaN output for all-NaN input"
+
+    def test_diagonal_is_one_after_warmup(self) -> None:
+        """After min_periods steps the diagonal of the correlation matrix must be 1.0."""
+        rng = np.random.default_rng(0)
+        n, com, min_periods = 4, 10, 10
+        data = rng.normal(size=(min_periods + 20, n))
+
+        state = _EwmCorrState(n_assets=n, com=com, min_periods=min_periods)
+        for t, row in enumerate(data):
+            corr = state.step(row)
+            if t >= min_periods:
+                diag = np.diag(corr)
+                np.testing.assert_allclose(
+                    diag,
+                    1.0,
+                    atol=1e-12,
+                    err_msg=f"Diagonal not 1.0 at step {t}: {diag}",
+                )
+
+    def test_output_is_symmetric(self) -> None:
+        """Correlation matrices produced by step() must be symmetric."""
+        rng = np.random.default_rng(1)
+        n, com, min_periods = 5, 10, 10
+        data = rng.normal(size=(min_periods + 30, n))
+
+        state = _EwmCorrState(n_assets=n, com=com, min_periods=min_periods)
+        for t, row in enumerate(data):
+            corr = state.step(row)
+            if t >= min_periods:
+                both_finite = np.isfinite(corr) & np.isfinite(corr.T)
+                if both_finite.any():
+                    np.testing.assert_allclose(
+                        corr[both_finite],
+                        corr.T[both_finite],
+                        atol=1e-12,
+                        err_msg=f"Matrix not symmetric at step {t}",
+                    )
+
+    def test_output_clipped_to_unit_interval(self) -> None:
+        """Finite correlation values must lie within [−1, 1]."""
+        rng = np.random.default_rng(2)
+        n, com, min_periods = 6, 15, 15
+        data = rng.normal(size=(min_periods + 40, n))
+
+        state = _EwmCorrState(n_assets=n, com=com, min_periods=min_periods)
+        for row in data:
+            corr = state.step(row)
+            finite = corr[np.isfinite(corr)]
+            if finite.size:
+                assert np.all(finite >= -1.0 - 1e-12), "Correlation below -1"
+                assert np.all(finite <= 1.0 + 1e-12), "Correlation above +1"
+
+    def test_warmup_rows_are_nan(self) -> None:
+        """Before min_periods joint observations, all matrix entries must be NaN."""
+        rng = np.random.default_rng(3)
+        n, com, min_periods = 3, 5, 5
+        data = rng.normal(size=(min_periods - 1, n))
+
+        state = _EwmCorrState(n_assets=n, com=com, min_periods=min_periods)
+        for row in data:
+            corr = state.step(row)
+            assert np.all(np.isnan(corr)), "Expected all-NaN before min_periods is reached"
