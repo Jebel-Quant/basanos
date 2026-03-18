@@ -53,6 +53,8 @@ The output of the solve is a *risk position* (units of volatility). Dividing by 
 - [Development](#development)
 - [License](#license)
 
+
+
 ## Features
 
 - **Correlation-Aware Optimization** — EWMA correlation estimation with shrinkage towards identity
@@ -60,6 +62,8 @@ The output of the solve is a *risk position* (units of volatility). Dividing by 
 - **Portfolio Analytics** — Sharpe, VaR, CVaR, drawdown, skew, kurtosis, and more
 - **Performance Attribution** — Tilt/timing decomposition to isolate allocation vs. selection effects
 - **Interactive Visualizations** — Plotly dashboards for NAV, drawdown, lead/lag analysis, and correlation heatmaps
+- **Trading Cost Analysis** — Estimate the impact of one-way trading costs on Sharpe ratio across a configurable basis-point range
+- **Config Reports** — Self-contained HTML report for `BasanosConfig` with parameter table, shrinkage guidance, and interactive lambda-sweep chart
 - **HTML Reports** — One-call self-contained dark-themed HTML report with statistics tables and interactive Plotly charts
 - **Polars-Native** — Built on Polars DataFrames for high-performance, memory-efficient computation
 
@@ -198,6 +202,48 @@ The generated report contains the following sections:
 | **Correlation Analysis** | Asset correlation heatmap |
 | **Lead / Lag** | Lead/lag information ratio chart |
 | **Turnover Summary** | Portfolio turnover metrics |
+| **Trading Cost Impact** | Sharpe ratio vs. one-way trading cost (basis points) |
+
+### Trading Cost Analysis
+
+`Portfolio` exposes two methods for understanding how trading costs erode strategy edge:
+
+```python
+# Net-of-cost daily returns (5 bps one-way cost)
+adj_returns = portfolio.cost_adjusted_returns(cost_bps=5)
+
+# Sharpe ratio sweep from 0 to 20 bps
+impact = portfolio.trading_cost_impact(max_bps=20)
+# Returns a pl.DataFrame with columns: cost_bps (Int64), sharpe (Float64)
+
+# Interactive Plotly chart — Sharpe vs cost
+fig = portfolio.plots.trading_cost_impact_plot(max_bps=20)
+# fig.show()
+```
+
+### Config Reports
+
+`BasanosConfig` and `BasanosEngine` each expose a report property that produces a self-contained, dark-themed HTML document with:
+
+- a **parameter table** (all fields, values, constraints, and descriptions),
+- a **shrinkage guidance table** (n/T regime heuristics), and
+- a **theory section** on Ledoit-Wolf shrinkage.
+
+When accessed from `BasanosEngine`, the report additionally includes an **interactive lambda-sweep chart** — the annualised Sharpe ratio as the shrinkage parameter λ is swept across [0, 1].
+
+```python
+from basanos.math import BasanosConfig, BasanosEngine
+
+cfg = BasanosConfig(vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6)
+
+# Config-only report (no lambda sweep)
+html_str = cfg.report.to_html()
+cfg.report.save("output/config_report")  # → output/config_report.html
+
+# Engine report (includes lambda-sweep chart)
+engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+engine.config_report.save("output/config_with_sweep")
+```
 
 ## How It Works
 
@@ -395,6 +441,13 @@ from basanos.math import BasanosConfig, BasanosEngine
 | `cor` | `dict[date, np.ndarray]` | EWMA correlation matrices keyed by date |
 | `cash_position` | `pl.DataFrame` | Optimized cash positions |
 | `portfolio` | `Portfolio` | Ready-to-use portfolio for analytics |
+| `config_report` | `ConfigReport` | HTML report with lambda-sweep chart + parameter table |
+
+**`BasanosConfig` properties**
+
+| Property | Returns | Description |
+|----------|---------|-------------|
+| `report` | `ConfigReport` | HTML report with parameter table, shrinkage guidance, and theory (no lambda sweep) |
 
 ---
 
@@ -425,9 +478,19 @@ from basanos.analytics import Portfolio
 | `drawdown` | Drawdown from high-water mark |
 | `tilt` | Static allocation (average position) |
 | `timing` | Dynamic timing (deviation from average) |
+| `turnover` | Daily one-way turnover as a fraction of AUM |
+| `turnover_weekly` | Weekly-aggregated turnover |
 | `stats` | `Stats` instance |
 | `plots` | `Plots` instance |
 | `report` | `Report` instance for HTML report generation |
+
+**`Portfolio` methods (trading costs)**
+
+| Method | Description |
+|--------|-------------|
+| `cost_adjusted_returns(cost_bps)` | Daily returns net of estimated one-way trading costs (in bps) |
+| `trading_cost_impact(max_bps=20)` | Sharpe ratio at each integer cost level 0 … max_bps (returns `pl.DataFrame`) |
+| `turnover_summary()` | Summary DataFrame: mean daily/weekly turnover and turnover std |
 
 **`Stats` methods**
 
@@ -467,6 +530,30 @@ from basanos.analytics import Portfolio
 | `rolling_sharpe_plot(window)` | Line chart of rolling Sharpe ratio |
 | `rolling_volatility_plot(window)` | Line chart of rolling annualised volatility |
 | `annual_sharpe_plot()` | Bar chart of Sharpe ratio by calendar year |
+| `trading_cost_impact_plot(max_bps=20)` | Line chart of Sharpe ratio vs. one-way trading cost (0–max_bps bps) |
+
+---
+
+### `basanos.math.ConfigReport`
+
+Accessed via `cfg.report` (config-only) or `engine.config_report` (includes lambda sweep).
+
+```python
+from basanos.math import BasanosConfig, BasanosEngine
+
+cfg    = BasanosConfig(vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6)
+engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+cfg.report.to_html()          # parameter table + shrinkage guidance + theory
+engine.config_report.to_html()  # above + interactive lambda-sweep chart
+```
+
+**`ConfigReport` methods**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `to_html` | `to_html(title="Basanos Config Report") -> str` | Returns the complete HTML document as a string. |
+| `save` | `save(path, title="Basanos Config Report") -> Path` | Writes the HTML document to *path*. A `.html` suffix is appended when missing. |
 
 ---
 
