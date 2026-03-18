@@ -20,6 +20,9 @@ from basanos.exceptions import (
     ExcessiveNullsError as ExcessiveNullsError,
 )
 from basanos.exceptions import (
+    FactorModelDimensionError as FactorModelDimensionError,
+)
+from basanos.exceptions import (
     InsufficientDataError as InsufficientDataError,
 )
 from basanos.exceptions import (
@@ -30,6 +33,9 @@ from basanos.exceptions import (
 )
 from basanos.exceptions import (
     InvalidPricesTypeError as InvalidPricesTypeError,
+)
+from basanos.exceptions import (
+    LargeUniverseWarning as LargeUniverseWarning,
 )
 from basanos.exceptions import (
     MissingDateColumnError as MissingDateColumnError,

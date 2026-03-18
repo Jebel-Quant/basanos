@@ -351,3 +351,43 @@ class MonotonicPricesError(BasanosError, ValueError):
             "(all non-decreasing or all non-increasing), indicating malformed or synthetic data."
         )
         self.asset = asset
+
+
+class FactorModelDimensionError(BasanosError, ValueError):
+    """Raised when factor model array shapes or values are invalid.
+
+    Covers mismatches between the loadings matrix, factor covariance, and
+    specific-variances dimensions, as well as non-positive specific variances.
+
+    Args:
+        detail: Human-readable description of the offending shape or value.
+
+    Examples:
+        >>> raise FactorModelDimensionError("loadings must be 2-D, got 1-D.")
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.FactorModelDimensionError: loadings must be 2-D, got 1-D.
+    """
+
+    def __init__(self, detail: str) -> None:
+        """Initialize with a detail message describing the dimension problem."""
+        super().__init__(detail)
+        self.detail = detail
+
+
+class LargeUniverseWarning(UserWarning):
+    """Issued when the EWMA correlation tensor would require excessive memory.
+
+    The peak memory for ``_ewm_corr_numpy`` is approximately
+    ``112 * T * N²`` bytes.  For large *N* or *T* this can exceed available
+    RAM and degrade performance.  Consider using a
+    :class:`~basanos.math.FactorModel` to avoid materialising the full
+    correlation tensor.
+
+    Examples:
+        >>> import warnings
+        >>> with warnings.catch_warnings(record=True) as w:
+        ...     warnings.simplefilter("always")
+        ...     warnings.warn("peak RAM ~70 GB", LargeUniverseWarning)
+        ...     assert len(w) == 1
+    """

@@ -62,6 +62,7 @@ dataset sizes.
 
 import dataclasses
 import logging
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -74,14 +75,20 @@ from ..analytics import Portfolio
 from ..exceptions import (
     ColumnMismatchError,
     ExcessiveNullsError,
+    FactorModelDimensionError,
+    LargeUniverseWarning,
     MissingDateColumnError,
     MonotonicPricesError,
     NonPositivePricesError,
     ShapeMismatchError,
     SingularMatrixError,
 )
+from ._factor_model import FactorModel, _woodbury_solve
 from ._linalg import inv_a_norm, solve, valid
 from ._signal import shrink2id, vol_adj
+
+_LARGE_UNIVERSE_BYTES_THRESHOLD: int = 4 * 1024**3  # 4 GB
+"""Peak RAM threshold above which LargeUniverseWarning is emitted for EWMA correlation."""
 
 if TYPE_CHECKING:
     from ._config_report import ConfigReport
@@ -491,6 +498,7 @@ class BasanosEngine:
     prices: pl.DataFrame
     mu: pl.DataFrame
     cfg: BasanosConfig
+    factor_model: FactorModel | None = None
 
     def __post_init__(self) -> None:
         """Validate basic invariants right after initialization.
@@ -500,6 +508,15 @@ class BasanosEngine:
         Also checks for data quality issues that would cause silent failures
         downstream: non-positive prices, excessive NaN values, and monotonic
         (non-varying) price series.
+
+        When a ``factor_model`` is provided its ``n_assets`` must equal the
+        number of numeric asset columns in ``prices``.
+
+        Emits :class:`~basanos.exceptions.LargeUniverseWarning` when no
+        ``factor_model`` is given and the estimated peak RAM for the EWMA
+        correlation tensor exceeds ``_LARGE_UNIVERSE_BYTES_THRESHOLD``
+        (≈ 4 GB by default).  The formula is ``112 * T * N²`` bytes, matching
+        the documented behaviour of :func:`_ewm_corr_numpy`.
         """
         # ensure 'date' column exists in prices before any other validation
         if "date" not in self.prices.columns:
@@ -539,6 +556,30 @@ class BasanosEngine:
                 diffs = col.diff().drop_nulls()
                 if (diffs >= 0).all() or (diffs <= 0).all():
                     raise MonotonicPricesError(asset)
+
+        # validate that factor_model.n_assets matches the number of asset columns
+        if self.factor_model is not None:
+            n_engine_assets = len(self.assets)
+            if self.factor_model.n_assets != n_engine_assets:
+                raise FactorModelDimensionError(  # noqa: TRY003
+                    f"factor_model.n_assets={self.factor_model.n_assets} does not match "
+                    f"the number of asset columns in prices ({n_engine_assets}). "
+                    "The factor model must have one row of loadings per asset."
+                )
+        else:
+            # warn when EWMA correlation tensor would exceed the memory threshold
+            n = len(self.assets)
+            t = self.prices.height
+            peak_bytes = 112 * t * n * n
+            if peak_bytes > _LARGE_UNIVERSE_BYTES_THRESHOLD:
+                warnings.warn(
+                    f"Estimated peak memory for EWMA correlation: "
+                    f"{peak_bytes / 1024**3:.1f} GB (N={n}, T={t}). "
+                    "Consider passing a FactorModel to avoid materialising the full "
+                    "correlation tensor.",
+                    LargeUniverseWarning,
+                    stacklevel=2,
+                )
 
     @property
     def assets(self) -> list[str]:
@@ -644,26 +685,40 @@ class BasanosEngine:
     def cash_position(self) -> pl.DataFrame:
         """Optimize correlation-aware risk positions for each timestamp.
 
-        Computes EWMA correlations (via ``self.cor``), applies shrinkage toward
-        the identity matrix with intensity ``cfg.shrink``, and solves a
-        normalized linear system A x = mu per timestamp to obtain stable,
-        scale-invariant positions. Non-finite or ill-posed cases yield zero
-        positions for safety.
+        When no ``factor_model`` is set, computes EWMA correlations (via
+        ``self.cor``), applies shrinkage toward the identity matrix with
+        intensity ``cfg.shrink``, and solves a normalized linear system
+        ``A x = mu`` per timestamp — O(T·N²) correlation + O(T·N³) solve.
+
+        When a ``factor_model`` is set, the EWMA correlation step is bypassed
+        entirely.  The per-timestamp solve uses the Woodbury matrix identity on
+        the factor covariance structure, reducing the solve cost from O(N³) to
+        O(N·K + K³) where *K* is the number of factors.  No N-by-N tensor is
+        formed, so memory usage drops from O(T·N²) to O(N·K + K²).
+
+        In both cases non-finite or ill-posed cases yield zero positions for
+        safety.
 
         Returns:
-            pl.DataFrame: DataFrame with columns ['date'] + asset names containing
-            the per-timestamp cash positions (risk divided by EWMA volatility).
+            pl.DataFrame: DataFrame with columns ['date'] + asset names
+            containing the per-timestamp cash positions (risk divided by EWMA
+            volatility).
 
         Performance:
-            Dominant cost is ``self.cor`` (O(T·N²) time, O(T·N²) memory — see
-            :func:`_ewm_corr_numpy`).  The per-timestamp linear solve via
-            Cholesky / LU decomposition adds O(N³) per row for a total solve
-            cost of O(T·N³).  For *N* = 100 and *T* = 2 520 (~10 years daily)
-            the solve contributes approximately 2.52 * 10^9 floating-point
-            operations (upper bound; Cholesky is N³/3 + O(N²)); at *N* = 1 000
-            this rises to roughly 2.52 * 10^12, making the per-row solve the
-            dominant compute bottleneck for large universes.
+            *EWMA path* — dominant cost is ``self.cor`` (O(T·N²) time,
+            O(T·N²) memory).  The per-timestamp Cholesky solve adds O(N³)
+            per row.
+
+            *Factor-model path* — O(T·(N·K + K³)) solve, O(N·K + K²)
+            memory.  For K << N this is dramatically cheaper; at K=20 and
+            N=500 the solve is approximately 3 000x faster than the EWMA path.
         """
+        if self.factor_model is not None:
+            return self._cash_position_factor_model()
+        return self._cash_position_ewma()
+
+    def _cash_position_ewma(self) -> pl.DataFrame:
+        """Compute cash positions using the EWMA correlation path."""
         # compute the correlation matrices
         cor = self.cor
         assets = self.assets
@@ -741,11 +796,90 @@ class BasanosEngine:
                 cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
 
         # Build Polars DataFrame for risk positions (numeric columns only)
-        cash_position = self.prices.with_columns(
-            [(pl.lit(cash_pos_np[:, i]).alias(asset)) for i, asset in enumerate(assets)]
-        )
+        return self.prices.with_columns([(pl.lit(cash_pos_np[:, i]).alias(asset)) for i, asset in enumerate(assets)])
 
-        return cash_position
+    def _cash_position_factor_model(self) -> pl.DataFrame:
+        """Compute cash positions using the factor-model Woodbury path."""
+        assert self.factor_model is not None  # guarded by caller  # noqa: S101
+        fm = self.factor_model
+        assets = self.assets
+
+        prices_num = self.prices.select(assets).to_numpy()
+        returns_num = np.zeros_like(prices_num, dtype=float)
+        returns_num[1:] = prices_num[1:] / prices_num[:-1] - 1.0
+
+        mu = self.mu.select(assets).to_numpy()
+        risk_pos_np = np.full_like(mu, fill_value=np.nan, dtype=float)
+        cash_pos_np = np.full_like(mu, fill_value=np.nan, dtype=float)
+        vola_np = self.vola.select(assets).to_numpy()
+
+        profit_variance = self.cfg.profit_variance_init
+        lamb = self.cfg.profit_variance_decay
+
+        # Pre-resolve factor model arrays once (they are static across timestamps)
+        F = fm._resolved_factor_covariance()  # noqa: N806
+        d_full = fm._resolved_specific_variances()
+        B_full = fm.loadings  # (N, K)  # noqa: N806
+
+        for i in range(self.prices.height):
+            t = self.prices["date"][i]
+            # get the mask of finite prices for this timestamp
+            mask = np.isfinite(prices_num[i])
+
+            # Compute profit contribution using only finite returns and available positions
+            if i > 0:
+                ret_mask = np.isfinite(returns_num[i]) & mask
+                if ret_mask.any():
+                    with np.errstate(invalid="ignore"):
+                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
+                    lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
+                    rhs_ret = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
+                    profit = lhs @ rhs_ret
+                    profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
+
+            if not mask.any():
+                continue
+
+            # Slice factor model arrays for available assets at this timestamp
+            B_sub = B_full[mask]  # (n_valid, K)  # noqa: N806
+            d_sub = d_full[mask]  # (n_valid,)
+
+            expected_mu = np.nan_to_num(mu[i][mask])
+
+            if np.allclose(expected_mu, 0.0):
+                pos = np.zeros_like(expected_mu)
+            else:
+                # Woodbury solve: x = Σ^{-1} mu (no FactorModel construction overhead)
+                x = _woodbury_solve(B_sub, F, d_sub, expected_mu)
+
+                # Normalisation: denom = sqrt(mu^T Σ^{-1} mu) = sqrt(mu . x)
+                mu_dot_x = float(np.dot(expected_mu, x))
+                denom = float(np.sqrt(mu_dot_x)) if mu_dot_x > 0.0 else 0.0
+
+                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                    _logger.warning(
+                        "Positions zeroed at t=%s: normalisation denominator is degenerate "
+                        "(denom=%s, denom_tol=%s). Check signal magnitude and factor model.",
+                        t,
+                        denom,
+                        self.cfg.denom_tol,
+                        extra={
+                            "context": {
+                                "t": str(t),
+                                "denom": denom,
+                                "denom_tol": self.cfg.denom_tol,
+                            }
+                        },
+                    )
+                    pos = np.zeros_like(expected_mu)
+                else:
+                    pos = x / denom
+
+            risk_pos_np[i, mask] = pos / profit_variance
+            with np.errstate(invalid="ignore"):
+                cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
+
+        return self.prices.with_columns([(pl.lit(cash_pos_np[:, i]).alias(asset)) for i, asset in enumerate(assets)])
 
     @property
     def risk_position(self) -> pl.DataFrame:
