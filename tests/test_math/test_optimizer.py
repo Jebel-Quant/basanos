@@ -19,6 +19,7 @@ import logging
 import math
 import pathlib
 from datetime import date, timedelta
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
@@ -31,6 +32,7 @@ from basanos.exceptions import (
     MonotonicPricesError,
     NonPositivePricesError,
     ShapeMismatchError,
+    SingularMatrixError,
 )
 from basanos.math import BasanosConfig, BasanosEngine
 
@@ -1466,6 +1468,56 @@ class TestDiagnostics:
         su = engine.signal_utilisation
         for asset in engine.assets:
             assert np.isnan(su[asset][idx_nan])
+
+    def test_solver_residual_warns_and_returns_nan_on_singular_matrix(self, caplog) -> None:
+        """solver_residual emits a warning and records NaN when SingularMatrixError is raised.
+
+        Patches ``basanos.math.optimizer.solve`` to raise ``SingularMatrixError``
+        on every call so that every non-trivial timestamp exercises the exception
+        handler.  The test verifies that a WARNING is logged and that the
+        residual column contains at least one NaN.
+        """
+        prices, mu = _make_prices_mu(40)
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        with (
+            patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError()),
+            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        ):
+            sr = engine.solver_residual
+
+        singular_warnings = [r for r in caplog.records if "SingularMatrixError" in r.message]
+        assert singular_warnings, "Expected at least one warning about a SingularMatrixError in solver_residual"
+        assert all("solver_residual" in r.message for r in singular_warnings)
+        assert all("degenerate" in r.message for r in singular_warnings)
+        assert sr["residual"].is_nan().any(), "Expected at least one NaN residual when solve raises SingularMatrixError"
+
+    def test_signal_utilisation_warns_and_returns_nan_on_singular_matrix(self, caplog) -> None:
+        """signal_utilisation emits a warning and keeps NaN when SingularMatrixError is raised.
+
+        Patches ``basanos.math.optimizer.solve`` to raise ``SingularMatrixError``
+        on every call.  The test verifies that a WARNING is logged and that the
+        utilisation columns contain at least one NaN per asset.
+        """
+        prices, mu = _make_prices_mu(40)
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        with (
+            patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError()),
+            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        ):
+            su = engine.signal_utilisation
+
+        singular_warnings = [r for r in caplog.records if "SingularMatrixError" in r.message]
+        assert singular_warnings, "Expected at least one warning about a SingularMatrixError in signal_utilisation"
+        assert all("signal_utilisation" in r.message for r in singular_warnings)
+        assert all("degenerate" in r.message for r in singular_warnings)
+        for asset in engine.assets:
+            assert su[asset].is_nan().any(), (
+                f"Expected at least one NaN for asset {asset!r} when solve raises SingularMatrixError"
+            )
 
 
 # ─── Information Coefficient (IC) ────────────────────────────────────────────
