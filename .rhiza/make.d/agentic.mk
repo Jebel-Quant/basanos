@@ -20,7 +20,7 @@ analyse-repo: install-copilot ## run the analyser agent to update REPOSITORY_ANA
 	@"$(COPILOT_BIN)" --agent analyser \
 		--model "$(DEFAULT_AI_MODEL)" \
 		--prompt "Analyze the repository and update the journal." \
-		--allow-tool 'read,write' \
+		--allow-tool 'read,write,shell(make)' \
 		--allow-all-paths
 
 summarise-changes: install-copilot ## summarise changes since the most recent release/tag
