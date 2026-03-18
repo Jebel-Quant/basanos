@@ -86,13 +86,15 @@ from ._signal import shrink2id, vol_adj
 if TYPE_CHECKING:
     from ._config_report import ConfigReport
 
-_MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
-_MAX_NAN_FRACTION: float = 0.9  # raise if more than this fraction of prices in any asset column are null
-
 _logger = logging.getLogger(__name__)
 
 
-def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
+def _ewm_corr_numpy(
+    data: np.ndarray,
+    com: int,
+    min_periods: int,
+    min_corr_denom: float = 1e-14,
+) -> np.ndarray:
     """Compute per-row EWM correlation matrices without pandas.
 
     Matches ``pandas.DataFrame.ewm(com=com, min_periods=min_periods).corr()``
@@ -117,6 +119,9 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
         com: EWM centre-of-mass (``alpha = 1 / (1 + com)``).
         min_periods: Minimum number of joint finite observations required
             before a correlation value is reported; earlier rows are NaN.
+        min_corr_denom: Guard threshold below which the correlation denominator
+            is treated as zero and the result is set to NaN.  Defaults to
+            ``1e-14``.
 
     Returns:
         np.ndarray of shape ``(T, N, N)`` containing the per-row correlation
@@ -184,7 +189,7 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
     cov = ewm_xy - ewm_x * ewm_y
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        result = np.where(denom > _MIN_CORR_DENOM, cov / denom, np.nan)
+        result = np.where(denom > min_corr_denom, cov / denom, np.nan)
 
     result = np.clip(result, -1.0, 1.0)
 
@@ -288,6 +293,25 @@ class BasanosConfig(BaseModel):
         institutional-scale portfolios where AUM is measured in hundreds
         of millions.
 
+    ``min_corr_denom = 1e-14``
+        The EWMA correlation denominator ``sqrt(var_x * var_y)`` is
+        compared against this threshold; when at or below it the
+        correlation is set to NaN rather than dividing by a near-zero
+        value.  The default 1e-14 is safely above float64 underflow
+        while remaining negligible for any realistic return series.
+        Advanced users may tighten this guard (larger value) when
+        working with very-low-variance synthetic data.
+
+    ``max_nan_fraction = 0.9``
+        :class:`~basanos.exceptions.ExcessiveNullsError` is raised
+        during construction when the null fraction in any asset price
+        column **strictly exceeds** this threshold.  The default 0.9
+        permits up to 90 % missing prices (e.g., illiquid or recently
+        listed assets in a long history) while rejecting columns that
+        are almost entirely null and would contribute no useful
+        information.  Callers who want a stricter gate can lower this
+        value; callers running on sparse data can raise it toward 1.0.
+
     Examples:
         >>> cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
         >>> cfg.vola
@@ -349,6 +373,29 @@ class BasanosConfig(BaseModel):
             "Multiplicative scaling factor applied to dimensionless risk positions to obtain "
             "cash positions in base-currency units. Defaults to 1e6 (one million), a "
             "conventional denomination for institutional portfolios."
+        ),
+    )
+    min_corr_denom: float = Field(
+        default=1e-14,
+        gt=0.0,
+        description=(
+            "Guard threshold for the EWMA correlation denominator sqrt(var_x * var_y). "
+            "When the denominator is at or below this value the correlation is set to NaN "
+            "instead of dividing by a near-zero number. "
+            "The default 1e-14 is safely above float64 underflow while being negligible for "
+            "any realistic return variance."
+        ),
+    )
+    max_nan_fraction: float = Field(
+        default=0.9,
+        gt=0.0,
+        lt=1.0,
+        description=(
+            "Maximum tolerated fraction of null values in any asset price column. "
+            "ExcessiveNullsError is raised during construction when the null fraction "
+            "strictly exceeds this threshold. "
+            "The default 0.9 allows up to 90 % missing prices while rejecting columns "
+            "that are almost entirely null."
         ),
     )
 
@@ -476,13 +523,13 @@ class BasanosEngine:
             if col.len() > 0 and (col <= 0).any():
                 raise NonPositivePricesError(asset)
 
-        # check for excessive NaN values: more than _MAX_NAN_FRACTION null in any asset column
+        # check for excessive NaN values: more than cfg.max_nan_fraction null in any asset column
         n_rows = self.prices.height
         if n_rows > 0:
             for asset in self.assets:
                 nan_frac = self.prices[asset].null_count() / n_rows
-                if nan_frac > _MAX_NAN_FRACTION:
-                    raise ExcessiveNullsError(asset, nan_frac, _MAX_NAN_FRACTION)
+                if nan_frac > self.cfg.max_nan_fraction:
+                    raise ExcessiveNullsError(asset, nan_frac, self.cfg.max_nan_fraction)
 
         # check for monotonic price series: a strictly non-decreasing or non-increasing
         # series has no variance in its return sign, indicating malformed or synthetic data
@@ -547,7 +594,12 @@ class BasanosEngine:
         """
         index = self.prices["date"]
         ret_adj_np = self.ret_adj.select(self.assets).to_numpy()
-        tensor = _ewm_corr_numpy(ret_adj_np, com=self.cfg.corr, min_periods=self.cfg.corr)
+        tensor = _ewm_corr_numpy(
+            ret_adj_np,
+            com=self.cfg.corr,
+            min_periods=self.cfg.corr,
+            min_corr_denom=self.cfg.min_corr_denom,
+        )
         return {index[t]: tensor[t] for t in range(len(index))}
 
     @property
