@@ -401,6 +401,44 @@ class BasanosEngine:
 
     Encapsulates price data and configuration to build EWM-based
     correlations, apply shrinkage, and solve for normalized positions.
+
+    Attributes:
+        prices: Polars DataFrame of price levels per asset over time.  Must
+            contain a ``'date'`` column and at least one numeric asset column
+            with strictly positive values that are not monotonically
+            non-decreasing or non-increasing (i.e. they must vary in sign).
+        mu: Polars DataFrame of expected-return signals aligned with *prices*.
+            Must share the same shape and column names as *prices*.
+        cfg: Immutable :class:`BasanosConfig` controlling EWMA half-lives,
+            clipping, shrinkage intensity, and AUM.
+
+    Examples:
+        Build an engine with two synthetic assets over 30 days and inspect the
+        optimized positions and diagnostic properties.
+
+        >>> import numpy as np
+        >>> import polars as pl
+        >>> from basanos.math import BasanosConfig, BasanosEngine
+        >>> dates = list(range(30))
+        >>> rng = np.random.default_rng(42)
+        >>> prices = pl.DataFrame({
+        ...     "date": dates,
+        ...     "A": np.cumprod(1 + rng.normal(0.001, 0.02, 30)) * 100.0,
+        ...     "B": np.cumprod(1 + rng.normal(0.001, 0.02, 30)) * 150.0,
+        ... })
+        >>> mu = pl.DataFrame({
+        ...     "date": dates,
+        ...     "A": rng.normal(0.0, 0.5, 30),
+        ...     "B": rng.normal(0.0, 0.5, 30),
+        ... })
+        >>> cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1_000_000)
+        >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        >>> engine.assets
+        ['A', 'B']
+        >>> engine.cash_position.shape
+        (30, 3)
+        >>> engine.position_leverage.columns
+        ['date', 'leverage']
     """
 
     prices: pl.DataFrame
