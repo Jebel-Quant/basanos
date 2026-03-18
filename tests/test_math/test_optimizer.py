@@ -15,7 +15,6 @@ This module covers:
 
 from __future__ import annotations
 
-import logging
 import math
 import pathlib
 from datetime import date, timedelta
@@ -23,6 +22,7 @@ from datetime import date, timedelta
 import numpy as np
 import polars as pl
 import pytest
+import structlog.testing
 
 from basanos.exceptions import (
     ColumnMismatchError,
@@ -490,7 +490,7 @@ def test_cash_position_skips_rows_with_all_nan_prices() -> None:
     assert row["B"] is None or (isinstance(row["B"], float) and np.isnan(row["B"]))
 
 
-def test_cash_position_warns_when_denom_is_near_zero(optimizer_prices: pl.DataFrame, caplog) -> None:
+def test_cash_position_warns_when_denom_is_near_zero(optimizer_prices: pl.DataFrame) -> None:
     """A warning should be emitted when the normalisation denominator is degenerate.
 
     A large denom_tol forces all non-zero-mu timestamps to trigger the guard, so
@@ -508,16 +508,16 @@ def test_cash_position_warns_when_denom_is_near_zero(optimizer_prices: pl.DataFr
     # denom_tol set absurdly large so every timestamp triggers the guard
     cfg = BasanosConfig(corr=20, vola=12, clip=4.0, shrink=0.7, aum=1e6, denom_tol=1e6)
 
-    with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+    with structlog.testing.capture_logs() as cap_logs:
         _ = BasanosEngine(prices=optimizer_prices, cfg=cfg, mu=mu).cash_position
 
-    warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    warnings = [r for r in cap_logs if "normalisation denominator is degenerate" in r["event"]]
     assert warnings, "Expected at least one warning about a degenerate normalisation denominator"
-    assert all("denom=" in r.message for r in warnings)
-    assert all("denom_tol=" in r.message for r in warnings)
+    assert all("denom" in r for r in warnings)
+    assert all("denom_tol" in r for r in warnings)
 
 
-def test_cash_position_no_warning_for_zero_mu(optimizer_prices: pl.DataFrame, caplog) -> None:
+def test_cash_position_no_warning_for_zero_mu(optimizer_prices: pl.DataFrame) -> None:
     """No warning should be logged when mu is all zeros.
 
     When expected_mu is identically zero the optimizer short-circuits before
@@ -533,14 +533,14 @@ def test_cash_position_no_warning_for_zero_mu(optimizer_prices: pl.DataFrame, ca
             "B": pl.Series([0.0] * n, dtype=pl.Float64),
         }
     )
-    with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+    with structlog.testing.capture_logs() as cap_logs:
         _ = BasanosEngine(prices=optimizer_prices, cfg=cfg, mu=mu_zero).cash_position
 
-    degen_warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    degen_warnings = [r for r in cap_logs if "normalisation denominator is degenerate" in r["event"]]
     assert not degen_warnings, "No warning should be logged when mu is all zeros"
 
 
-def test_cash_position_zeros_and_warns_when_inv_a_norm_returns_nan(caplog) -> None:
+def test_cash_position_zeros_and_warns_when_inv_a_norm_returns_nan() -> None:
     """When inv_a_norm returns nan (all-NaN correlation matrix), positions are zeroed and a warning emitted.
 
     A minimal price series with corr=100 ensures the correlation window is never
@@ -570,7 +570,7 @@ def test_cash_position_zeros_and_warns_when_inv_a_norm_returns_nan(caplog) -> No
     # corr=100 far exceeds the 10-row series, so all correlation matrices are all-NaN
     cfg = BasanosConfig(corr=100, vola=5, clip=4.0, shrink=0.5, aum=1e6)
 
-    with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+    with structlog.testing.capture_logs() as cap_logs:
         cp = BasanosEngine(prices=prices, cfg=cfg, mu=mu).cash_position
 
     # All positions must be zero or NaN during warm-up - never infinite or based on NaN denom
@@ -580,9 +580,9 @@ def test_cash_position_zeros_and_warns_when_inv_a_norm_returns_nan(caplog) -> No
         assert np.all(np.isnan(vals) | (vals == 0.0)), f"Expected only NaN or zero positions in column {col}"
 
     # A warning must have been logged for the degenerate denominator
-    degen_warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    degen_warnings = [r for r in cap_logs if "normalisation denominator is degenerate" in r["event"]]
     assert degen_warnings, "Expected a warning when inv_a_norm returns nan due to all-NaN correlation matrix"
-    assert all("denom=nan" in r.message for r in degen_warnings)
+    assert all(math.isnan(r["denom"]) for r in degen_warnings)
 
 
 # ─── ret_adj, vola, cor properties ────────────────────────────────────────────

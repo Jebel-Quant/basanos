@@ -14,6 +14,7 @@ dependencies = [
     "polars>=1.37.1",
     "pydantic>=2.12.5",
     "scipy>=1.17.0",
+    "structlog>=25.5.0",
 ]
 
 [project.urls]
@@ -36,7 +37,7 @@ packages = ["src/basanos"]
 
 [tool.deptry]
 # Explicit module name map so deptry doesn't need to inspect installed packages
-package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "hypothesis" = "hypothesis", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow", "ty" = "ty" }
+package_module_name_map = { "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "structlog" = "structlog", "hypothesis" = "hypothesis", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow", "ty" = "ty" }
 
 [tool.coverage.report]
 fail_under = 90

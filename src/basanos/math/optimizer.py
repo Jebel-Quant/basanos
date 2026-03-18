@@ -61,11 +61,11 @@ dataset sizes.
 """
 
 import dataclasses
-import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
+import structlog
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from scipy.signal import lfilter
 from scipy.stats import spearmanr
@@ -89,7 +89,7 @@ if TYPE_CHECKING:
 _MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
 _MAX_NAN_FRACTION: float = 0.9  # raise if more than this fraction of prices in any asset column are null
 
-_logger = logging.getLogger(__name__)
+_logger = structlog.get_logger(__name__)
 
 
 def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
@@ -667,11 +667,11 @@ class BasanosEngine:
 
                 if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
                     _logger.warning(
-                        "Positions zeroed at t=%s: normalisation denominator is degenerate "
-                        "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
-                        t,
-                        denom,
-                        self.cfg.denom_tol,
+                        "Positions zeroed: normalisation denominator is degenerate. "
+                        "Check signal magnitude and covariance matrix.",
+                        t=t,
+                        denom=denom,
+                        denom_tol=self.cfg.denom_tol,
                     )
                     pos = np.zeros_like(expected_mu)
                 else:
