@@ -91,9 +91,6 @@ from ._signal import shrink2id, vol_adj
 if TYPE_CHECKING:
     from ._config_report import ConfigReport
 
-_MIN_CORR_DENOM: float = 1e-14  # guard against near-zero variance in correlation computation
-_MAX_NAN_FRACTION: float = 0.9  # raise if more than this fraction of prices in any asset column are null
-
 _logger = logging.getLogger(__name__)
 
 
@@ -395,6 +392,25 @@ class BasanosConfig(BaseModel):
         institutional-scale portfolios where AUM is measured in hundreds
         of millions.
 
+    ``min_corr_denom = 1e-14``
+        The EWMA correlation denominator ``sqrt(var_x * var_y)`` is
+        compared against this threshold; when at or below it the
+        correlation is set to NaN rather than dividing by a near-zero
+        value.  The default 1e-14 is safely above float64 underflow
+        while remaining negligible for any realistic return series.
+        Advanced users may tighten this guard (larger value) when
+        working with very-low-variance synthetic data.
+
+    ``max_nan_fraction = 0.9``
+        :class:`~basanos.exceptions.ExcessiveNullsError` is raised
+        during construction when the null fraction in any asset price
+        column **strictly exceeds** this threshold.  The default 0.9
+        permits up to 90 % missing prices (e.g., illiquid or recently
+        listed assets in a long history) while rejecting columns that
+        are almost entirely null and would contribute no useful
+        information.  Callers who want a stricter gate can lower this
+        value; callers running on sparse data can raise it toward 1.0.
+
     Examples:
         >>> cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
         >>> cfg.vola
@@ -596,13 +612,13 @@ class BasanosEngine:
             if col.len() > 0 and (col <= 0).any():
                 raise NonPositivePricesError(asset)
 
-        # check for excessive NaN values: more than _MAX_NAN_FRACTION null in any asset column
+        # check for excessive NaN values: more than cfg.max_nan_fraction null in any asset column
         n_rows = self.prices.height
         if n_rows > 0:
             for asset in self.assets:
                 nan_frac = self.prices[asset].null_count() / n_rows
-                if nan_frac > _MAX_NAN_FRACTION:
-                    raise ExcessiveNullsError(asset, nan_frac, _MAX_NAN_FRACTION)
+                if nan_frac > self.cfg.max_nan_fraction:
+                    raise ExcessiveNullsError(asset, nan_frac, self.cfg.max_nan_fraction)
 
         # check for monotonic price series: a strictly non-decreasing or non-increasing
         # series has no variance in its return sign, indicating malformed or synthetic data

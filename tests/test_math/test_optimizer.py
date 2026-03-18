@@ -192,6 +192,8 @@ def test_basanos_config_new_fields_have_correct_defaults():
     assert cfg.profit_variance_decay == 0.99
     assert cfg.denom_tol == 1e-12
     assert cfg.position_scale == 1e6
+    assert cfg.min_corr_denom == 1e-14
+    assert cfg.max_nan_fraction == 0.9
 
 
 def test_basanos_config_new_fields_accept_custom_values():
@@ -206,11 +208,15 @@ def test_basanos_config_new_fields_accept_custom_values():
         profit_variance_decay=0.95,
         denom_tol=1e-8,
         position_scale=1e4,
+        min_corr_denom=1e-10,
+        max_nan_fraction=0.5,
     )
     assert cfg.profit_variance_init == 2.0
     assert cfg.profit_variance_decay == 0.95
     assert cfg.denom_tol == 1e-8
     assert cfg.position_scale == 1e4
+    assert cfg.min_corr_denom == 1e-10
+    assert cfg.max_nan_fraction == 0.5
 
 
 def test_basanos_config_new_fields_validation():
@@ -231,6 +237,15 @@ def test_basanos_config_new_fields_validation():
 
     with pytest.raises(ValueError, match=r".*"):
         BasanosConfig(**base, position_scale=-1.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, min_corr_denom=0.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, max_nan_fraction=0.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, max_nan_fraction=1.0)
 
 
 def test_basanos_config_cor_chunk_size_defaults_to_none():
@@ -444,7 +459,33 @@ def test_post_init_excessive_nan_raises(small_mu: pl.DataFrame) -> None:
     assert exc_info.value.max_fraction == pytest.approx(0.9)
 
 
-def test_post_init_monotonic_prices_raises(small_mu: pl.DataFrame) -> None:
+def test_post_init_excessive_nan_respects_config(small_mu: pl.DataFrame) -> None:
+    """max_nan_fraction from cfg should control the null gate."""
+    n = small_mu.height
+    dates = small_mu["date"]
+    b_ok = pl.Series([200.0, 203.1, 198.5, 206.4, 203.7, 209.2, 204.6, 212.3, 207.8, 214.5], dtype=pl.Float64)
+    # 5 out of 10 values are null (50% nulls) with non-monotonic prices in non-null rows
+    a_half_null = pl.Series([100.0, 102.3, 99.5, 103.7, 101.1, None, None, None, None, None], dtype=pl.Float64)
+
+    # with default max_nan_fraction=0.9, 50% nulls should pass
+    cfg_default = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    _ = BasanosEngine(
+        prices=pl.DataFrame({"date": dates, "A": a_half_null, "B": b_ok}),
+        mu=small_mu,
+        cfg=cfg_default,
+    )
+
+    # with a stricter max_nan_fraction=0.4, 50% nulls should raise
+    cfg_strict = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6, max_nan_fraction=0.4)
+    with pytest.raises(ExcessiveNullsError) as exc_info:
+        _ = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": a_half_null, "B": b_ok}),
+            mu=small_mu,
+            cfg=cfg_strict,
+        )
+    assert exc_info.value.asset == "A"
+    assert exc_info.value.max_fraction == pytest.approx(0.4)
+
     """Strictly monotonic price series should raise; non-monotonic should pass."""
     cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
     n = small_mu.height
@@ -524,6 +565,46 @@ def test_optimize_with_zero_mu_returns_zero_positions(optimizer_prices):
     tail = cp.tail(80 - cfg.corr)
     for c in ("A", "B"):
         assert np.allclose(tail[c].to_numpy(), 0.0, rtol=0, atol=0)
+
+
+def test_shrink_zero_identity_case() -> None:
+    """With shrink=0, C_shrunk = I, so solve(I, mu) = mu (up to normalisation).
+
+    When the correlation matrix is replaced entirely by the identity, each
+    asset's solved position is proportional to its expected-return signal
+    (undeflected by cross-asset correlations).  Concretely, the *risk*
+    position — cash_position × vola — must point in the same direction as
+    mu at every timestamp after the warm-up period where mu is non-zero.
+    """
+    prices, mu = _make_prices_mu(80)
+    cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.0, aum=1e6)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+    warmup = cfg.corr
+    assets = engine.assets
+
+    mu_arr = mu.select(assets).to_numpy()
+    cp_arr = engine.cash_position.select(assets).to_numpy()
+    vola_arr = engine.vola.select(assets).to_numpy()
+
+    for i in range(warmup, prices.height):
+        mu_row = mu_arr[i]
+        # Skip timestamps where the signal is zero (no trade taken)
+        if np.allclose(mu_row, 0.0):
+            continue
+
+        # risk_pos = cash_pos * vola is the un-volatility-scaled position
+        # When C = I: solve(I, mu) = mu, so risk_pos ∝ mu
+        risk_row = cp_arr[i] * vola_arr[i]
+
+        # Skip rows where risk position is zero (e.g. degenerate denominator during early warmup)
+        risk_norm = np.linalg.norm(risk_row)
+        if risk_norm < 1e-15:
+            continue
+
+        norm_risk = risk_row / risk_norm
+        norm_mu = mu_row / np.linalg.norm(mu_row)
+        np.testing.assert_allclose(norm_risk, norm_mu, atol=1e-10)
 
 
 # ─── cash_position: edge cases ────────────────────────────────────────────────
