@@ -33,6 +33,7 @@ from basanos.exceptions import (
     ShapeMismatchError,
 )
 from basanos.math import BasanosConfig, BasanosEngine
+from basanos.math.optimizer import _ewm_corr_numpy
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -230,6 +231,98 @@ def test_basanos_config_new_fields_validation():
 
     with pytest.raises(ValueError, match=r".*"):
         BasanosConfig(**base, position_scale=-1.0)
+
+
+def test_basanos_config_cor_chunk_size_defaults_to_none():
+    """cor_chunk_size should default to None (single-pass mode)."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6)
+    assert cfg.cor_chunk_size is None
+
+
+def test_basanos_config_cor_chunk_size_accepts_positive_int():
+    """cor_chunk_size should accept any positive integer."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6, cor_chunk_size=252)
+    assert cfg.cor_chunk_size == 252
+
+
+def test_basanos_config_cor_chunk_size_rejects_zero_and_negative():
+    """cor_chunk_size must be at least 1; zero and negative values should be rejected."""
+    base = {"vola": 16, "corr": 32, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, cor_chunk_size=0)
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, cor_chunk_size=-10)
+
+
+# ─── _ewm_corr_numpy chunked path ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("chunk_size", [1, 10, 33, 50, 100, 200])
+def test_ewm_corr_numpy_chunked_matches_single_pass(chunk_size: int) -> None:
+    """Chunked _ewm_corr_numpy must produce results identical to the single-pass path."""
+    rng = np.random.default_rng(42)
+    t_len, n_assets, com, min_periods = 120, 5, 20, 20
+    data = rng.normal(0.0, 1.0, size=(t_len, n_assets))
+
+    expected = _ewm_corr_numpy(data, com=com, min_periods=min_periods)
+    actual = _ewm_corr_numpy(data, com=com, min_periods=min_periods, chunk_size=chunk_size)
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12, equal_nan=True)
+
+
+def test_ewm_corr_numpy_chunked_with_nans() -> None:
+    """Chunked path must handle NaN entries (staggered asset availability) correctly."""
+    rng = np.random.default_rng(7)
+    t_len, n_assets, com, min_periods = 100, 4, 15, 15
+    data = rng.normal(0.0, 1.0, size=(t_len, n_assets)).astype(float)
+    # Introduce NaNs to simulate staggered asset entry
+    data[:20, 2] = np.nan
+    data[:40, 3] = np.nan
+
+    expected = _ewm_corr_numpy(data, com=com, min_periods=min_periods)
+    actual = _ewm_corr_numpy(data, com=com, min_periods=min_periods, chunk_size=25)
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12, equal_nan=True)
+
+
+def test_ewm_corr_numpy_chunk_size_larger_than_t_uses_single_pass() -> None:
+    """chunk_size >= T must produce the same result as chunk_size=None."""
+    rng = np.random.default_rng(99)
+    t_len, n_assets, com, min_periods = 50, 3, 10, 10
+    data = rng.normal(0.0, 1.0, size=(t_len, n_assets))
+
+    expected = _ewm_corr_numpy(data, com=com, min_periods=min_periods)
+    actual = _ewm_corr_numpy(data, com=com, min_periods=min_periods, chunk_size=t_len + 100)
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12, equal_nan=True)
+
+
+def test_ewm_corr_numpy_chunk_size_one() -> None:
+    """chunk_size=1 is the most extreme case and must still be numerically exact."""
+    rng = np.random.default_rng(13)
+    t_len, n_assets, com, min_periods = 60, 3, 10, 10
+    data = rng.normal(0.0, 1.0, size=(t_len, n_assets))
+
+    expected = _ewm_corr_numpy(data, com=com, min_periods=min_periods)
+    actual = _ewm_corr_numpy(data, com=com, min_periods=min_periods, chunk_size=1)
+
+    np.testing.assert_allclose(actual, expected, rtol=1e-12, atol=1e-12, equal_nan=True)
+
+
+def test_engine_cor_chunked_matches_unchunked(optimizer_prices: pl.DataFrame, optimizer_mu: pl.DataFrame) -> None:
+    """BasanosEngine.cor with cor_chunk_size set must produce numerically identical results to cor_chunk_size=None."""
+    cfg_unchunked = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+    cfg_chunked = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6, cor_chunk_size=30)
+
+    engine_ref = BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=cfg_unchunked)
+    engine_chunked = BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=cfg_chunked)
+
+    ref_cor = engine_ref.cor
+    chunked_cor = engine_chunked.cor
+
+    assert set(ref_cor.keys()) == set(chunked_cor.keys())
+    for date_key in ref_cor:
+        np.testing.assert_allclose(chunked_cor[date_key], ref_cor[date_key], rtol=1e-12, atol=1e-12, equal_nan=True)
 
 
 # ─── BasanosEngine construction validation ────────────────────────────────────

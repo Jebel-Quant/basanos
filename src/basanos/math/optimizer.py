@@ -28,9 +28,12 @@ Let *N* be the number of assets and *T* the number of timestamps.
 **Memory usage** (peak, approximate)
 
 ``_ewm_corr_numpy`` allocates roughly **14 float64 arrays** of shape
-``(T, N, N)`` at peak (input sequences, IIR filter outputs, EWM components,
-and the result tensor).  Peak RAM ≈ **112 * T * N²** bytes.  Typical
-working sizes on a 16 GB machine:
+``(T, N, N)`` at peak in the default single-pass mode (input sequences, IIR
+filter outputs, EWM components, and the result tensor).
+Peak RAM ≈ **112 * T * N²** bytes.  With ``cor_chunk_size = K`` the working
+allocation is reduced to **112 * K * N²** bytes per iteration; the only
+``T``-sized allocation remaining is the result buffer (**8 * T * N²** bytes).
+Typical single-pass working sizes on a 16 GB machine:
 
 +--------+--------------------------+------------------------------------+
 | N      | T (daily rows)           | Peak memory (approx.)              |
@@ -51,8 +54,10 @@ working sizes on a 16 GB machine:
 * **≤ 150 assets, ≤ 5 years** — well within reach on an 8 GB laptop.
 * **≤ 250 assets, ≤ 10 years** — requires ~11-12 GB; feasible on a 16 GB
   workstation.
-* **> 500 assets with multi-year history** — peak memory exceeds 16 GB;
-  reduce the time range or switch to a chunked / streaming approach.
+* **> 500 assets with multi-year history** — single-pass peak memory exceeds
+  16 GB; set ``BasanosConfig.cor_chunk_size`` (e.g. 252 or 1 260) to process
+  the time axis in blocks and bound working memory to
+  ``112 * cor_chunk_size * N²`` bytes.
 * **> 1 000 assets** — the O(N³) per-solve cost alone makes real-time
   optimization impractical even with adequate RAM.
 
@@ -92,7 +97,13 @@ _MAX_NAN_FRACTION: float = 0.9  # raise if more than this fraction of prices in 
 _logger = logging.getLogger(__name__)
 
 
-def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
+def _ewm_corr_numpy(
+    data: np.ndarray,
+    com: int,
+    min_periods: int,
+    *,
+    chunk_size: int | None = None,
+) -> np.ndarray:
     """Compute per-row EWM correlation matrices without pandas.
 
     Matches ``pandas.DataFrame.ewm(com=com, min_periods=min_periods).corr()``
@@ -117,6 +128,19 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
         com: EWM centre-of-mass (``alpha = 1 / (1 + com)``).
         min_periods: Minimum number of joint finite observations required
             before a correlation value is reported; earlier rows are NaN.
+        chunk_size: Optional number of timesteps to process per iteration.
+            When ``None`` (default) the entire time axis is processed in a
+            single pass, allocating roughly **14 float64 arrays** of shape
+            ``(T, N, N)`` at peak (≈ ``112 * T * N²`` bytes).  Setting
+            ``chunk_size = K`` reduces the working-memory allocation to
+            roughly ``112 * K * N²`` bytes per iteration, keeping the IIR
+            filter state exact across chunk boundaries via
+            ``scipy.signal.lfilter``'s ``zi`` (initial-condition) mechanism.
+            The pre-allocated result buffer of shape ``(T, N, N)`` is the
+            only ``T``-sized allocation that remains; peak RAM is therefore
+            approximately ``8 * T * N²  +  112 * K * N²`` bytes.  Values
+            of ``K`` between 252 (≈ 1 trading year) and 1 260 (≈ 5 years)
+            are typical starting points for large universes.
 
     Returns:
         np.ndarray of shape ``(T, N, N)`` containing the per-row correlation
@@ -127,74 +151,157 @@ def _ewm_corr_numpy(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
         **Time** — O(T·N²): ``lfilter`` processes all N² pairs simultaneously,
         so wall-clock time scales linearly with both T and N².
 
-        **Memory** — approximately 14 float64 arrays of shape ``(T, N, N)``
-        exist at peak, giving roughly ``112 * T * N²`` bytes.  For 100 assets
-        over 2 520 trading days (~10 years) that is ≈ 2.8 GB; for 500 assets
-        the same period requires ≈ 70 GB, which exceeds typical workstation
-        RAM.  Reduce T or N before calling this function when working with
-        large universes.
+        **Memory (no chunking)** — approximately 14 float64 arrays of shape
+        ``(T, N, N)`` exist at peak, giving roughly ``112 * T * N²`` bytes.
+        For 100 assets over 2 520 trading days (~10 years) that is ≈ 2.8 GB;
+        for 500 assets the same period requires ≈ 70 GB, which exceeds typical
+        workstation RAM.
+
+        **Memory (chunked)** — peak working memory is ``112 * K * N²`` bytes
+        (where ``K = chunk_size``) plus a fixed ``8 * T * N²`` byte result
+        buffer.  Choose ``K`` so that ``112 * K * N²`` fits comfortably in
+        available RAM.
     """
-    _t_len, n_assets = data.shape
+    t_len, n_assets = data.shape
     beta = com / (1.0 + com)
 
     fin = np.isfinite(data)  # (T, N) bool
     xt_f = np.where(fin, data, 0.0)  # (T, N) float - zeroed where not finite
 
-    # joint_fin[t, i, j] = True iff assets i and j are both finite at t
-    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
-
-    # Build per-pair input sequences for the recurrence s[t] = beta*s[t-1] + v[t].
-    #
-    # v_x[t, i, j]  = x_i[t]    where pair (i,j) jointly finite, else 0
-    # v_x2[t, i, j] = x_i[t]^2  where jointly finite, else 0
-    # v_xy[t, i, j] = x_i[t]*x_j[t]  (xt_f is 0 for non-finite, so implicit mask)
-    # v_w[t, i, j]  = 1          where jointly finite, else 0  (weight indicator)
-    #
-    # By symmetry v_x[t,j,i] carries x_j[t] for pair (i,j), so s_x.swapaxes(1,2)
-    # gives the EWM numerator of x_j without a separate v_y array.
-    v_x = xt_f[:, :, np.newaxis] * joint_fin  # (T, N, N)
-    v_x2 = (xt_f * xt_f)[:, :, np.newaxis] * joint_fin  # (T, N, N)
-    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]  # (T, N, N)
-    v_w = joint_fin.astype(np.float64)  # (T, N, N)
-
-    # Solve the IIR recurrence for every (i, j) pair in parallel.
-    # lfilter([1], [1, -beta], v, axis=0) computes s[t] = beta*s[t-1] + v[t].
     filt_a = np.array([1.0, -beta])
-    s_x = lfilter([1.0], filt_a, v_x, axis=0)  # (T, N, N)
-    s_x2 = lfilter([1.0], filt_a, v_x2, axis=0)  # (T, N, N)
-    s_xy = lfilter([1.0], filt_a, v_xy, axis=0)  # (T, N, N)
-    s_w = lfilter([1.0], filt_a, v_w, axis=0)  # (T, N, N)
 
-    # Joint finite observation count per pair at each timestep (for min_periods)
-    count = np.cumsum(joint_fin, axis=0)  # (T, N, N) int64
+    if chunk_size is None or chunk_size >= t_len:
+        # ── Single-pass (original) path ──────────────────────────────────────
+        # joint_fin[t, i, j] = True iff assets i and j are both finite at t
+        joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
 
-    # EWM means: running numerator / running weight denominator.
-    # s_x.swapaxes(1,2)[t,i,j] = s_x[t,j,i] = EWM numerator of x_j for pair (i,j).
-    with np.errstate(divide="ignore", invalid="ignore"):
-        pos_w = s_w > 0
-        ewm_x = np.where(pos_w, s_x / s_w, np.nan)  # EWM(x_i)
-        ewm_y = np.where(pos_w, s_x.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j)
-        ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)  # EWM(x_i^2)
-        ewm_y2 = np.where(pos_w, s_x2.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j^2)
-        ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)  # EWM(x_i*x_j)
+        # Build per-pair input sequences for the recurrence s[t] = beta*s[t-1] + v[t].
+        #
+        # v_x[t, i, j]  = x_i[t]    where pair (i,j) jointly finite, else 0
+        # v_x2[t, i, j] = x_i[t]^2  where jointly finite, else 0
+        # v_xy[t, i, j] = x_i[t]*x_j[t]  (xt_f is 0 for non-finite, so implicit mask)
+        # v_w[t, i, j]  = 1          where jointly finite, else 0  (weight indicator)
+        #
+        # By symmetry v_x[t,j,i] carries x_j[t] for pair (i,j), so s_x.swapaxes(1,2)
+        # gives the EWM numerator of x_j without a separate v_y array.
+        v_x = xt_f[:, :, np.newaxis] * joint_fin  # (T, N, N)
+        v_x2 = (xt_f * xt_f)[:, :, np.newaxis] * joint_fin  # (T, N, N)
+        v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]  # (T, N, N)
+        v_w = joint_fin.astype(np.float64)  # (T, N, N)
 
-    var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
-    var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
-    denom = np.sqrt(var_x * var_y)
-    cov = ewm_xy - ewm_x * ewm_y
+        # Solve the IIR recurrence for every (i, j) pair in parallel.
+        # lfilter([1], [1, -beta], v, axis=0) computes s[t] = beta*s[t-1] + v[t].
+        s_x = lfilter([1.0], filt_a, v_x, axis=0)  # (T, N, N)
+        s_x2 = lfilter([1.0], filt_a, v_x2, axis=0)  # (T, N, N)
+        s_xy = lfilter([1.0], filt_a, v_xy, axis=0)  # (T, N, N)
+        s_w = lfilter([1.0], filt_a, v_w, axis=0)  # (T, N, N)
 
-    with np.errstate(divide="ignore", invalid="ignore"):
-        result = np.where(denom > _MIN_CORR_DENOM, cov / denom, np.nan)
+        # Joint finite observation count per pair at each timestep (for min_periods)
+        count = np.cumsum(joint_fin, axis=0)  # (T, N, N) int64
 
-    result = np.clip(result, -1.0, 1.0)
+        # EWM means: running numerator / running weight denominator.
+        # s_x.swapaxes(1,2)[t,i,j] = s_x[t,j,i] = EWM numerator of x_j for pair (i,j).
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pos_w = s_w > 0
+            ewm_x = np.where(pos_w, s_x / s_w, np.nan)  # EWM(x_i)
+            ewm_y = np.where(pos_w, s_x.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j)
+            ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)  # EWM(x_i^2)
+            ewm_y2 = np.where(pos_w, s_x2.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j^2)
+            ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)  # EWM(x_i*x_j)
 
-    # Apply min_periods mask for all pairs
-    result[count < min_periods] = np.nan
+        var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
+        var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
+        denom = np.sqrt(var_x * var_y)
+        cov = ewm_xy - ewm_x * ewm_y
 
-    # Diagonal is exactly 1.0 where the asset has sufficient observations
+        with np.errstate(divide="ignore", invalid="ignore"):
+            result = np.where(denom > _MIN_CORR_DENOM, cov / denom, np.nan)
+
+        result = np.clip(result, -1.0, 1.0)
+
+        # Apply min_periods mask for all pairs
+        result[count < min_periods] = np.nan
+
+        # Diagonal is exactly 1.0 where the asset has sufficient observations
+        diag_idx = np.arange(n_assets)
+        diag_count = count[:, diag_idx, diag_idx]  # (T, N)
+        result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
+
+        return result
+
+    # ── Chunked path: process T in blocks of chunk_size ──────────────────────
+    # Pre-allocate the full result tensor (the only T-sized allocation).
+    result = np.full((t_len, n_assets, n_assets), np.nan)
+
+    # IIR filter state (zi) for each of the four running sums.
+    # For a 1st-order filter ([1.0, -beta]) applied along axis=0 of an
+    # (chunk, N, N) array, zi has shape (1, N, N).
+    zi_shape = (1, n_assets, n_assets)
+    zi_x = np.zeros(zi_shape)
+    zi_x2 = np.zeros(zi_shape)
+    zi_xy = np.zeros(zi_shape)
+    zi_w = np.zeros(zi_shape)
+
+    # Running cumulative count of joint-finite observations per pair, carried
+    # across chunk boundaries to reconstruct the global cumsum within each chunk.
+    cumcount = np.zeros((n_assets, n_assets), dtype=np.int64)
+
     diag_idx = np.arange(n_assets)
-    diag_count = count[:, diag_idx, diag_idx]  # (T, N)
-    result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
+
+    for t_start in range(0, t_len, chunk_size):
+        t_end = min(t_start + chunk_size, t_len)
+
+        fin_c = fin[t_start:t_end]  # (K, N)
+        xt_f_c = xt_f[t_start:t_end]  # (K, N)
+
+        # (K, N, N) joint-finite mask for this chunk
+        joint_fin_c = fin_c[:, :, np.newaxis] & fin_c[:, np.newaxis, :]
+
+        # Per-pair input sequences for this chunk
+        v_x_c = xt_f_c[:, :, np.newaxis] * joint_fin_c  # (K, N, N)
+        v_x2_c = (xt_f_c * xt_f_c)[:, :, np.newaxis] * joint_fin_c  # (K, N, N)
+        v_xy_c = xt_f_c[:, :, np.newaxis] * xt_f_c[:, np.newaxis, :]  # (K, N, N)
+        v_w_c = joint_fin_c.astype(np.float64)  # (K, N, N)
+
+        # Continue IIR state from the previous chunk boundary.
+        s_x_c, zi_x = lfilter([1.0], filt_a, v_x_c, axis=0, zi=zi_x)  # (K, N, N)
+        s_x2_c, zi_x2 = lfilter([1.0], filt_a, v_x2_c, axis=0, zi=zi_x2)  # (K, N, N)
+        s_xy_c, zi_xy = lfilter([1.0], filt_a, v_xy_c, axis=0, zi=zi_xy)  # (K, N, N)
+        s_w_c, zi_w = lfilter([1.0], filt_a, v_w_c, axis=0, zi=zi_w)  # (K, N, N)
+
+        # Reconstruct the global joint-finite count within this chunk.
+        # cumcount holds the total count accumulated *before* t_start.
+        count_c = np.cumsum(joint_fin_c, axis=0) + cumcount[np.newaxis, :, :]  # (K, N, N)
+
+        # Compute correlations for this chunk
+        with np.errstate(divide="ignore", invalid="ignore"):
+            pos_w_c = s_w_c > 0
+            ewm_x_c = np.where(pos_w_c, s_x_c / s_w_c, np.nan)
+            ewm_y_c = np.where(pos_w_c, s_x_c.swapaxes(1, 2) / s_w_c, np.nan)
+            ewm_x2_c = np.where(pos_w_c, s_x2_c / s_w_c, np.nan)
+            ewm_y2_c = np.where(pos_w_c, s_x2_c.swapaxes(1, 2) / s_w_c, np.nan)
+            ewm_xy_c = np.where(pos_w_c, s_xy_c / s_w_c, np.nan)
+
+        var_x_c = np.maximum(ewm_x2_c - ewm_x_c * ewm_x_c, 0.0)
+        var_y_c = np.maximum(ewm_y2_c - ewm_y_c * ewm_y_c, 0.0)
+        denom_c = np.sqrt(var_x_c * var_y_c)
+        cov_c = ewm_xy_c - ewm_x_c * ewm_y_c
+
+        with np.errstate(divide="ignore", invalid="ignore"):
+            result_c = np.where(denom_c > _MIN_CORR_DENOM, cov_c / denom_c, np.nan)
+
+        result_c = np.clip(result_c, -1.0, 1.0)
+
+        # Apply min_periods mask
+        result_c[count_c < min_periods] = np.nan
+
+        # Diagonal: exactly 1.0 where the asset has sufficient observations
+        diag_count_c = count_c[:, diag_idx, diag_idx]  # (K, N)
+        result_c[:, diag_idx, diag_idx] = np.where(diag_count_c >= min_periods, 1.0, np.nan)
+
+        # Write into the pre-allocated result buffer and advance the running count.
+        result[t_start:t_end] = result_c
+        cumcount += joint_fin_c.sum(axis=0)
 
     return result
 
@@ -349,6 +456,19 @@ class BasanosConfig(BaseModel):
             "Multiplicative scaling factor applied to dimensionless risk positions to obtain "
             "cash positions in base-currency units. Defaults to 1e6 (one million), a "
             "conventional denomination for institutional portfolios."
+        ),
+    )
+    cor_chunk_size: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Optional time-axis chunk size for memory-bounded EWM correlation computation. "
+            "When None (default) the entire history is processed in a single pass, allocating "
+            "~112 * T * N² bytes of working memory. Setting this to K processes the time axis "
+            "in blocks of K rows, reducing peak working memory to ~112 * K * N² bytes while "
+            "keeping the result numerically identical to the single-pass path. "
+            "Values between 252 (≈1 trading year) and 1260 (≈5 years) are typical for "
+            "large universes where a single-pass allocation would exceed available RAM."
         ),
     )
 
@@ -543,11 +663,18 @@ class BasanosEngine:
             time and memory.  The returned dict holds *T* references into the
             result tensor (one N*N view per date); no extra copies are made.
             For large *N* or *T*, prefer ``cor_tensor`` to keep a single
-            contiguous array rather than building a Python dict.
+            contiguous array rather than building a Python dict.  Set
+            ``cfg.cor_chunk_size`` to bound peak working memory; see
+            :func:`_ewm_corr_numpy` for details.
         """
         index = self.prices["date"]
         ret_adj_np = self.ret_adj.select(self.assets).to_numpy()
-        tensor = _ewm_corr_numpy(ret_adj_np, com=self.cfg.corr, min_periods=self.cfg.corr)
+        tensor = _ewm_corr_numpy(
+            ret_adj_np,
+            com=self.cfg.corr,
+            min_periods=self.cfg.corr,
+            chunk_size=self.cfg.cor_chunk_size,
+        )
         return {index[t]: tensor[t] for t in range(len(index))}
 
     @property

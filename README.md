@@ -398,14 +398,23 @@ At very large N (≥ 500) the per-solve cost O(N³) can also become significant.
 ### Memory usage
 
 `_ewm_corr_numpy` allocates roughly **14 float64 arrays** of shape `(T, N, N)`
-simultaneously at peak (input sequences fed to `scipy.signal.lfilter`, the IIR
-filter outputs, the five EWM component arrays, and the result tensor):
+simultaneously at peak in the default single-pass mode (input sequences fed to
+`scipy.signal.lfilter`, the IIR filter outputs, the five EWM component arrays,
+and the result tensor):
 
 ```
-Peak RAM ≈ 14 × 8 × T × N²  bytes  ≈  112 × T × N²  bytes
+Single-pass peak RAM ≈ 14 × 8 × T × N²  bytes  ≈  112 × T × N²  bytes
 ```
 
-Practical working sizes:
+With `cor_chunk_size = K` set on `BasanosConfig` the working memory is bounded
+to `112 × K × N²` bytes per iteration; the only `T`-sized allocation remaining
+is the pre-allocated result buffer (`8 × T × N²` bytes):
+
+```
+Chunked peak RAM ≈ 8 × T × N²  +  112 × K × N²  bytes
+```
+
+Practical single-pass working sizes:
 
 | N (assets) | T (daily rows) | Approx. history | Peak memory |
 |-----------|---------------|-----------------|-------------|
@@ -424,30 +433,35 @@ Practical working sizes:
 |------|-----------|----------|
 | ✅ Comfortable | N ≤ 150, T ≤ 1 260 (~5 yr daily) | Runs on an 8 GB laptop in seconds |
 | ⚠ Feasible with care | N ≤ 250, T ≤ 2 520 (~10 yr daily) | Requires ~11–12 GB RAM; plan for 10–60 s wall time |
-| 🔴 Impractical | N > 500 or T > 5 000 | Peak memory exceeds 16 GB; consider mitigation strategies below |
+| 🔴 Large universe | N > 500 or T > 5 000 | Use `cfg.cor_chunk_size` (e.g. 252 or 1 260) to bound peak working memory |
 | ⛔ Not supported | N > 1 000 with multi-year history | Solve cost and memory are prohibitive on commodity hardware |
 
 > **Note on `cfg.corr`** — this is the EWM lookback window, not the total
 > dataset length.  Even if you have 10 years of prices, keeping `cfg.corr`
 > short (e.g., 63 days) does *not* reduce the peak memory cost of
-> `_ewm_corr_numpy`: the function always allocates the full `(T, N, N)` tensor
-> regardless of the lookback value.  To limit memory, reduce the number of rows
-> passed in *T* itself (e.g., trim old prices) rather than adjusting `cfg.corr`.
+> `_ewm_corr_numpy`: the function always allocates the full `(T, N, N)` result
+> tensor regardless of the lookback value.  Use `cor_chunk_size` to bound
+> working memory, or trim old prices to reduce *T* directly.
 
 ### Mitigation strategies
 
 When you hit memory or performance limits:
 
-1. **Reduce the asset universe** — keep only the most liquid or relevant assets;
+1. **Use `cfg.cor_chunk_size`** — set this to a value such as 252 (≈1 trading
+   year) or 1 260 (≈5 years) to process the time axis in blocks.  The result
+   is numerically identical to the single-pass path; only peak *working* memory
+   is reduced.  Example:
+   ```python
+   cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8,
+                       cor_chunk_size=252)
+   ```
+2. **Reduce the asset universe** — keep only the most liquid or relevant assets;
    pre-filter with univariate signal strength before running the optimizer.
-2. **Shorten the price history** — `_ewm_corr_numpy` processes every row; trim
+3. **Shorten the price history** — `_ewm_corr_numpy` processes every row; trim
    older data to the minimum needed for the EWM warm-up (`cfg.corr` rows).
-3. **Increase `cfg.shrink` toward 1.0** — stronger identity shrinkage reduces
+4. **Increase `cfg.shrink` toward 1.0** — stronger identity shrinkage reduces
    the sensitivity of the solve to noisy off-diagonal entries, allowing a
    shorter effective lookback without instability.
-4. **Process in rolling windows** — run the optimizer on overlapping windows
-   (e.g., 1-year chunks) and stitch results; correlation estimates will differ
-   slightly at window boundaries but memory stays bounded.
 5. **Use `cor_tensor` instead of `cor`** — returns a single `(T, N, N)` NumPy
    array rather than a Python dict, avoiding Python object overhead for large T.
 
