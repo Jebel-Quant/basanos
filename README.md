@@ -548,7 +548,7 @@ Accessed via `cfg.report` (config-only) or `engine.config_report` (includes lamb
 from basanos.math import BasanosConfig, BasanosEngine
 
 cfg    = BasanosConfig(vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6)
-engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+engine = BasanosEngine(prices=_prices, mu=_mu, cfg=cfg)
 
 cfg.report.to_html()          # parameter table + shrinkage guidance + theory
 engine.config_report.to_html()  # above + interactive lambda-sweep chart
