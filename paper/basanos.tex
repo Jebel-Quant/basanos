@@ -136,8 +136,9 @@ Section~\ref{sec:approach} describes the mathematical approach: volatility
 adjustment, EWMA correlation estimation, shrinkage, and the normalised linear
 solve.  Section~\ref{sec:analytics} documents the analytical tools available in
 the library, distinguishing optimizer-level diagnostics from portfolio-level
-performance analytics.  Section~\ref{sec:usage} illustrates usage with code
-examples.  Section~\ref{sec:conclusion} concludes.
+performance analytics.  Section~\ref{sec:usage} describes the development
+infrastructure and illustrates usage with code examples.
+Section~\ref{sec:conclusion} concludes.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{The Signal Assessment Problem}
@@ -211,7 +212,10 @@ Adding a turnover limit, for example, ties today's portfolio to yesterday's,
 so a signal spike one day will be smoothed over multiple periods.  The
 realised P\&L then reflects the interaction between the signal's
 autocorrelation properties and the turnover budget---not the signal's raw
-predictive content.
+predictive content.  \citet{boyd2024} provide a comprehensive treatment of
+such a fully constrained production Markowitz solver---covering multi-period
+objectives, transaction cost models, and factor risk---serving as an
+authoritative reference for what a production system typically entails.
 
 This entanglement makes it difficult to answer the core question: does the
 signal have edge?  Basanos deliberately avoids hard constraints to give the
@@ -282,6 +286,26 @@ The full set of five running moments ($E_i$, $E_j$, $E_{i^2}$, $E_{j^2}$,
 $E_{ij}$) is computed in parallel across all $n^2$ pairs using
 \texttt{scipy.signal.lfilter}, making the step $O(T n^2)$ in both time and
 memory \citep{hunter1986}.
+
+\paragraph{Outer-product interpretation.}
+Stacking the volatility-adjusted returns into a vector
+$\tilde{\mathbf{r}}_t = (\tilde{r}_{1,t}, \dots, \tilde{r}_{n,t})^\top$,
+the EWMA cross-moment matrix can be written compactly as
+\begin{equation}
+  \label{eq:outer_product}
+  \mathbf{M}_t = \alpha_\rho\,\tilde{\mathbf{r}}_t\tilde{\mathbf{r}}_t^\top
+               + (1-\alpha_\rho)\,\mathbf{M}_{t-1},
+\end{equation}
+i.e.\ the exponentially weighted sum of rank-1 outer products
+$\tilde{\mathbf{r}}_t\tilde{\mathbf{r}}_t^\top$.  Each outer product
+contributes all $n^2$ cross-moment estimates simultaneously with a single
+pass over the data.  The correlation matrix $\hat{\C}_t$ is then obtained
+by mean-centering $\mathbf{M}_t$ and normalising each entry by the
+corresponding diagonal elements, as in the component-wise update above.
+This outer-product structure makes the construction equivalent to an
+exponentially weighted sample covariance of the vol-adjusted returns, and
+is the natural generalisation of a standard EWMA covariance estimator to
+the correlation scale.
 
 \subsection{Shrinkage Toward the Identity Matrix}
 \label{sec:shrinkage}
@@ -635,6 +659,22 @@ via an API or saved to disk.
 \section{Usage Example}
 \label{sec:usage}
 % ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Development Infrastructure}
+
+Basanos is developed using the \textbf{Rhiza} framework---a curated collection
+of reusable project-template files, Makefile targets, and CI/CD workflows
+designed to standardise modern Python library development.  Rhiza manages
+dependency resolution via \texttt{uv}, enforces code style with \texttt{ruff},
+runs the test suite under \texttt{pytest} with coverage, and automates
+packaging and release workflows.  A downstream project stays synchronised with
+the upstream Rhiza template through a periodic sync step that propagates
+improvements to the shared tooling without touching library-specific logic.
+This separation between domain code and build infrastructure keeps the
+repository focused on the mathematical and analytical core while benefiting
+from continuously maintained development tooling.
+
+\subsection{End-to-End Example}
 
 The following example illustrates the complete workflow from price data and a
 signal to a performance report.
