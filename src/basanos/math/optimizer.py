@@ -883,7 +883,7 @@ class BasanosEngine:
         prices_num = self.prices.select(assets).to_numpy()
 
         residuals: list[float] = []
-        for i, (_t, corr_n) in enumerate(cor.items()):
+        for i, (t, corr_n) in enumerate(cor.items()):
             mask = np.isfinite(prices_num[i])
             if not mask.any():
                 residuals.append(float(np.nan))
@@ -896,6 +896,16 @@ class BasanosEngine:
             try:
                 x = solve(matrix, expected_mu)
             except SingularMatrixError:
+                # The (shrunk) covariance matrix is degenerate — e.g. the EWM
+                # window has not yet accumulated enough data, or the asset
+                # returns are collinear.  The linear system has no unique
+                # solution, so the residual norm is undefined and NaN is the
+                # correct sentinel.
+                _logger.warning(
+                    "solver_residual: SingularMatrixError at t=%s - covariance matrix is "
+                    "degenerate; residual set to NaN.",
+                    t,
+                )
                 residuals.append(float(np.nan))
                 continue
             finite_x = np.isfinite(x)
@@ -940,7 +950,7 @@ class BasanosEngine:
         n_assets = len(assets)
         util_np = np.full((self.prices.height, n_assets), np.nan)
 
-        for i, (_t, corr_n) in enumerate(cor.items()):
+        for i, (t, corr_n) in enumerate(cor.items()):
             mask = np.isfinite(prices_num[i])
             if not mask.any():
                 continue
@@ -952,6 +962,15 @@ class BasanosEngine:
             try:
                 x = solve(matrix, expected_mu)
             except SingularMatrixError:
+                # The (shrunk) covariance matrix is degenerate — the portfolio
+                # allocation is undefined at this timestamp.  All asset
+                # utilisations remain NaN (the array was pre-filled with NaN),
+                # which correctly signals that no valid ratio could be computed.
+                _logger.warning(
+                    "signal_utilisation: SingularMatrixError at t=%s - covariance matrix is "
+                    "degenerate; utilisation set to NaN.",
+                    t,
+                )
                 continue
             with np.errstate(divide="ignore", invalid="ignore"):
                 ratio = np.where(np.abs(expected_mu) > _mu_tol, x / expected_mu, np.nan)
