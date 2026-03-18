@@ -26,6 +26,7 @@ Basanos computes **correlation-adjusted risk positions** from price data and exp
 - [Features](#features)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Notebooks](#notebooks)
 - [How It Works](#how-it-works)
 - [Shrinkage Methodology](#shrinkage-methodology)
 - [Performance Characteristics](#performance-characteristics)
@@ -252,6 +253,42 @@ _mu = pl.DataFrame({"date": _dates, "AAPL": np.tanh(_rng.normal(0, 0.5, n)), "GO
 cfg_engine = BasanosEngine(prices=_prices, mu=_mu, cfg=cfg)
 cfg_engine.config_report.save("output/config_with_sweep")
 ```
+
+## Notebooks
+
+Three interactive [Marimo](https://marimo.io/) notebooks live under
+`book/marimo/notebooks/`. They are self-contained — each embeds its own
+dependency list ([PEP 723](https://peps.python.org/pep-0723/)), so `uv run`
+installs everything automatically.
+
+| Notebook | Description | Key concepts |
+|---|---|---|
+| [`demo.py`](book/marimo/notebooks/demo.py) | End-to-end interactive demo of the Basanos optimizer | Signal generation, correlation-aware position sizing, portfolio analytics, reactive UI |
+| [`ewm_benchmark.py`](book/marimo/notebooks/ewm_benchmark.py) | Validates and benchmarks the NumPy/SciPy EWM correlation implementation against the legacy pandas version | EWM, `scipy.signal.lfilter`, NaN handling, performance comparison |
+| [`shrinkage_guide.py`](book/marimo/notebooks/shrinkage_guide.py) | Theoretical and empirical guide to tuning the shrinkage parameter λ | Marchenko-Pastur law, linear shrinkage `C(λ) = λ·C_EWMA + (1−λ)·I`, Sharpe vs. λ sweep, turnover analysis |
+
+### Running the notebooks
+
+```bash
+# Launch all notebooks in the Marimo editor (opens http://localhost:2718)
+make marimo
+
+# Open a single notebook for interactive editing
+marimo edit book/marimo/notebooks/demo.py
+
+# Run a single notebook read-only / presentation mode
+marimo run book/marimo/notebooks/demo.py
+
+# Self-contained via uv — no prior install needed
+uv run book/marimo/notebooks/demo.py
+uv run book/marimo/notebooks/ewm_benchmark.py
+uv run book/marimo/notebooks/shrinkage_guide.py
+```
+
+**Prerequisites**: Python ≥ 3.11 and `uv`. Each notebook's dependencies
+(marimo, basanos, numpy, polars, plotly, …) are resolved automatically by `uv`.
+If you are editing source code alongside the notebook, run `make install` first
+so the local package is available.
 
 ## How It Works
 
