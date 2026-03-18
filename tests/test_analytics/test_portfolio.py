@@ -173,25 +173,25 @@ def test_portfolio_plot_returns_figure(portfolio):
 
 def test_portfolio_post_init_requires_polars_dataframes(prices, positions):
     """__post_init__ should assert inputs are Polars DataFrames."""
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match=r"cashposition must be pl\.DataFrame, got dict"):
         Portfolio(prices=prices, cashposition={"date": [1, 2, 3]})
 
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match=r"prices must be pl\.DataFrame, got list"):
         Portfolio(prices=[[1.0, 2.0, 3.0]], cashposition=positions)
 
 
 def test_portfolio_post_init_requires_same_number_of_rows(prices, positions):
     """__post_init__ should raise ValueError when row counts differ."""
-    with pytest.raises(ValueError, match=r".*"):
+    with pytest.raises(ValueError, match=r"cashposition and prices must have the same number of rows"):
         Portfolio(prices=prices.head(3), cashposition=positions.head(2))
 
 
 def test_portfolio_post_init_requires_positive_aum(prices, positions):
     """__post_init__ should raise ValueError when AUM is not strictly positive."""
-    with pytest.raises(ValueError, match=r".*"):
+    with pytest.raises(ValueError, match=r"aum must be strictly positive"):
         Portfolio(prices=prices, cashposition=positions, aum=0.0)
 
-    with pytest.raises(ValueError, match=r".*"):
+    with pytest.raises(ValueError, match=r"aum must be strictly positive"):
         Portfolio(prices=prices, cashposition=positions, aum=-1.0)
 
 

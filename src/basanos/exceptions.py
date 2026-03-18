@@ -232,6 +232,87 @@ class IntegerIndexBoundError(BasanosError, TypeError):
         self.actual_type = actual_type
 
 
+class InvalidPricesTypeError(BasanosError, TypeError):
+    """Raised when ``prices`` is not a :class:`polars.DataFrame`.
+
+    Args:
+        actual_type: The ``type.__name__`` of the value that was supplied.
+
+    Examples:
+        >>> raise InvalidPricesTypeError("list")
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.InvalidPricesTypeError: prices must be pl.DataFrame, got list.
+    """
+
+    def __init__(self, actual_type: str) -> None:
+        """Initialize with the offending type name."""
+        super().__init__(f"prices must be pl.DataFrame, got {actual_type}.")
+        self.actual_type = actual_type
+
+
+class InvalidCashPositionTypeError(BasanosError, TypeError):
+    """Raised when ``cashposition`` is not a :class:`polars.DataFrame`.
+
+    Args:
+        actual_type: The ``type.__name__`` of the value that was supplied.
+
+    Examples:
+        >>> raise InvalidCashPositionTypeError("dict")
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.InvalidCashPositionTypeError: cashposition must be pl.DataFrame, got dict.
+    """
+
+    def __init__(self, actual_type: str) -> None:
+        """Initialize with the offending type name."""
+        super().__init__(f"cashposition must be pl.DataFrame, got {actual_type}.")
+        self.actual_type = actual_type
+
+
+class RowCountMismatchError(BasanosError, ValueError):
+    """Raised when ``prices`` and ``cashposition`` have different numbers of rows.
+
+    Args:
+        prices_rows: Number of rows in the prices DataFrame.
+        cashposition_rows: Number of rows in the cashposition DataFrame.
+
+    Examples:
+        >>> raise RowCountMismatchError(10, 9)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.RowCountMismatchError: cashposition and prices must have the same number of rows...
+    """
+
+    def __init__(self, prices_rows: int, cashposition_rows: int) -> None:
+        """Initialize with the row counts of the two mismatched DataFrames."""
+        super().__init__(
+            f"cashposition and prices must have the same number of rows, "
+            f"got cashposition={cashposition_rows} and prices={prices_rows}."
+        )
+        self.prices_rows = prices_rows
+        self.cashposition_rows = cashposition_rows
+
+
+class NonPositiveAumError(BasanosError, ValueError):
+    """Raised when ``aum`` is not strictly positive.
+
+    Args:
+        aum: The non-positive value that was supplied.
+
+    Examples:
+        >>> raise NonPositiveAumError(0.0)
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.NonPositiveAumError: aum must be strictly positive, got 0.0.
+    """
+
+    def __init__(self, aum: float) -> None:
+        """Initialize with the offending aum value."""
+        super().__init__(f"aum must be strictly positive, got {aum}.")
+        self.aum = aum
+
+
 class IllConditionedMatrixWarning(UserWarning):
     """Issued when a matrix has a condition number that exceeds a configured threshold.
 
