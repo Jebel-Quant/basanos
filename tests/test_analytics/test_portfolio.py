@@ -21,7 +21,12 @@ import polars.testing as pt
 import pytest
 
 from basanos.analytics import Portfolio
-from basanos.exceptions import IntegerIndexBoundError, MissingDateColumnError
+from basanos.exceptions import (
+    IntegerIndexBoundError,
+    MissingDateColumnError,
+    NonFiniteAfterCleaningError,
+    NullsAfterCleaningError,
+)
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -892,3 +897,34 @@ def test_trading_cost_impact_plot_title_contains_bps(turnover_portfolio):
     """trading_cost_impact_plot figure title must mention 'bps'."""
     fig = turnover_portfolio.plots.trading_cost_impact_plot()
     assert "bps" in fig.layout.title.text.lower()
+
+
+# ─── NullsAfterCleaningError / NonFiniteAfterCleaningError ────────────────────
+
+
+def test_nulls_after_cleaning_error_message_and_attribute():
+    """NullsAfterCleaningError must carry the column name and a descriptive message."""
+    exc = NullsAfterCleaningError("foo")
+    assert exc.column == "foo"
+    assert "foo" in str(exc)
+    assert "null" in str(exc).lower()
+
+
+def test_nonfinite_after_cleaning_error_message_and_attribute():
+    """NonFiniteAfterCleaningError must carry the column name and a descriptive message."""
+    exc = NonFiniteAfterCleaningError("bar")
+    assert exc.column == "bar"
+    assert "bar" in str(exc)
+    assert "non-finite" in str(exc).lower()
+
+
+def test_nulls_after_cleaning_error_is_value_error():
+    """NullsAfterCleaningError must be catchable as a ValueError."""
+    with pytest.raises(ValueError, match="null"):
+        raise NullsAfterCleaningError("col_x")
+
+
+def test_nonfinite_after_cleaning_error_is_value_error():
+    """NonFiniteAfterCleaningError must be catchable as a ValueError."""
+    with pytest.raises(ValueError, match="non-finite"):
+        raise NonFiniteAfterCleaningError("col_y")

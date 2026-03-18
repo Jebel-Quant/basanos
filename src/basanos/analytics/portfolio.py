@@ -14,7 +14,9 @@ from ..exceptions import (
     InvalidCashPositionTypeError,
     InvalidPricesTypeError,
     MissingDateColumnError,
+    NonFiniteAfterCleaningError,
     NonPositiveAumError,
+    NullsAfterCleaningError,
     RowCountMismatchError,
 )
 from ._plots import Plots
@@ -76,10 +78,6 @@ class Portfolio:
         """
         assets = [col for col, dtype in prices.schema.items() if dtype.is_numeric()]
 
-        def vol(col_name: str, vola: int) -> pl.Expr:  # pragma: no cover
-            """Return an EWMA volatility expression for the given column and lookback."""
-            return pl.col(col_name).pct_change().ewm_std(com=vola - 1, adjust=True, min_samples=vola)
-
         # Join prices to risk_position to compute volatility from price data
         cash_position = risk_position.with_columns(
             (pl.col(asset) / prices[asset].pct_change().ewm_std(com=vola - 1, adjust=True, min_samples=vola)).alias(
@@ -136,13 +134,16 @@ class Portfolio:
             profits = profits.with_columns(
                 pl.when(pl.col(c).is_finite()).then(pl.col(c)).otherwise(0.0).fill_null(0.0).alias(c) for c in assets
             )
-            # Guards to guarantee cleanliness
+            # Guards to guarantee cleanliness after the fill_null / otherwise(0.0) pass above.
+            # These branches should never be reached: fill_null(0.0) eliminates all null entries
+            # and otherwise(0.0) replaces every non-finite value with a finite float, so the
+            # conditions below are mathematically impossible at this point.
             for c in assets:
                 s = profits[c]
                 if int(s.null_count()) != 0:
-                    raise ValueError  # pragma: no cover
+                    raise NullsAfterCleaningError(c)  # pragma: no cover
                 if not bool(pl.Series(s).is_finite().all()):
-                    raise ValueError  # pragma: no cover
+                    raise NonFiniteAfterCleaningError(c)  # pragma: no cover
 
         return profits
 

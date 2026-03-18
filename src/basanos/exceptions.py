@@ -313,6 +313,60 @@ class NonPositiveAumError(BasanosError, ValueError):
         self.aum = aum
 
 
+class NullsAfterCleaningError(BasanosError, ValueError):
+    """Raised when a profit column still contains nulls after the cleaning pass.
+
+    This is an internal invariant violation: ``fill_null(0.0)`` should eliminate
+    all null entries before this check is reached.  If this error is ever raised
+    it indicates a logic defect in the cleaning step.
+
+    Args:
+        column: Name of the column that still contains null values.
+
+    Examples:
+        >>> raise NullsAfterCleaningError("A")  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.NullsAfterCleaningError: Column 'A' still contains null values...
+    """
+
+    def __init__(self, column: str) -> None:
+        """Initialize with the name of the column that contains unexpected nulls."""
+        super().__init__(
+            f"Column '{column}' still contains null values after fill_null(0.0). "
+            "This should never happen and indicates a logic defect in the cleaning step."
+        )
+        self.column = column
+
+
+class NonFiniteAfterCleaningError(BasanosError, ValueError):
+    """Raised when a profit column still contains non-finite values after the cleaning pass.
+
+    This is an internal invariant violation: replacing all non-finite entries
+    with ``0.0`` via ``otherwise(0.0)`` should guarantee finite values before
+    this check is reached.  If this error is ever raised it indicates a logic
+    defect in the cleaning step.
+
+    Args:
+        column: Name of the column that still contains non-finite values.
+
+    Examples:
+        >>> raise NonFiniteAfterCleaningError("A")  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.NonFiniteAfterCleaningError: Column 'A' still contains non-finite values...
+    """
+
+    def __init__(self, column: str) -> None:
+        """Initialize with the name of the column that contains unexpected non-finite values."""
+        super().__init__(
+            f"Column '{column}' still contains non-finite values (NaN/Inf) after "
+            "replacing all non-finite entries with 0.0. "
+            "This should never happen and indicates a logic defect in the cleaning step."
+        )
+        self.column = column
+
+
 class IllConditionedMatrixWarning(UserWarning):
     """Issued when a matrix has a condition number that exceeds a configured threshold.
 
