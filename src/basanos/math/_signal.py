@@ -131,6 +131,104 @@ def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
     return matrix * lamb + (1 - lamb) * np.eye(N=matrix.shape[0])
 
 
+def pca_cov(matrix: np.ndarray, k: int) -> np.ndarray:
+    r"""Reconstruct a covariance matrix from its top-*k* principal components.
+
+    This implements a **statistical factor model** covariance estimator:
+
+    .. math::
+
+        \hat{\Sigma}_{\text{PCA}}(k) =
+            V_k \, \Lambda_k \, V_k^\top
+            + \bar{\sigma}_{\text{res}}^2 \left(I_n - V_k V_k^\top\right)
+
+    where :math:`V_k` and :math:`\Lambda_k` are the eigenvectors and eigenvalues
+    corresponding to the :math:`k` largest eigenvalues of *matrix*, and
+    :math:`\bar{\sigma}_{\text{res}}^2` is the average of the remaining
+    :math:`n - k` eigenvalues (the *noise floor*).
+
+    The second term ensures the result is **positive definite**: the factor
+    component :math:`V_k \Lambda_k V_k^\top` is only rank-*k* (positive
+    *semi*-definite), so without the residual term the matrix would be
+    singular for any :math:`k < n`.  Adding the noise floor variance in the
+    :math:`(n - k)`-dimensional complement of the factor subspace gives a
+    well-conditioned result while preserving the factor structure.
+
+    **Intuition**
+
+    * The top-*k* principal components capture the dominant co-movement
+      structure (systematic risk factors).
+    * The residual term represents the idiosyncratic, asset-specific risk
+      that is not explained by those factors.
+    * This mirrors the classical factor model
+      :math:`\Sigma = B \Phi B^\top + D`, where *B* are factor loadings,
+      :math:`\Phi` is the factor covariance, and *D* is the diagonal of
+      idiosyncratic variances — except here the idiosyncratic variances are
+      all set equal to the average residual noise floor for parsimony.
+
+    **Why PCA instead of EWMA shrinkage?**
+
+    EWMA with identity shrinkage regularises by pulling *all* eigenvalues
+    toward one.  PCA regularises by discarding the smallest eigenvalues
+    entirely and replacing them with a scalar noise estimate.  PCA is
+    particularly useful when the asset count *n* approaches or exceeds the
+    lookback *T* (high Marchenko-Pastur noise region), because it explicitly
+    separates the signal eigenvalues from the noise bulk.
+
+    Args:
+        matrix: Square, symmetric positive semi-definite matrix to decompose
+            (typically an EWMA correlation matrix of shape (*n*, *n*)).
+        k: Number of principal components to retain.  Values larger than *n*
+            are silently clipped to *n*, so passing a large *k* is safe.
+
+    Returns:
+        Reconstructed (*n*, *n*) positive-definite matrix with the same shape
+        as *matrix*.
+
+    Examples:
+        >>> import numpy as np
+        >>> # 3x3 identity is already diagonal — PCA reconstruction
+        >>> C = pca_cov(np.eye(3), k=2)
+        >>> C.shape
+        (3, 3)
+        >>> # Result must be symmetric
+        >>> np.testing.assert_allclose(C, C.T, atol=1e-12)
+        >>> # All eigenvalues must be positive (positive definite)
+        >>> assert np.all(np.linalg.eigvalsh(C) > 0)
+    """
+    n = matrix.shape[0]
+    k = min(k, n)
+
+    # Guard: if the input contains NaN (e.g. during EWMA warmup before min_periods
+    # is reached), eigendecomposition will fail.  Return NaN to let the caller
+    # apply the same zero-position fallback it uses for ill-posed matrices.
+    if np.any(np.isnan(matrix)):
+        return np.full_like(matrix, np.nan)
+
+    # Eigendecomposition (eigh for symmetric matrices; eigvals in ascending order)
+    eigvals, eigvecs = np.linalg.eigh(matrix)
+
+    # Sort descending
+    idx = np.argsort(eigvals)[::-1]
+    eigvals = eigvals[idx]
+    eigvecs = eigvecs[:, idx]
+
+    # Top-k eigenpairs; clip to non-negative to handle tiny numerical noise
+    eigvals_k = np.maximum(eigvals[:k], 0.0)
+    eigvecs_k = eigvecs[:, :k]
+
+    # Noise floor: average of residual eigenvalues (clamped above 0)
+    if k < n:
+        residual_clamped = np.maximum(eigvals[k:], 0.0)
+        noise_var = float(np.maximum(np.mean(residual_clamped), 1e-10))
+    else:
+        noise_var = 1e-10
+
+    # Factor component + residual: C_factor + noise_var * (I - V_k V_k^T)
+    vv = eigvecs_k @ eigvecs_k.T
+    return (eigvecs_k * eigvals_k) @ eigvecs_k.T + noise_var * (np.eye(n) - vv)
+
+
 def vol_adj(x: pl.Expr, vola: int, clip: float, min_samples: int = 1) -> pl.Expr:
     """Compute clipped, volatility-adjusted log returns per column.
 

@@ -1,4 +1,4 @@
-"""Tests for basanos.math._signal (shrink2id, vol_adj).
+"""Tests for basanos.math._signal (shrink2id, vol_adj, pca_cov).
 
 shrink2id mixes a covariance/correlation matrix linearly towards the identity
 matrix and is tested for boundary lambdas (0 and 1), midpoints, default
@@ -7,6 +7,10 @@ behaviour, and shape preservation.
 vol_adj computes exponentially-weighted volatility-adjusted log-returns and
 is tested for output shape, the mandatory leading null, finiteness of
 subsequent values, ±clip enforcement, and the constant-price degenerate case.
+
+pca_cov reconstructs a covariance matrix from its top-k principal components
+plus a scalar noise floor and is tested for shape, symmetry, positive
+definiteness, clipping of k, and NaN propagation.
 """
 
 import math
@@ -15,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from basanos.math._signal import shrink2id, vol_adj
+from basanos.math._signal import pca_cov, shrink2id, vol_adj
 
 # ─── shrink2id ────────────────────────────────────────────────────────────────
 
@@ -110,3 +114,76 @@ def test_vol_adj_constant_price_returns_null_or_nan():
     # All values should be either null or NaN (division by zero vol)
     for v in result["p"].to_list():
         assert v is None or (isinstance(v, float) and math.isnan(v))
+
+
+# ─── pca_cov ─────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def sample_corr_matrix() -> np.ndarray:
+    """A well-conditioned 4×4 correlation matrix for pca_cov tests."""
+    rng = np.random.default_rng(0)
+    raw = rng.normal(size=(50, 4))
+    corr_mat = np.corrcoef(raw.T)
+    return corr_mat
+
+
+def test_pca_cov_output_shape(sample_corr_matrix: np.ndarray) -> None:
+    """pca_cov must return a matrix with the same shape as the input."""
+    result = pca_cov(sample_corr_matrix, k=2)
+    assert result.shape == sample_corr_matrix.shape
+
+
+def test_pca_cov_is_symmetric(sample_corr_matrix: np.ndarray) -> None:
+    """pca_cov result must be symmetric (up to floating-point tolerance)."""
+    result = pca_cov(sample_corr_matrix, k=2)
+    np.testing.assert_allclose(result, result.T, atol=1e-12)
+
+
+def test_pca_cov_is_positive_definite(sample_corr_matrix: np.ndarray) -> None:
+    """pca_cov result must have all eigenvalues strictly positive."""
+    for k in [1, 2, 3, 4]:
+        result = pca_cov(sample_corr_matrix, k=k)
+        eigvals = np.linalg.eigvalsh(result)
+        assert np.all(eigvals > 0), f"Not positive definite for k={k}: min eigval={eigvals.min()}"
+
+
+def test_pca_cov_k_greater_than_n_clips_to_n(sample_corr_matrix: np.ndarray) -> None:
+    """pca_cov must silently clip k to n when k > n."""
+    n = sample_corr_matrix.shape[0]
+    result_clipped = pca_cov(sample_corr_matrix, k=n + 100)
+    result_exact = pca_cov(sample_corr_matrix, k=n)
+    np.testing.assert_allclose(result_clipped, result_exact, atol=1e-12)
+
+
+def test_pca_cov_k_equals_n_uses_all_components(sample_corr_matrix: np.ndarray) -> None:
+    """pca_cov with k=n should reconstruct a full-rank positive definite matrix."""
+    n = sample_corr_matrix.shape[0]
+    result = pca_cov(sample_corr_matrix, k=n)
+    assert result.shape == (n, n)
+    eigvals = np.linalg.eigvalsh(result)
+    assert np.all(eigvals > 0)
+
+
+def test_pca_cov_k1_single_factor(sample_corr_matrix: np.ndarray) -> None:
+    """pca_cov with k=1 produces a rank-1 factor component plus noise floor."""
+    result = pca_cov(sample_corr_matrix, k=1)
+    # The result is (n,n) and positive definite
+    eigvals = np.linalg.eigvalsh(result)
+    assert np.all(eigvals > 0)
+
+
+def test_pca_cov_nan_matrix_propagates_nan() -> None:
+    """pca_cov with an all-NaN input must return an all-NaN output (warmup safety)."""
+    nan_mat = np.full((3, 3), np.nan)
+    result = pca_cov(nan_mat, k=2)
+    assert np.all(np.isnan(result))
+
+
+def test_pca_cov_identity_input() -> None:
+    """pca_cov on the identity matrix must return a positive-definite matrix."""
+    eye_mat = np.eye(3)
+    result = pca_cov(eye_mat, k=2)
+    assert result.shape == (3, 3)
+    eigvals = np.linalg.eigvalsh(result)
+    assert np.all(eigvals > 0)

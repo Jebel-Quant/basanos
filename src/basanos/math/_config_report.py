@@ -23,6 +23,8 @@ import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
 
+from .optimizer import CovarianceMode
+
 if TYPE_CHECKING:
     from .optimizer import BasanosConfig, BasanosEngine
 
@@ -394,6 +396,85 @@ def _lambda_sweep_fig(engine: BasanosEngine, n_points: int = 21) -> go.Figure:
     return fig
 
 
+# ── PCA-component-sweep chart ─────────────────────────────────────────────────
+
+
+def _pca_sweep_fig(engine: BasanosEngine, max_k: int | None = None) -> go.Figure:
+    """Build a Plotly figure showing annualised Sharpe vs PCA component count *k*.
+
+    Args:
+        engine: The engine to sweep.  All parameters other than
+            ``pca_components`` are held fixed; the engine is run in PCA mode
+            regardless of its current ``covariance_mode`` setting.
+        max_k: Maximum number of components to sweep up to.  Defaults to the
+            number of assets in the engine.
+
+    Returns:
+        A :class:`plotly.graph_objects.Figure`.
+    """
+    n_assets = len(engine.assets)
+    max_k = min(max_k, n_assets) if max_k is not None else n_assets
+    ks = list(range(1, max_k + 1))
+    sharpes = [engine.sharpe_at_pca_components(int(k)) for k in ks]
+
+    current_k = min(engine.cfg.pca_components, n_assets)
+    # Reuse the already-computed Sharpe if current_k is within the sweep range;
+    # otherwise compute it separately (e.g. when pca_components > max_k).
+    current_sharpe = sharpes[current_k - 1] if 1 <= current_k <= max_k else engine.sharpe_at_pca_components(current_k)
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=ks,
+            y=sharpes,
+            mode="lines+markers",
+            name="Sharpe(k)",
+            line={"color": "#68d391", "width": 2},
+            marker={"size": 5, "color": "#68d391"},
+            hovertemplate="k = %{x}<br>Sharpe = %{y:.3f}<extra></extra>",
+        )
+    )
+
+    # Current k marker
+    fig.add_trace(
+        go.Scatter(
+            x=[current_k],
+            y=[current_sharpe],
+            mode="markers",
+            name=f"Current k = {current_k}",
+            marker={"size": 12, "color": "#f6ad55", "symbol": "diamond"},
+            hovertemplate=f"Current k = {current_k}<br>Sharpe = {current_sharpe:.3f}<extra></extra>",
+        )
+    )
+
+    fig.update_layout(
+        title={
+            "text": "Annualised Sharpe Ratio vs PCA Component Count k",
+            "font": {"color": "#e2e8f0", "size": 15},
+        },
+        xaxis={
+            "title": "PCA components k  (1 = single factor, n = full rank)",
+            "color": "#a0aec0",
+            "gridcolor": "#2d3748",
+            "title_font": {"color": "#a0aec0"},
+            "dtick": 1,
+        },
+        yaxis={
+            "title": "Annualised Sharpe Ratio",
+            "color": "#a0aec0",
+            "gridcolor": "#2d3748",
+            "title_font": {"color": "#a0aec0"},
+        },
+        paper_bgcolor="#1a202c",
+        plot_bgcolor="#1a202c",
+        font={"color": "#e2e8f0"},
+        legend={"bgcolor": "#1a202c", "bordercolor": "#2d3748", "borderwidth": 1},
+        margin={"t": 60, "b": 50, "l": 60, "r": 20},
+    )
+    return fig
+
+
 # ── Guidance table ────────────────────────────────────────────────────────────
 
 _GUIDANCE_ROWS = [
@@ -556,6 +637,7 @@ class ConfigReport:
 
         # ── Lambda sweep ───────────────────────────────────────────────────
         has_engine = self.engine is not None
+        is_pca_mode = cfg.covariance_mode == CovarianceMode.pca
         if has_engine:
             try:
                 fig = _lambda_sweep_fig(self.engine)  # type: ignore[arg-type]
@@ -572,11 +654,37 @@ class ConfigReport:
                 "</p>"
             )
 
+        # ── PCA component sweep ────────────────────────────────────────────
+        if has_engine and is_pca_mode:
+            try:
+                pca_fig = _pca_sweep_fig(self.engine)  # type: ignore[arg-type]
+                pca_div = _figure_div(pca_fig, include_plotlyjs=False)
+                pca_sweep_section = f'<div class="chart-card">{pca_div}</div>'
+            except Exception as exc:
+                pca_sweep_section = f'<p class="chart-unavailable">PCA sweep unavailable: {exc}</p>'
+        elif has_engine and not is_pca_mode:
+            pca_sweep_section = (
+                '<p class="chart-unavailable" style="padding:1.5rem;">'
+                "PCA component sweep is available when "
+                "<code>covariance_mode=&#x27;pca&#x27;</code> is set in "
+                "<strong>BasanosConfig</strong>."
+                "</p>"
+            )
+        else:
+            pca_sweep_section = (
+                '<p class="chart-unavailable" style="padding:1.5rem;">'
+                "PCA component sweep is available when accessing this report via "
+                "<code>engine.config_report</code> with "
+                "<code>covariance_mode=&#x27;pca&#x27;</code>."
+                "</p>"
+            )
+
         # ── Guidance table ─────────────────────────────────────────────────
         guidance_html = _guidance_table_html()
 
         # ── TOC links ──────────────────────────────────────────────────────
         toc_lambda = '<a href="#lambda-sweep">Lambda Sweep</a>' if has_engine else ""
+        toc_pca = '<a href="#pca-sweep">PCA Sweep</a>' if has_engine else ""
         toc_extra_sep = "&nbsp;&nbsp;" if has_engine else ""
 
         # ── Assemble HTML ──────────────────────────────────────────────────
@@ -598,12 +706,14 @@ class ConfigReport:
     <span><strong>clip:</strong> {cfg.clip}</span>
     <span><strong>shrink&nbsp;(λ):</strong> {cfg.shrink}</span>
     <span><strong>AUM:</strong> {cfg.aum:,.0f}</span>
+    <span><strong>cov&nbsp;mode:</strong> {cfg.covariance_mode.value}</span>
   </div>
 </header>
 
 <nav class="toc">
   <a href="#parameters">Parameters</a>
   {toc_extra_sep}{toc_lambda}
+  {toc_extra_sep}{toc_pca}
   <a href="#guidance">Shrinkage Guidance</a>
   <a href="#theory">Theory</a>
 </nav>
@@ -618,6 +728,11 @@ class ConfigReport:
   <section class="section" id="lambda-sweep">
     <h2 class="section-title">Lambda (Shrinkage) Sweep</h2>
     {sweep_section}
+  </section>
+
+  <section class="section" id="pca-sweep">
+    <h2 class="section-title">PCA Component Count Sweep</h2>
+    {pca_sweep_section}
   </section>
 
   <section class="section" id="guidance">

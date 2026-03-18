@@ -62,6 +62,7 @@ dataset sizes.
 
 import dataclasses
 import logging
+from enum import StrEnum
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -81,12 +82,33 @@ from ..exceptions import (
     SingularMatrixError,
 )
 from ._linalg import inv_a_norm, solve, valid
-from ._signal import shrink2id, vol_adj
+from ._signal import pca_cov, shrink2id, vol_adj
 
 if TYPE_CHECKING:
     from ._config_report import ConfigReport
 
 _logger = logging.getLogger(__name__)
+
+
+class CovarianceMode(StrEnum):
+    """Covariance estimation mode for the position sizing pipeline.
+
+    Attributes:
+        ewma_shrink: EWMA correlation matrix with linear shrinkage toward the
+            identity (``C_shrunk = λ·C_EWMA + (1-λ)·I``).  This is the
+            **default** and produces a full-rank, well-conditioned matrix
+            across all asset counts.
+        pca: PCA-based factor model reconstruction.  The EWMA correlation
+            matrix is decomposed into its principal components; only the top
+            ``cfg.pca_components`` eigenvectors are retained, and the
+            remaining directions are filled with the average residual
+            eigenvalue (noise floor).  This separates systematic factors
+            from estimation noise and is particularly effective when the
+            asset count *n* is large relative to the lookback *T*.
+    """
+
+    ewma_shrink = "ewma_shrink"
+    pca = "pca"
 
 
 def _ewm_corr_numpy(
@@ -398,6 +420,31 @@ class BasanosConfig(BaseModel):
             "that are almost entirely null."
         ),
     )
+    covariance_mode: CovarianceMode = Field(
+        default=CovarianceMode.ewma_shrink,
+        description=(
+            "Covariance estimation mode used in the position sizing pipeline. "
+            "'ewma_shrink' (default) applies linear shrinkage of the EWMA correlation "
+            "matrix toward the identity: C_shrunk = λ·C_EWMA + (1-λ)·I. "
+            "'pca' reconstructs the covariance matrix from the top pca_components "
+            "principal components plus a scalar noise floor, separating systematic "
+            "factors from estimation noise."
+        ),
+    )
+    pca_components: int = Field(
+        default=10,
+        gt=0,
+        description=(
+            "Number of principal components k to retain when covariance_mode='pca'. "
+            "The top k eigenvectors of the EWMA correlation matrix are used to "
+            "reconstruct the factor covariance; the remaining directions are assigned "
+            "the average residual eigenvalue (noise floor) to ensure positive definiteness. "
+            "Values larger than the asset count N are automatically clipped to N. "
+            "Increasing k captures more correlation structure at the cost of reintroducing "
+            "noisy small eigenvalues; decreasing k towards 1 gives a single-factor model. "
+            "Ignored when covariance_mode='ewma_shrink'."
+        ),
+    )
 
     model_config = {"frozen": True, "extra": "forbid"}
 
@@ -703,8 +750,12 @@ class BasanosEngine:
             # get the correlation matrix for this timestamp
             corr_n = cor[t]
 
-            # shrink the correlation matrix towards identity
-            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            # build the covariance matrix for this timestamp according to the mode
+            corr_sub = corr_n[np.ix_(mask, mask)]
+            if self.cfg.covariance_mode == CovarianceMode.pca:
+                matrix = pca_cov(corr_sub, k=self.cfg.pca_components)
+            else:
+                matrix = shrink2id(corr_sub, lamb=self.cfg.shrink)
 
             # get the expected-return vector for this timestamp
             expected_mu = np.nan_to_num(mu[i][mask])
@@ -1047,6 +1098,54 @@ class BasanosEngine:
             True
         """
         new_cfg = self.cfg.model_copy(update={"shrink": shrink})
+        engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
+        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+
+    def sharpe_at_pca_components(self, k: int) -> float:
+        r"""Return the annualised portfolio Sharpe ratio for PCA mode with *k* components.
+
+        Constructs a new :class:`BasanosEngine` with ``covariance_mode`` set to
+        :attr:`CovarianceMode.pca` and ``pca_components`` set to *k* (all other
+        parameters are held fixed), then returns the annualised Sharpe ratio of
+        the resulting portfolio.
+
+        Use this to sweep *k* across a range of values and measure the
+        sensitivity of the Sharpe ratio to the number of retained principal
+        components:
+
+        * **k = 1** — single systematic factor (most aggressive noise reduction).
+        * **k = n** — full-rank reconstruction (PCA degenerates toward the raw
+          EWMA matrix but with a noise floor).
+        * **k ≈ n/4** — often a practical sweet spot for financial return data.
+
+        Args:
+            k: Number of PCA components to retain.  Must be a positive integer;
+                values larger than the asset count are silently clipped to the
+                asset count inside :func:`~basanos.math._signal.pca_cov`.
+
+        Returns:
+            Annualised Sharpe ratio of the portfolio returns as a ``float``.
+            Returns ``float("nan")`` when the Sharpe ratio cannot be computed
+            (e.g. zero-variance returns).
+
+        Raises:
+            pydantic.ValidationError: When *k* is not a positive integer.
+
+        Examples:
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine, CovarianceMode
+            >>> dates = pl.Series("date", list(range(200)))
+            >>> rng = np.random.default_rng(0)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
+            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> s = engine.sharpe_at_pca_components(1)
+            >>> isinstance(s, float)
+            True
+        """
+        new_cfg = self.cfg.model_copy(update={"covariance_mode": CovarianceMode.pca, "pca_components": k})
         engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
         return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
 

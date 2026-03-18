@@ -28,3 +28,4 @@ Notes:
 # Public re-exports (explicit aliases so linters recognize intent)
 from .optimizer import BasanosConfig as BasanosConfig
 from .optimizer import BasanosEngine as BasanosEngine
+from .optimizer import CovarianceMode as CovarianceMode

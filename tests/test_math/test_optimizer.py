@@ -249,6 +249,146 @@ def test_basanos_config_new_fields_validation():
         BasanosConfig(**base, max_nan_fraction=1.0)
 
 
+# ─── CovarianceMode enum ──────────────────────────────────────────────────────
+
+
+def test_covariance_mode_values() -> None:
+    """CovarianceMode must expose ewma_shrink and pca members."""
+    from basanos.math.optimizer import CovarianceMode
+
+    assert CovarianceMode.ewma_shrink.value == "ewma_shrink"
+    assert CovarianceMode.pca.value == "pca"
+
+
+def test_covariance_mode_is_str_enum() -> None:
+    """CovarianceMode members must compare equal to their string values."""
+    from basanos.math.optimizer import CovarianceMode
+
+    assert CovarianceMode.ewma_shrink == "ewma_shrink"
+    assert CovarianceMode.pca == "pca"
+
+
+def test_covariance_mode_exported_from_math_package() -> None:
+    """CovarianceMode must be importable from basanos.math."""
+    from basanos.math import CovarianceMode  # noqa: F401
+
+
+# ─── BasanosConfig PCA fields ─────────────────────────────────────────────────
+
+
+def test_basanos_config_pca_fields_default() -> None:
+    """covariance_mode defaults to ewma_shrink; pca_components defaults to 10."""
+    from basanos.math.optimizer import CovarianceMode
+
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6)
+    assert cfg.covariance_mode == CovarianceMode.ewma_shrink
+    assert cfg.pca_components == 10
+
+
+def test_basanos_config_pca_mode_can_be_set_via_string() -> None:
+    """covariance_mode accepts the string 'pca' as well as the enum member."""
+    from basanos.math.optimizer import CovarianceMode
+
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6, covariance_mode="pca")
+    assert cfg.covariance_mode == CovarianceMode.pca
+
+
+def test_basanos_config_pca_components_custom_value() -> None:
+    """pca_components accepts any positive integer."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6, pca_components=5)
+    assert cfg.pca_components == 5
+
+
+def test_basanos_config_pca_components_rejects_zero() -> None:
+    """pca_components must reject zero (gt=0 constraint)."""
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6, pca_components=0)
+
+
+def test_basanos_config_frozen_with_pca_fields() -> None:
+    """BasanosConfig with PCA fields set must be frozen (immutable)."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6, covariance_mode="pca", pca_components=3)
+    with pytest.raises((TypeError, AttributeError, ValueError)):
+        cfg.pca_components = 5  # type: ignore[misc]
+
+
+# ─── BasanosEngine PCA covariance mode ───────────────────────────────────────
+
+
+@pytest.fixture
+def pca_engine(optimizer_prices: pl.DataFrame, optimizer_mu: pl.DataFrame) -> BasanosEngine:
+    """BasanosEngine in PCA mode with 2 components for integration tests."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6, covariance_mode="pca", pca_components=2)
+    return BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=cfg)
+
+
+def test_pca_mode_cash_position_shape(pca_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
+    """cash_position in PCA mode must return a DataFrame with the expected shape."""
+    cp = pca_engine.cash_position
+    assert cp.shape == optimizer_prices.shape
+
+
+def test_pca_mode_cash_position_has_date_column(pca_engine: BasanosEngine) -> None:
+    """cash_position in PCA mode must include the 'date' column."""
+    assert "date" in pca_engine.cash_position.columns
+
+
+def test_pca_mode_produces_finite_positions(pca_engine: BasanosEngine) -> None:
+    """Positions after the warmup period must be finite in PCA mode."""
+    cp = pca_engine.cash_position
+    assets = [c for c in cp.columns if c != "date"]
+    # Skip the warmup rows (first corr=32 rows)
+    late_cp = cp.slice(33)
+    for asset in assets:
+        col = late_cp[asset].drop_nulls()
+        assert col.len() > 0
+        assert all(math.isfinite(v) for v in col.to_list())
+
+
+def test_pca_mode_portfolio_has_positive_aum(pca_engine: BasanosEngine) -> None:
+    """Portfolio constructed in PCA mode must have non-empty accumulated NAV."""
+    nav = pca_engine.portfolio.nav_accumulated
+    # At least some NAV values should exist after warmup
+    assert nav.height > 0
+
+
+def test_sharpe_at_pca_components_returns_float(optimizer_prices, optimizer_mu) -> None:
+    """sharpe_at_pca_components must return a float."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=cfg)
+    s = engine.sharpe_at_pca_components(1)
+    assert isinstance(s, float)
+
+
+def test_sharpe_at_pca_components_sweeps_different_values(optimizer_prices, optimizer_mu) -> None:
+    """sharpe_at_pca_components called with different k values must not all return NaN."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=cfg)
+    sharpes = [engine.sharpe_at_pca_components(k) for k in [1, 2]]
+    assert any(math.isfinite(s) for s in sharpes)
+
+
+def test_sharpe_at_pca_components_uses_pca_mode(optimizer_prices, optimizer_mu) -> None:
+    """sharpe_at_pca_components must produce a different result than ewma_shrink mode.
+
+    The two modes should produce distinct Sharpe ratios in general, confirming
+    that the PCA covariance matrix is actually being used.
+    """
+    from basanos.math.optimizer import CovarianceMode
+
+    base_cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=base_cfg)
+
+    # sharpe_at_pca_components must internally use pca mode.
+    # Verify by building an equivalent engine directly in pca mode and comparing.
+    pca_cfg = base_cfg.model_copy(update={"covariance_mode": CovarianceMode.pca, "pca_components": 2})
+    pca_engine = BasanosEngine(prices=optimizer_prices, mu=optimizer_mu, cfg=pca_cfg)
+    expected_sharpe = float(pca_engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+
+    actual_sharpe = engine.sharpe_at_pca_components(2)
+    assert math.isclose(actual_sharpe, expected_sharpe, rel_tol=1e-9)
+
+
 # ─── BasanosEngine construction validation ────────────────────────────────────
 
 

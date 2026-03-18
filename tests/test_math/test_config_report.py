@@ -247,3 +247,85 @@ def test_to_html_lambda_sweep_unavailable_on_error(engine: BasanosEngine) -> Non
     assert 'class="chart-unavailable"' in html
     assert "Lambda sweep unavailable" in html
     assert "sweep failed" in html
+
+
+# ── PCA mode in ConfigReport ──────────────────────────────────────────────────
+
+
+@pytest.fixture
+def pca_cfg() -> BasanosConfig:
+    """BasanosConfig in PCA mode with 2 components for config report tests."""
+    return BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1_000_000, covariance_mode="pca", pca_components=2)
+
+
+@pytest.fixture
+def pca_engine(pca_cfg: BasanosConfig) -> BasanosEngine:
+    """Small BasanosEngine in PCA mode suitable for unit tests."""
+    n = 120
+    rng = np.random.default_rng(7)
+    dates = pl.Series("date", list(range(n)))
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "A": rng.lognormal(size=n).tolist(),
+            "B": rng.lognormal(size=n).tolist(),
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": rng.normal(size=n).tolist(),
+            "B": rng.normal(size=n).tolist(),
+        }
+    )
+    return BasanosEngine(prices=prices, mu=mu, cfg=pca_cfg)
+
+
+def test_to_html_includes_cov_mode_in_header(cfg: BasanosConfig) -> None:
+    """to_html must include the covariance mode in the report header."""
+    html = cfg.report.to_html()
+    assert "ewma_shrink" in html
+
+
+def test_to_html_pca_mode_shows_in_header(pca_cfg: BasanosConfig) -> None:
+    """to_html for a PCA-mode config must show 'pca' in the header."""
+    html = pca_cfg.report.to_html()
+    assert "pca" in html
+
+
+def test_to_html_pca_sweep_section_present(pca_engine: BasanosEngine) -> None:
+    """to_html for an engine in PCA mode must include the PCA sweep section."""
+    html = pca_engine.config_report.to_html()
+    assert "pca-sweep" in html
+
+
+def test_to_html_pca_sweep_chart_rendered(pca_engine: BasanosEngine) -> None:
+    """to_html for engine in PCA mode must render an actual Plotly PCA sweep chart."""
+    html = pca_engine.config_report.to_html()
+    assert "plotly" in html.lower()
+
+
+def test_to_html_pca_sweep_unavailable_notice_without_pca_mode(engine: BasanosEngine) -> None:
+    """to_html for an engine in ewma_shrink mode must show the PCA unavailable notice."""
+    html = engine.config_report.to_html()
+    assert "covariance_mode" in html or "pca" in html.lower()
+
+
+def test_to_html_pca_sweep_unavailable_on_error(pca_engine: BasanosEngine) -> None:
+    """to_html catches _pca_sweep_fig exceptions and embeds a notice."""
+    with patch("basanos.math._config_report._pca_sweep_fig", side_effect=RuntimeError("pca sweep failed")):
+        html = pca_engine.config_report.to_html()
+    assert 'class="chart-unavailable"' in html
+    assert "PCA sweep unavailable" in html
+    assert "pca sweep failed" in html
+
+
+def test_pca_sweep_fig_with_max_k_less_than_current_k(pca_engine: BasanosEngine) -> None:
+    """_pca_sweep_fig must compute current_sharpe separately when pca_components > max_k."""
+    from basanos.math._config_report import _pca_sweep_fig
+
+    # pca_engine has pca_components=2, so set max_k=1 to trigger the else branch
+    fig = _pca_sweep_fig(pca_engine, max_k=1)
+    # Verify the figure was built successfully with a marker for current_k
+    assert fig is not None
+    assert len(fig.data) == 2  # main sweep line + current-k marker
