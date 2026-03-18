@@ -16,16 +16,16 @@ change is introduced.
 
 | Property           | Value                                  |
 |--------------------|----------------------------------------|
-| Date               | 2026-03-16                             |
+| Date               | 2026-03-18                             |
 | Python             | CPython 3.12 (`.python-version`)       |
 | Benchmark Python   | CPython 3.12.3 (GitHub Actions runner) |
 | OS                 | Linux (Ubuntu, Azure runner)           |
 | CPU                | AMD EPYC 7763 64-Core Processor        |
-| CPU speed          | 3.16 GHz                               |
+| CPU speed          | 3.25 GHz                               |
 | CPU cores          | 4 (virtual, Azure Standard DS2 v2)     |
 | pytest-benchmark   | 5.2.3                                  |
-| basanos version    | 0.2.2                                  |
-| Commit             | `7fafc1d`                              |
+| basanos version    | 0.3.0                                  |
+| Commit             | `86fb095`                              |
 
 Dataset sizes used in the benchmarks:
 
@@ -47,39 +47,39 @@ in [`benchmarks/results/baseline.json`](benchmarks/results/baseline.json).
 
 | Benchmark                     | Mean      | Min       | Std Dev  | OPS   | Rounds |
 | ----------------------------- | --------- | --------- | -------- | ----- | ------ |
-| test_profits_252_5            | 3.340 ms  | 3.126 ms  | 93.2 µs  | 299   | 239    |
-| test_profits_1260_5           | 3.361 ms  | 3.212 ms  | 76.6 µs  | 298   | 266    |
-| test_profits_252_20           | 12.283 ms | 11.969 ms | 188.0 µs | 81    | 79     |
-| test_nav_accumulated_252_5    | 3.719 ms  | 3.394 ms  | 162.8 µs | 269   | 239    |
-| test_nav_compounded_252_5     | 3.790 ms  | 3.668 ms  | 75.0 µs  | 264   | 258    |
-| test_drawdown_252_5           | 3.920 ms  | 3.766 ms  | 74.4 µs  | 255   | 223    |
-| test_drawdown_1260_5          | 3.992 ms  | 3.855 ms  | 90.9 µs  | 251   | 230    |
-| test_monthly_252_5            | 4.504 ms  | 4.382 ms  | 57.6 µs  | 222   | 200    |
-| test_tilt_timing_decomp_252_5 | 16.214 ms | 15.747 ms | 272.7 µs | 62    | 61     |
-| test_all_252_5                | 8.028 ms  | 7.855 ms  | 120.3 µs | 125   | 121    |
+| test_profits_252_5            | 3.257 ms  | 3.127 ms  | 89.3 µs  | 307   | 222    |
+| test_profits_1260_5           | 3.303 ms  | 3.139 ms  | 89.2 µs  | 303   | 290    |
+| test_profits_252_20           | 12.012 ms | 11.661 ms | 209.1 µs | 83    | 81     |
+| test_nav_accumulated_252_5    | 3.613 ms  | 3.450 ms  | 125.3 µs | 277   | 253    |
+| test_nav_compounded_252_5     | 4.051 ms  | 3.420 ms  | 619.5 µs | 247   | 260    |
+| test_drawdown_252_5           | 3.860 ms  | 3.465 ms  | 360.4 µs | 259   | 243    |
+| test_drawdown_1260_5          | 3.928 ms  | 3.730 ms  | 217.4 µs | 255   | 249    |
+| test_monthly_252_5            | 4.396 ms  | 4.172 ms  | 120.6 µs | 227   | 177    |
+| test_tilt_timing_decomp_252_5 | 15.758 ms | 15.416 ms | 223.0 µs | 64    | 61     |
+| test_all_252_5                | 7.940 ms  | 7.671 ms  | 445.7 µs | 126   | 128    |
 
 ### Stats
 
 | Benchmark              | Mean     | Min      | Std Dev | OPS    | Rounds |
 | ---------------------- | -------- | -------- | ------- | ------ | ------ |
-| test_volatility_252    | 204.3 µs | 185.2 µs | 11.0 µs | 4,894  | 3128   |
-| test_sharpe_252        | 201.6 µs | 188.7 µs | 10.2 µs | 4,959  | 4152   |
-| test_value_at_risk_252 | 72.8 µs  | 68.1 µs  | 7.1 µs  | 13,741 | 4013   |
-| test_summary_252       | 868.5 µs | 827.8 µs | 20.4 µs | 1,151  | 754    |
-| test_summary_1260      | 890.6 µs | 839.4 µs | 29.8 µs | 1,123  | 1032   |
+| test_volatility_252    | 196.2 µs | 178.7 µs | 11.8 µs | 5,098  | 3258   |
+| test_sharpe_252        | 201.2 µs | 180.9 µs | 11.6 µs | 4,970  | 3745   |
+| test_value_at_risk_252 | 72.0 µs  | 67.4 µs  | 6.8 µs  | 13,884 | 3463   |
+| test_summary_252       | 4.138 ms | 4.004 ms | 71.9 µs | 242    | 199    |
+| test_summary_1260      | 4.365 ms | 4.181 ms | 89.1 µs | 229    | 221    |
 
 ### BasanosEngine
 
 | Benchmark                 | Mean       | Min        | Std Dev  | OPS   | Rounds |
 | ------------------------- | ---------- | ---------- | -------- | ----- | ------ |
-| test_ret_adj_252_5        | 437.3 µs   | 394.8 µs   | 24.0 µs  | 2,287 | 1736   |
-| test_vola_252_5           | 255.8 µs   | 218.0 µs   | 11.7 µs  | 3,910 | 4022   |
-| test_cor_252_5            | 1.240 ms   | 1.196 ms   | 20.4 µs  | 807   | 613    |
-| test_cor_1260_5           | 5.351 ms   | 5.273 ms   | 35.8 µs  | 187   | 189    |
-| test_cor_252_20           | 13.590 ms  | 13.274 ms  | 677.4 µs | 74    | 71     |
-| test_cash_position_252_5  | 56.321 ms  | 51.665 ms  | 2.644 ms | 18    | 18     |
-| test_cash_position_1260_5 | 221.709 ms | 219.001 ms | 2.715 ms | 5     | 5      |
-| test_portfolio_252_5      | 54.340 ms  | 50.828 ms  | 1.614 ms | 18    | 20     |
+| test_ret_adj_252_5        | 427.3 µs   | 403.4 µs   | 13.8 µs  | 2,340 | 1804   |
+| test_vola_252_5           | 251.9 µs   | 219.5 µs   | 19.0 µs  | 3,970 | 4209   |
+| test_cor_252_5            | 1.236 ms   | 1.195 ms   | 20.1 µs  | 809   | 601    |
+| test_cor_1260_5           | 5.047 ms   | 4.897 ms   | 99.1 µs  | 198   | 212    |
+| test_cor_252_20           | 13.387 ms  | 13.096 ms  | 218.5 µs | 75    | 70     |
+| test_cash_position_252_5  | 68.279 ms  | 67.143 ms  | 1.057 ms | 15    | 14     |
+| test_cash_position_1260_5 | 343.011 ms | 341.686 ms | 1.129 ms | 3     | 5      |
+| test_portfolio_252_5      | 68.545 ms  | 67.227 ms  | 769.7 µs | 15    | 15     |
 
 ---
 
