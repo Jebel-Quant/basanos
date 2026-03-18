@@ -78,6 +78,7 @@ from ..exceptions import (
     MonotonicPricesError,
     NonPositivePricesError,
     ShapeMismatchError,
+    SingularMatrixError,
 )
 from ._linalg import inv_a_norm, solve, valid
 from ._signal import shrink2id, vol_adj
@@ -802,7 +803,11 @@ class BasanosEngine:
             if np.allclose(expected_mu, 0.0):
                 residuals.append(0.0)
                 continue
-            x = solve(matrix, expected_mu)
+            try:
+                x = solve(matrix, expected_mu)
+            except SingularMatrixError:
+                residuals.append(float(np.nan))
+                continue
             finite_x = np.isfinite(x)
             if not finite_x.any():
                 residuals.append(float(np.nan))
@@ -854,7 +859,10 @@ class BasanosEngine:
             if np.allclose(expected_mu, 0.0):
                 util_np[i, mask] = 0.0
                 continue
-            x = solve(matrix, expected_mu)
+            try:
+                x = solve(matrix, expected_mu)
+            except SingularMatrixError:
+                continue
             with np.errstate(divide="ignore", invalid="ignore"):
                 ratio = np.where(np.abs(expected_mu) > _mu_tol, x / expected_mu, np.nan)
             util_np[i, mask] = ratio
