@@ -6,6 +6,7 @@ Examples:
     'basanos'
 """
 
+from basanos._logging import JSONFormatter as JSONFormatter
 from basanos.exceptions import (
     BasanosError as BasanosError,
 )

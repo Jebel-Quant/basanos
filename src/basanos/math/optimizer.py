@@ -724,6 +724,13 @@ class BasanosEngine:
                         t,
                         denom,
                         self.cfg.denom_tol,
+                        extra={
+                            "context": {
+                                "t": str(t),
+                                "denom": denom,
+                                "denom_tol": self.cfg.denom_tol,
+                            }
+                        },
                     )
                     pos = np.zeros_like(expected_mu)
                 else:
