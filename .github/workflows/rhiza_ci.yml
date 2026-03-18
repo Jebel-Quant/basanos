@@ -11,6 +11,7 @@ name: (RHIZA) CI
 
 permissions:
   contents: read
+  actions: read
 
 on:
   push:
@@ -81,6 +82,14 @@ jobs:
         run: |
           make test
 
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: _tests/coverage.json
+          overwrite: true
+          if-no-files-found: ignore
+
 
   docs-coverage:
     runs-on: ubuntu-latest
@@ -103,3 +112,43 @@ jobs:
           UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
         run: |
           make docs-coverage
+
+  coverage-badge:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6.0.2
+        with:
+          token: ${{ secrets.GH_PAT || github.token }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7.6.0
+        with:
+          version: "0.10.11"
+
+      - name: Download coverage report
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-report
+          path: _tests/
+
+      - name: Generate coverage badge
+        run: |
+          mkdir -p assets
+          uvx genbadge coverage -i _tests/coverage.json -o assets/coverage-badge.svg
+
+      - name: Commit coverage badge
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add assets/coverage-badge.svg
+          if ! git diff --staged --quiet; then
+            git commit -m "chore: update coverage badge [skip ci]"
+            git push
+          else
+            echo "Coverage badge unchanged, skipping commit"
+          fi
