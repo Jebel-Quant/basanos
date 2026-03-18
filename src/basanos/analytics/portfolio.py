@@ -9,7 +9,14 @@ import dataclasses
 import polars as pl
 import polars.selectors as cs
 
-from ..exceptions import IntegerIndexBoundError, MissingDateColumnError
+from ..exceptions import (
+    IntegerIndexBoundError,
+    InvalidCashPositionTypeError,
+    InvalidPricesTypeError,
+    MissingDateColumnError,
+    NonPositiveAumError,
+    RowCountMismatchError,
+)
 from ._plots import Plots
 from ._report import Report
 from ._stats import Stats
@@ -43,14 +50,14 @@ class Portfolio:
         """Validate input types, shapes, and parameters post-initialization."""
         # Input validation
         if not isinstance(self.prices, pl.DataFrame):
-            raise TypeError
+            raise InvalidPricesTypeError(type(self.prices).__name__)
         if not isinstance(self.cashposition, pl.DataFrame):
-            raise TypeError
+            raise InvalidCashPositionTypeError(type(self.cashposition).__name__)
 
         if self.cashposition.shape[0] != self.prices.shape[0]:
-            raise ValueError
+            raise RowCountMismatchError(self.prices.shape[0], self.cashposition.shape[0])
         if self.aum <= 0.0:
-            raise ValueError
+            raise NonPositiveAumError(self.aum)
 
     @classmethod
     def from_risk_position(
