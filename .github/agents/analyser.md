@@ -15,6 +15,7 @@ Your task:
 Journal mode:
 - Treat this as an ongoing analysis.
 - DO NOT rewrite or summarize existing content.
+- If `REPOSITORY_ANALYSIS.md` does not exist, create it with a brief title and description header before appending.
 - APPEND a new dated entry to the end of the file.
 - Each run should add new observations or refine previous ones if warranted.
 
