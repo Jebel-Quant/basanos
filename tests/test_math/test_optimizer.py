@@ -433,6 +433,46 @@ def test_optimize_with_zero_mu_returns_zero_positions(optimizer_prices):
         assert np.allclose(tail[c].to_numpy(), 0.0, rtol=0, atol=0)
 
 
+def test_shrink_zero_identity_case() -> None:
+    """With shrink=0, C_shrunk = I, so solve(I, mu) = mu (up to normalisation).
+
+    When the correlation matrix is replaced entirely by the identity, each
+    asset's solved position is proportional to its expected-return signal
+    (undeflected by cross-asset correlations).  Concretely, the *risk*
+    position — cash_position × vola — must point in the same direction as
+    mu at every timestamp after the warm-up period where mu is non-zero.
+    """
+    prices, mu = _make_prices_mu(80)
+    cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.0, aum=1e6)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+    warmup = cfg.corr
+    assets = engine.assets
+
+    mu_arr = mu.select(assets).to_numpy()
+    cp_arr = engine.cash_position.select(assets).to_numpy()
+    vola_arr = engine.vola.select(assets).to_numpy()
+
+    for i in range(warmup, prices.height):
+        mu_row = mu_arr[i]
+        # Skip timestamps where the signal is zero (no trade taken)
+        if np.allclose(mu_row, 0.0):
+            continue
+
+        # risk_pos = cash_pos * vola is the un-volatility-scaled position
+        # When C = I: solve(I, mu) = mu, so risk_pos ∝ mu
+        risk_row = cp_arr[i] * vola_arr[i]
+
+        # Skip rows where risk position is zero (e.g. degenerate denominator during early warmup)
+        risk_norm = np.linalg.norm(risk_row)
+        if risk_norm < 1e-15:
+            continue
+
+        norm_risk = risk_row / risk_norm
+        norm_mu = mu_row / np.linalg.norm(mu_row)
+        np.testing.assert_allclose(norm_risk, norm_mu, atol=1e-10)
+
+
 # ─── cash_position: edge cases ────────────────────────────────────────────────
 
 
