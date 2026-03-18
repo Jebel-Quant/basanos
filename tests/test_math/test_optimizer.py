@@ -191,6 +191,8 @@ def test_basanos_config_new_fields_have_correct_defaults():
     assert cfg.profit_variance_decay == 0.99
     assert cfg.denom_tol == 1e-12
     assert cfg.position_scale == 1e6
+    assert cfg.min_corr_denom == 1e-14
+    assert cfg.max_nan_fraction == 0.9
 
 
 def test_basanos_config_new_fields_accept_custom_values():
@@ -205,11 +207,15 @@ def test_basanos_config_new_fields_accept_custom_values():
         profit_variance_decay=0.95,
         denom_tol=1e-8,
         position_scale=1e4,
+        min_corr_denom=1e-10,
+        max_nan_fraction=0.5,
     )
     assert cfg.profit_variance_init == 2.0
     assert cfg.profit_variance_decay == 0.95
     assert cfg.denom_tol == 1e-8
     assert cfg.position_scale == 1e4
+    assert cfg.min_corr_denom == 1e-10
+    assert cfg.max_nan_fraction == 0.5
 
 
 def test_basanos_config_new_fields_validation():
@@ -230,6 +236,15 @@ def test_basanos_config_new_fields_validation():
 
     with pytest.raises(ValueError, match=r".*"):
         BasanosConfig(**base, position_scale=-1.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, min_corr_denom=0.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, max_nan_fraction=0.0)
+
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**base, max_nan_fraction=1.0)
 
 
 # ─── BasanosEngine construction validation ────────────────────────────────────
@@ -351,7 +366,33 @@ def test_post_init_excessive_nan_raises(small_mu: pl.DataFrame) -> None:
     assert exc_info.value.max_fraction == pytest.approx(0.9)
 
 
-def test_post_init_monotonic_prices_raises(small_mu: pl.DataFrame) -> None:
+def test_post_init_excessive_nan_respects_config(small_mu: pl.DataFrame) -> None:
+    """max_nan_fraction from cfg should control the null gate."""
+    n = small_mu.height
+    dates = small_mu["date"]
+    b_ok = pl.Series([200.0, 203.1, 198.5, 206.4, 203.7, 209.2, 204.6, 212.3, 207.8, 214.5], dtype=pl.Float64)
+    # 5 out of 10 values are null (50% nulls) with non-monotonic prices in non-null rows
+    a_half_null = pl.Series([100.0, 102.3, 99.5, 103.7, 101.1, None, None, None, None, None], dtype=pl.Float64)
+
+    # with default max_nan_fraction=0.9, 50% nulls should pass
+    cfg_default = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    _ = BasanosEngine(
+        prices=pl.DataFrame({"date": dates, "A": a_half_null, "B": b_ok}),
+        mu=small_mu,
+        cfg=cfg_default,
+    )
+
+    # with a stricter max_nan_fraction=0.4, 50% nulls should raise
+    cfg_strict = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6, max_nan_fraction=0.4)
+    with pytest.raises(ExcessiveNullsError) as exc_info:
+        _ = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": a_half_null, "B": b_ok}),
+            mu=small_mu,
+            cfg=cfg_strict,
+        )
+    assert exc_info.value.asset == "A"
+    assert exc_info.value.max_fraction == pytest.approx(0.4)
+
     """Strictly monotonic price series should raise; non-monotonic should pass."""
     cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
     n = small_mu.height
