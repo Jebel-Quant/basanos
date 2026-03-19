@@ -3,6 +3,7 @@ ref: "v0.8.14"
 
 templates:
   - tests
+  - benchmarks
   - marimo
   - github
   - legal
