@@ -82,7 +82,7 @@ from ..exceptions import (
     ShapeMismatchError,
     SingularMatrixError,
 )
-from ._linalg import inv_a_norm, solve, valid
+from ._linalg import inv_a_norm, solve, valid, woodbury_factor_solve
 from ._signal import factor_extract, factor_project, shrink2id, vol_adj
 
 if TYPE_CHECKING:
@@ -722,6 +722,24 @@ class BasanosEngine:
         if self.cfg.n is None or self.cfg.k is None:
             raise ValueError(f"{caller} requires cfg.n and cfg.k to be set.")  # noqa: TRY003
 
+    def _safe_column_normalise(self, w: np.ndarray) -> np.ndarray:
+        """Return column-normalised w so that each column has norm <= 1.
+
+        Divides each column by its L2 norm, flooring at ``cfg.min_corr_denom``
+        to avoid division by zero.  The resulting matrix ``w_hat`` satisfies
+        ``w_hat.T @ w_hat = sample correlation matrix`` without ever forming
+        that m x m product explicitly.
+
+        Args:
+            w: Projection matrix of shape ``(k, s)``.
+
+        Returns:
+            np.ndarray: Column-normalised matrix of shape ``(k, s)``.
+        """
+        col_norms = np.linalg.norm(w, axis=0)
+        safe_norms = np.where(col_norms > self.cfg.min_corr_denom, col_norms, self.cfg.min_corr_denom)
+        return w / safe_norms[np.newaxis, :]
+
     @property
     def factor_returns_matrix(self) -> dict[object, np.ndarray]:
         r"""Rolling returns matrix of shape ``(n, m)`` at each timestamp.
@@ -753,31 +771,37 @@ class BasanosEngine:
 
         When ``cfg.n`` and ``cfg.k`` are both set the optimizer uses a
         **factor-model covariance** in place of the EWMA correlation matrix.
-        The rolling returns window R is fed from :meth:`_factor_window_iter`
-        one step at a time; at each step the k latent factors are extracted via
-        SVD and the assets are projected onto the factor space.  The resulting
-        low-rank covariance estimate ``Σ = Wᵀ W / k`` is normalised to a
-        correlation matrix, shrunk, and passed to the same linear solver used
-        in the standard path — so positions are computed in a single pass
-        without ever materialising the full collection of factor or projection
-        matrices.
+        At each step the generator yields one rolling window ``R`` of shape ``(n, m)``;
+        ``k`` latent factors are extracted via SVD and the assets are projected
+        onto the factor space to obtain ``W = C.T @ R`` of shape ``(k, m)``.
+
+        The column-normalized matrix ``W_hat`` (columns with norm <= 1) satisfies
+        ``W_hat.T @ W_hat = sample correlation matrix`` without ever forming that
+        m x m product.  The shrunk system
+        ``(lam * W_hat.T @ W_hat + (1-lam)*I) x = mu`` is solved via the
+        Woodbury matrix identity, reducing all operations to a single k x k system:
+
+        .. code-block:: none
+
+            G = I_k + (lam/(1-lam)) * W_hat @ W_hat.T    (k x k -- never m x m)
+            M_inv_mu = (1/(1-lam)) * [mu - (lam/(1-lam)) * W_hat.T @ G^-1 @ (W_hat @ mu)]
+
+        Cost per step: O(k*m + k**3) instead of O(m**2 + m**3) for the
+        explicit approach.  Peak memory: O(n*m) (one window at a time).
 
         When ``cfg.n`` and ``cfg.k`` are ``None`` (the default) the existing
-        EWMA correlation path is used.
+        EWMA correlation path is used unchanged.
 
         Returns:
             pl.DataFrame: DataFrame with columns ['date'] + asset names containing
             the per-timestamp cash positions (risk divided by EWMA volatility).
 
         Performance:
-            Standard path dominant cost is ``self.cor`` (O(T·N²) time,
-            O(T·N²) memory — see :func:`_ewm_corr_numpy`).  The per-timestamp
-            linear solve via Cholesky / LU decomposition adds O(N³) per row for
-            a total solve cost of O(T·N³).
+            EWMA path dominant cost is ``self.cor`` (O(T*N**2) time, O(T*N**2)
+            memory).  The per-timestamp linear solve adds O(N**3) per row.
 
-            Factor model path cost is O(T·n·m) for the rolling windows plus
-            O(T·n·k) for the truncated SVD — storage is O(n·m) at peak since
-            only one window is live at a time.
+            Factor model path: O(T·n·k) SVD + O(T·k·m) projections +
+            O(T·k³) Woodbury solves.  Storage: O(n·m) at peak.
         """
         assets = self.assets
         prices_num = self.prices.select(assets).to_numpy()
@@ -821,30 +845,53 @@ class BasanosEngine:
             if not mask.any():
                 continue
 
-            if use_factor:
-                # Factor model path: derive per-step covariance from W = factor_mat.T @ ret_window.
-                # Only the current window is live; factor_mat and projection are discarded after use.
-                ret_masked = cov_data[:, mask]  # (n, sum(mask))
-                factor_mat = factor_extract(ret_masked, k)  # (n, k)
-                projection = factor_project(factor_mat, ret_masked)  # (k, sum(mask))
-                sigma = projection.T @ projection / k  # low-rank covariance (sum(mask), sum(mask))
-                # normalise to a correlation matrix
-                std = np.sqrt(np.diag(sigma))
-                safe_std = np.where(std > self.cfg.min_corr_denom, std, 1.0)
-                corr_n = sigma / np.outer(safe_std, safe_std)
-                np.fill_diagonal(corr_n, 1.0)
-                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)
-            else:
-                # EWMA correlation path (existing behaviour)
-                matrix = shrink2id(cov_data, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-
             # get the expected-return vector for this timestamp
             expected_mu = np.nan_to_num(mu[i][mask])
 
-            # Short-circuit when signal is zero - no position needed, skip norm computation
+            # Short-circuit when signal is zero — no position needed
             if np.allclose(expected_mu, 0.0):
                 pos = np.zeros_like(expected_mu)
+            elif use_factor:
+                # Factor model path — all operations in R^k, no m x m matrix.
+                # 1. Extract rolling window for active assets only
+                ret_masked = cov_data[:, mask]  # (n, s) where s = sum(mask)
+                factor_mat = factor_extract(ret_masked, k)  # (n, k)
+                w_proj = factor_project(factor_mat, ret_masked)  # (k, s)
+                # 2. Normalize columns: w_hat.T @ w_hat = sample correlation, no fill_diagonal needed
+                w_hat = self._safe_column_normalise(w_proj)  # (k, s) — columns <= unit length
+                # 3. Woodbury solve: (lam * w_hat.T @ w_hat + (1-lam)*I) x = mu via k x k system
+                try:
+                    minv_mu, denom = woodbury_factor_solve(w_hat, expected_mu, self.cfg.shrink)
+                except SingularMatrixError:
+                    _logger.warning(
+                        "Positions zeroed at t=%s: factor-model k x k system is singular. "
+                        "Check that cfg.shrink < 1 and that the return window has sufficient variation.",
+                        t,
+                        extra={"context": {"t": str(t)}},
+                    )
+                    pos = np.zeros_like(expected_mu)
+                else:
+                    if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                        _logger.warning(
+                            "Positions zeroed at t=%s: normalisation denominator is degenerate "
+                            "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
+                            t,
+                            denom,
+                            self.cfg.denom_tol,
+                            extra={
+                                "context": {
+                                    "t": str(t),
+                                    "denom": denom,
+                                    "denom_tol": self.cfg.denom_tol,
+                                }
+                            },
+                        )
+                        pos = np.zeros_like(expected_mu)
+                    else:
+                        pos = minv_mu / denom
             else:
+                # EWMA correlation path (existing behaviour)
+                matrix = shrink2id(cov_data, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
                 # Normalize solution; guard against zero/near-zero norm to avoid NaNs.
                 # inv_a_norm returns float(np.nan) when no valid entries exist (never None).
                 denom = inv_a_norm(expected_mu, matrix)

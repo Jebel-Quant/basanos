@@ -1942,9 +1942,9 @@ class TestFactorModelEngine:
         NaN values are replaced with 0 (the neutral fill used before SVD).
 
         Three representative checkpoints are tested:
-        - ``n``: the first fully-populated window (no zero-padding)
-        - ``n + 5``: mid-series, well past warmup
-        - ``last``: the final timestamp, verifying end-of-series correctness
+        - n: the first fully-populated window (no zero-padding)
+        - n+5: mid-series, well past warmup
+        - last: the final timestamp, verifying end-of-series correctness
         """
         rm = engine.factor_returns_matrix
         ret_adj_np = engine.ret_adj.select(engine.assets).to_numpy()

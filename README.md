@@ -436,27 +436,31 @@ W = Cᵀ · R ∈ ℝ^(k × m)
 Each column of *W* is one asset's factor-exposure vector; each row is one
 factor's loading across the universe.
 
-**Step 4 — Low-rank covariance.**
-Form a rank-*k* sample covariance estimate in the original asset space:
+**Step 4 — Column-normalise W to obtain the correlation structure.**
+Divide each column of *W* by its L2 norm to obtain the unit-column matrix Ŵ:
 
 ```
-Σ = Wᵀ W / k ∈ ℝ^(m × m)
+Ŵ[:,i] = W[:,i] / ‖W[:,i]‖₂
 ```
 
-Dividing by *k* normalises the scale so that the diagonal entries are
-comparable across different values of *k*.
+The key identity: `Ŵᵀ Ŵ` *equals* the sample correlation matrix — but this
+m×m product is **never formed**. Instead, Ŵ is used directly inside the
+Woodbury solve (Step 5), keeping all operations in ℝᵏ.
 
-**Step 5 — Normalise to correlation and shrink.**
-Extract the standard deviations, normalise Σ entry-wise to a correlation
-matrix, then apply the same identity shrinkage used in the EWMA path:
+**Step 5 — Woodbury solve of the shrunk correlation system.**
+The shrunk system to solve is `(λ Ŵᵀ Ŵ + (1−λ) I) x = μ`. Applying the
+Woodbury matrix identity with `A = (1−λ)I`, `U = Ŵᵀ`, `C = λIₖ`, `V = Ŵ`:
 
 ```
-corr_ij = Σ_ij / sqrt(Σ_ii · Σ_jj)       (with diagonal forced to 1)
-C_shrunk = λ · corr + (1 − λ) · I
+G = Iₖ + λ/(1−λ) · Ŵ Ŵᵀ         (k×k — the only matrix ever formed)
+M⁻¹ μ = 1/(1−λ) · [μ − λ/(1−λ) · Ŵᵀ G⁻¹ (Ŵ μ)]
 ```
 
-The shrunk matrix is then passed to the same linear solver as the EWMA path
-— the rest of the position-sizing pipeline is identical.
+Only a **k×k** linear system is solved (G), and the remaining operations are
+two matrix-vector products `Ŵ μ` and `Ŵᵀ g`, each O(km). Total cost per
+step: O(km + k³) instead of O(m² + m³) for the explicit approach.
+The normalised position is then `x = M⁻¹ μ / ‖M⁻¹ μ‖_M`, identical to the
+EWMA path from this point onward.
 
 ### Constraints and configuration
 
@@ -477,8 +481,8 @@ cfg = BasanosConfig(
 
 | Path | Peak memory | Per-step compute |
 |------|------------|-----------------|
-| EWMA (default) | O(T · m²) | O(m²) per step via `lfilter` |
-| Factor model | **O(n · m)** | O(n · m) window + O(n · k) SVD per step |
+| EWMA (default) | O(T · m²) | O(m²) per step via `lfilter` + O(m³) solve |
+| Factor model | **O(n · m)** | O(n·k) SVD + O(k·m) projection + **O(k³)** Woodbury solve |
 
 The factor model is particularly advantageous when `m` is large and `k ≪ m`.
 

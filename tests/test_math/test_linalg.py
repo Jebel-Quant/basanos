@@ -18,7 +18,7 @@ from basanos.exceptions import (
     NonSquareMatrixError,
     SingularMatrixError,
 )
-from basanos.math._linalg import inv_a_norm, is_positive_definite, solve, valid
+from basanos.math._linalg import inv_a_norm, is_positive_definite, solve, valid, woodbury_factor_solve
 
 
 def test_non_quadratic() -> None:
@@ -354,3 +354,144 @@ def test_is_positive_definite_scalar() -> None:
 def test_is_positive_definite_scalar_zero() -> None:
     """A 1x1 zero matrix is not positive-definite."""
     assert is_positive_definite(np.array([[0.0]])) is False
+
+
+# ─── woodbury_factor_solve ────────────────────────────────────────────────────
+
+
+def _make_w_hat(rng: np.random.Generator, k: int, m: int) -> np.ndarray:
+    """Return a (k, m) matrix with unit-norm columns."""
+    w = rng.normal(size=(k, m))
+    col_norms = np.linalg.norm(w, axis=0)
+    return w / col_norms[np.newaxis, :]
+
+
+def test_woodbury_output_shapes() -> None:
+    """woodbury_factor_solve returns (m,) position vector and scalar denom."""
+    rng = np.random.default_rng(0)
+    w_hat = _make_w_hat(rng, k=3, m=8)
+    mu = rng.normal(size=8)
+    minv_mu, denom = woodbury_factor_solve(w_hat, mu, lam=0.5)
+    assert minv_mu.shape == (8,)
+    assert isinstance(denom, float)
+    assert denom > 0
+
+
+def test_woodbury_agrees_with_explicit_solve() -> None:
+    """Woodbury result must match the explicit m x m matrix solve to float precision."""
+    rng = np.random.default_rng(1)
+    k, m = 3, 8
+    lam = 0.6
+    w_hat = _make_w_hat(rng, k=k, m=m)
+    mu = rng.normal(size=m)
+
+    # Explicit m x m reference
+    m_mat = lam * (w_hat.T @ w_hat) + (1.0 - lam) * np.eye(m)
+    minv_mu_ref = np.linalg.solve(m_mat, mu)
+    denom_ref = float(np.sqrt(mu @ minv_mu_ref))
+    pos_ref = minv_mu_ref / denom_ref
+
+    # Woodbury
+    minv_mu, denom = woodbury_factor_solve(w_hat, mu, lam=lam)
+    pos = minv_mu / denom
+
+    np.testing.assert_allclose(minv_mu, minv_mu_ref, atol=1e-10)
+    np.testing.assert_allclose(denom, denom_ref, atol=1e-10)
+    np.testing.assert_allclose(pos, pos_ref, atol=1e-10)
+
+
+def test_woodbury_lam_zero_returns_mu() -> None:
+    """At lam=0 the shrunk matrix is I, so M⁻¹ μ = μ and denom = ||μ||₂."""
+    rng = np.random.default_rng(2)
+    w_hat = _make_w_hat(rng, k=2, m=5)
+    mu = rng.normal(size=5)
+    minv_mu, denom = woodbury_factor_solve(w_hat, mu, lam=0.0)
+    np.testing.assert_allclose(minv_mu, mu, atol=1e-12)
+    np.testing.assert_allclose(denom, float(np.linalg.norm(mu)), atol=1e-12)
+
+
+def test_woodbury_lam_one_raises() -> None:
+    """lam=1 gives a rank-deficient matrix; SingularMatrixError must be raised."""
+    rng = np.random.default_rng(3)
+    w_hat = _make_w_hat(rng, k=2, m=6)
+    mu = rng.normal(size=6)
+    with pytest.raises(SingularMatrixError):
+        woodbury_factor_solve(w_hat, mu, lam=1.0)
+
+
+def test_woodbury_lam_near_one_raises() -> None:
+    """Lam >= 1 always raises (1 - lam <= 0 → no valid shrinkage)."""
+    rng = np.random.default_rng(4)
+    w_hat = _make_w_hat(rng, k=2, m=4)
+    mu = rng.normal(size=4)
+    with pytest.raises(SingularMatrixError):
+        woodbury_factor_solve(w_hat, mu, lam=1.5)
+
+
+def test_woodbury_denom_positive() -> None:
+    """Denom must be strictly positive for a well-posed system."""
+    rng = np.random.default_rng(5)
+    for lam in (0.1, 0.3, 0.5, 0.7, 0.9):
+        w_hat = _make_w_hat(rng, k=3, m=7)
+        mu = rng.normal(size=7)
+        _, denom = woodbury_factor_solve(w_hat, mu, lam=lam)
+        assert denom > 0, f"Expected positive denom at lam={lam}"
+
+
+def test_woodbury_degenerate_signal_returns_nan_denom() -> None:
+    """A zero signal vector yields denom=nan (μᵀ M⁻¹ μ = 0)."""
+    rng = np.random.default_rng(6)
+    w_hat = _make_w_hat(rng, k=2, m=5)
+    mu = np.zeros(5)
+    _, denom = woodbury_factor_solve(w_hat, mu, lam=0.5)
+    assert not np.isfinite(denom) or denom == 0.0
+
+
+def test_woodbury_scale_invariance() -> None:
+    """Doubling μ doubles Minv_mu but leaves the normalised position x/denom unchanged."""
+    rng = np.random.default_rng(7)
+    w_hat = _make_w_hat(rng, k=3, m=6)
+    mu = rng.normal(size=6)
+    minv_mu1, denom1 = woodbury_factor_solve(w_hat, mu, lam=0.5)
+    minv_mu2, denom2 = woodbury_factor_solve(w_hat, 2.0 * mu, lam=0.5)
+
+    np.testing.assert_allclose(minv_mu2, 2.0 * minv_mu1, atol=1e-10)
+    np.testing.assert_allclose(denom2, 2.0 * denom1, atol=1e-10)
+    # Normalised position x = Minv_mu / denom is scale-invariant
+    np.testing.assert_allclose(minv_mu1 / denom1, minv_mu2 / denom2, atol=1e-10)
+
+
+def test_woodbury_k1_agrees_with_explicit() -> None:
+    """Single-factor case (k=1) must agree with the explicit m x m solve."""
+    rng = np.random.default_rng(8)
+    m = 10
+    w_hat = _make_w_hat(rng, k=1, m=m)
+    mu = rng.normal(size=m)
+    lam = 0.4
+
+    m_mat = lam * (w_hat.T @ w_hat) + (1.0 - lam) * np.eye(m)
+    minv_mu_ref = np.linalg.solve(m_mat, mu)
+    denom_ref = float(np.sqrt(mu @ minv_mu_ref))
+
+    minv_mu, denom = woodbury_factor_solve(w_hat, mu, lam=lam)
+    np.testing.assert_allclose(minv_mu, minv_mu_ref, atol=1e-10)
+    np.testing.assert_allclose(denom, denom_ref, atol=1e-10)
+
+
+def test_woodbury_k_equals_m_agrees_with_explicit() -> None:
+    """When k=m the factor space spans all of R^m; result must match explicit solve."""
+    rng = np.random.default_rng(9)
+    m = 5
+    # Use orthonormal w_hat so w_hat.T @ w_hat = I (fully decorrelated)
+    q_mat, _ = np.linalg.qr(rng.normal(size=(m, m)))
+    w_hat = q_mat.T  # (m, m) orthonormal rows -> unit columns
+    mu = rng.normal(size=m)
+    lam = 0.5
+
+    m_mat = lam * (w_hat.T @ w_hat) + (1.0 - lam) * np.eye(m)
+    minv_mu_ref = np.linalg.solve(m_mat, mu)
+    denom_ref = float(np.sqrt(mu @ minv_mu_ref))
+
+    minv_mu, denom = woodbury_factor_solve(w_hat, mu, lam=lam)
+    np.testing.assert_allclose(minv_mu, minv_mu_ref, atol=1e-10)
+    np.testing.assert_allclose(denom, denom_ref, atol=1e-10)

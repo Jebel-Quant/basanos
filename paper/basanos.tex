@@ -408,8 +408,9 @@ Retain the first $k = \texttt{cfg.k}$ left singular vectors as the
 \emph{factor matrix}:
 \begin{equation}
   \label{eq:factor_matrix}
-  \mathbf{F}_t = \mathbf{U}_t[:,\,0{:}k] \in \R^{n \times k}.
+  \mathbf{F}_t = \mathbf{U}_t^{(k)} \in \R^{n \times k},
 \end{equation}
+where $\mathbf{U}_t^{(k)}$ denotes the first $k$ columns of $\mathbf{U}_t$.
 The columns of $\mathbf{F}_t$ are the $k$ principal directions of the return
 history that capture the most variance over the lookback window.  They are
 orthonormal by construction: $\mathbf{F}_t^\top\mathbf{F}_t = \I_k$.
@@ -424,32 +425,68 @@ Project all $m$ asset columns of $\Rmat_t$ onto the factor space:
 Each column of $\W_t$ is the factor-exposure vector for one asset; each row
 is one factor's loadings across the universe.
 
-\subsubsection{Low-Rank Covariance and Correlation}
+\subsubsection{Column Normalisation and the Woodbury Solve}
+\label{sec:factor_woodbury}
 
-Form the rank-$k$ sample covariance estimate in the original asset space:
+The columns of $\W_t$ encode each asset's exposure to the $k$ latent factors.
+Define the \emph{column-normalised} matrix
 \begin{equation}
-  \label{eq:factor_cov}
-  \hat{\Sig}_t = \frac{1}{k}\,\W_t^\top \W_t \in \R^{m \times m}.
+  \label{eq:factor_norm}
+  \hat{W}_{t,i} = \frac{w_{t,i}}{\|w_{t,i}\|_2},
+  \quad i = 1, \ldots, m,
 \end{equation}
-Dividing by $k$ normalises the scale so that the diagonal entries are
-comparable across different values of $k$.
+where $w_{t,i} \in \R^k$ is the $i$-th column of $\W_t$.  By construction
+\begin{equation}
+  \label{eq:factor_corr_identity}
+  \hat{\W}_t^\top \hat{\W}_t = \hat{\C}_t \in \R^{m \times m},
+\end{equation}
+is the sample correlation matrix.  \textbf{This product is never formed.}
+Instead, it enters only through the shrunk linear system
 
-Normalise entry-wise to a correlation matrix:
 \begin{equation}
-  \label{eq:factor_corr}
-  \hat{C}_{ij,t}
-  = \frac{\hat{\Sigma}_{ij,t}}
-         {\sqrt{\hat{\Sigma}_{ii,t}\,\hat{\Sigma}_{jj,t}}},
-  \quad \hat{C}_{ii,t} = 1.
+  \label{eq:factor_system}
+  M_t\,\x_t = \muvec_t, \quad
+  M_t = \lambda\,\hat{\W}_t^\top\hat{\W}_t + (1-\lambda)\,\I_m,
 \end{equation}
-This correlation matrix is then shrunk toward the identity exactly as in
-Eq.~\eqref{eq:shrinkage}:
+
+whose solution requires only a $k \times k$ computation via the
+\textbf{Woodbury matrix identity}
+\citep{woodbury1950}:
+
 \begin{equation}
-  \label{eq:factor_shrunk}
-  \tilde{\C}_t = \lambda\,\hat{\mathbf{C}}_t + (1-\lambda)\,\I_m,
+  \label{eq:woodbury}
+  (A + UCV)^{-1} = A^{-1} - A^{-1}U\bigl(C^{-1}+VA^{-1}U\bigr)^{-1}VA^{-1}.
 \end{equation}
-and passed to the same normalised linear solver described in
-Section~\ref{sec:solve}.
+
+Setting $A=(1-\lambda)\I_m$, $U=\hat{\W}_t^\top$, $C=\lambda\I_k$,
+$V=\hat{\W}_t$ yields
+
+\begin{equation}
+  \label{eq:factor_gram}
+  G_t = \I_k + \tfrac{\lambda}{1-\lambda}\,\hat{\W}_t\hat{\W}_t^\top
+  \quad\in\R^{k \times k},
+\end{equation}
+
+\begin{equation}
+  \label{eq:factor_woodbury_result}
+  M_t^{-1}\muvec_t = \frac{1}{1-\lambda}
+  \Bigl[\muvec_t
+   - \tfrac{\lambda}{1-\lambda}\,\hat{\W}_t^\top
+     G_t^{-1}\!\bigl(\hat{\W}_t\muvec_t\bigr)\Bigr].
+\end{equation}
+
+The only matrix ever formed is the \emph{$k \times k$ Gram matrix} $G_t$; the
+remaining operations are two matrix--vector products of cost $O(km)$ each,
+plus one $k \times k$ Cholesky solve of cost $O(k^3)$.  Total per-step cost:
+$O(km + k^3)$ versus $O(m^3)$ for a direct solve on the $m \times m$ system.
+
+\paragraph{Applying shrinkage.}
+$G_t$ already incorporates the shrinkage weight $\lambda$; no separate
+shrinkage step is required.  Setting $\lambda=0$ (full shrinkage toward the
+identity) gives $G_t = \I_k$, $M_t^{-1}=\I_m$, and $\x_t \propto \muvec_t$
+--- the signal-proportional sizing baseline.  The normalised solution
+$\x_t = M_t^{-1}\muvec_t / \|M_t^{-1}\muvec_t\|_{M_t}$ then passes to the
+same profit-variance scaler described in Section~\ref{sec:solve}.
 
 \subsubsection{Memory and Compute Comparison}
 
@@ -463,8 +500,8 @@ Section~\ref{sec:solve}.
     \toprule
     \textbf{Path} & \textbf{Peak memory} & \textbf{Per-step compute} \\
     \midrule
-    EWMA (default) & $O(T m^2)$ & $O(m^2)$ via \texttt{lfilter} \\
-    Factor model   & $O(n m)$   & $O(nm)$ window + $O(nk)$ SVD \\
+    EWMA (default) & $O(T m^2)$ & $O(m^2)$ via \texttt{lfilter} + $O(m^3)$ solve \\
+    Factor model   & $O(n m)$   & $O(nk)$ SVD + $O(km)$ projection + $O(k^3)$ Woodbury \\
     \bottomrule
   \end{tabular}
 \end{table}

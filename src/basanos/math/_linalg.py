@@ -14,6 +14,10 @@ working with symmetric (correlation-like) matrices in a robust way:
   subset indicated by finite diagonal entries, returning NaNs for invalid
   positions. Emits IllConditionedMatrixWarning when the condition number
   exceeds the threshold.
+- woodbury_factor_solve(W_hat, mu, lam): solve the factor-model shrunk
+  correlation system ``(lam * W_hat.T @ W_hat + (1-lam)*I) x = mu`` entirely
+  in the k-dimensional factor space via the Woodbury matrix identity — no
+  m x m matrix is formed.
 
 Both solve and inv_a_norm use Cholesky decomposition as a numerically stable
 first attempt; they fall back to standard LU-based solving for matrices that
@@ -261,3 +265,102 @@ def solve(
             raise SingularMatrixError(str(exc)) from exc
 
     return x
+
+
+def woodbury_factor_solve(
+    w_hat: np.ndarray,
+    mu: np.ndarray,
+    lam: float,
+) -> tuple[np.ndarray, float]:
+    r"""Solve the factor-model shrunk correlation system in the k-dimensional factor space.
+
+    Given the column-normalized projection matrix
+    :math:`\hat{W} \in \mathbb{R}^{k \times m}` (whose columns satisfy
+    :math:`\|\hat{w}_i\|_2 \leq 1`, so that
+    :math:`\hat{W}^\top \hat{W}` is the sample correlation matrix), this
+    function solves the shrunk linear system
+
+    .. math::
+
+        M\,\mathbf{x} = \bm{\mu},
+        \quad M = \lambda\,\hat{W}^\top\hat{W} + (1-\lambda)\,I_m,
+
+    and returns :math:`(\mathbf{x},\, \nu)` where
+    :math:`\nu = \sqrt{\bm{\mu}^\top M^{-1} \bm{\mu}}` is the normalising
+    denominator.
+
+    **No m x m matrix is ever formed.**  Applying the Woodbury matrix identity
+
+    .. math::
+
+        (A + UCV)^{-1} = A^{-1} - A^{-1}U\bigl(C^{-1} + VA^{-1}U\bigr)^{-1}VA^{-1}
+
+    with :math:`A = (1-\lambda)I_m`, :math:`U = \hat{W}^\top`,
+    :math:`C = \lambda I_k`, :math:`V = \hat{W}` reduces the solve to a single
+    :math:`k \times k` system:
+
+    .. math::
+
+        G = I_k + \tfrac{\lambda}{1-\lambda}\,\hat{W}\hat{W}^\top
+        \quad (k \times k),
+
+    .. math::
+
+        M^{-1}\bm{\mu} = \frac{1}{1-\lambda}
+        \Bigl[\bm{\mu} - \tfrac{\lambda}{1-\lambda}\,\hat{W}^\top
+        G^{-1}(\hat{W}\bm{\mu})\Bigr].
+
+    Total cost is :math:`O(km + k^3)` instead of :math:`O(m^2 + m^3)`.
+
+    Args:
+        w_hat: Column-normalized projection matrix of shape ``(k, m)``.
+            Columns must have norm <= 1 (unit norm for active assets, near-zero
+            for assets with negligible factor exposure).
+        mu: Signal vector of shape ``(m,)``.
+        lam: Shrinkage retention weight :math:`\lambda \in [0, 1)`.
+            :math:`\lambda = 1` gives a rank-deficient matrix (no regularisation)
+            and is not supported; :exc:`SingularMatrixError` is raised.
+
+    Returns:
+        tuple: ``(minv_mu, denom)`` where *minv_mu* = :math:`M^{-1}\bm{\mu}`
+        and *denom* = :math:`\sqrt{\bm{\mu}^\top M^{-1}\bm{\mu}}`.
+        Returns ``(minv_mu, nan)`` when :math:`\bm{\mu}^\top M^{-1}\bm{\mu}`
+        is non-positive or non-finite (degenerate signal or near-zero window).
+
+    Raises:
+        SingularMatrixError: When ``lam >= 1`` (rank-deficient matrix) or when
+            the k x k system *gram* is numerically singular.
+
+    Examples:
+        >>> import numpy as np
+        >>> rng = np.random.default_rng(0)
+        >>> W = rng.normal(size=(3, 5))
+        >>> col_norms = np.linalg.norm(W, axis=0)
+        >>> w_hat = W / col_norms[np.newaxis, :]
+        >>> mu = rng.normal(size=5)
+        >>> minv_mu, denom = woodbury_factor_solve(w_hat, mu, lam=0.5)
+        >>> minv_mu.shape
+        (5,)
+        >>> denom > 0
+        True
+    """
+    beta = 1.0 - lam
+    if not (beta > 0):
+        raise SingularMatrixError(  # noqa: TRY003
+            f"shrinkage lam={lam} >= 1 gives a rank-deficient factor correlation matrix"
+        )
+    k = w_hat.shape[0]
+    alpha = lam / beta
+    # gram = I_k + alpha * w_hat @ w_hat.T  -- always k x k, never m x m
+    gram = np.eye(k) + alpha * (w_hat @ w_hat.T)
+    w_mu = w_hat @ mu  # k-vector: w_hat @ mu
+    try:
+        g = _cholesky_solve(gram, w_mu)  # k-vector: gram^-1 (w_hat @ mu)
+    except np.linalg.LinAlgError as exc:
+        raise SingularMatrixError(str(exc)) from exc
+    # m_inv_mu = (1/beta) [mu - alpha * w_hat.T @ g]
+    minv_mu = (mu - alpha * (w_hat.T @ g)) / beta
+    mu_minv_mu = float(mu @ minv_mu)
+    if not np.isfinite(mu_minv_mu) or mu_minv_mu <= 0.0:
+        return minv_mu, float(np.nan)
+    return minv_mu, float(np.sqrt(mu_minv_mu))
