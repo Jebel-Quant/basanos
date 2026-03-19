@@ -18,12 +18,19 @@ import dataclasses
 import numpy as np
 
 from basanos.exceptions import (
+    DimensionMismatchError,
     FactorCountError,
     FactorCovarianceShapeError,
     FactorLoadingsDimensionError,
     IdiosyncraticVarShapeError,
     NonPositiveIdiosyncraticVarError,
     ReturnMatrixDimensionError,
+    SingularMatrixError,
+)
+from basanos.math._linalg import (
+    _DEFAULT_COND_THRESHOLD,
+    _check_and_warn_condition,
+    _cholesky_solve,
 )
 
 
@@ -133,6 +140,82 @@ class FactorModel:
             [2.0, 2.0, 1.0]
         """
         return self.factor_loadings @ self.factor_covariance @ self.factor_loadings.T + np.diag(self.idiosyncratic_var)
+
+    def solve(
+        self,
+        rhs: np.ndarray,
+        cond_threshold: float = _DEFAULT_COND_THRESHOLD,
+    ) -> np.ndarray:
+        r"""Solve :math:`\bm{\Sigma}\,\mathbf{x} = \mathbf{b}` via the Woodbury identity.
+
+        Applies the Sherman--Morrison--Woodbury formula (Section 4.3 of
+        basanos.pdf) to avoid forming or factorising the full
+        :math:`n \times n` covariance matrix:
+
+        .. math::
+
+            (\mathbf{D} + \mathbf{B}\mathbf{F}\mathbf{B}^\top)^{-1}
+            = \mathbf{D}^{-1}
+              - \mathbf{D}^{-1}\mathbf{B}
+                \bigl(\mathbf{F}^{-1} + \mathbf{B}^\top\mathbf{D}^{-1}\mathbf{B}\bigr)^{-1}
+                \mathbf{B}^\top\mathbf{D}^{-1}.
+
+        Because :math:`\mathbf{D}` is diagonal, :math:`\mathbf{D}^{-1}` is
+        free.  The inner matrix is :math:`k \times k` with cost
+        :math:`O(k^3)`, and the surrounding multiplications cost
+        :math:`O(kn)`.  Total cost is :math:`O(k^3 + kn)` rather than
+        :math:`O(n^3)`.
+
+        Args:
+            rhs: Right-hand side vector :math:`\mathbf{b}`, shape ``(n,)``.
+            cond_threshold: Condition-number threshold above which an
+                :class:`~basanos.exceptions.IllConditionedMatrixWarning` is
+                emitted for the inner :math:`k \times k` system.  Defaults to
+                ``1e12``.
+
+        Returns:
+            np.ndarray: Solution vector :math:`\mathbf{x}`, shape ``(n,)``.
+
+        Raises:
+            DimensionMismatchError: If ``rhs`` length does not match
+                ``n_assets``.
+            SingularMatrixError: If the inner :math:`k \times k` matrix is
+                singular.
+
+        Examples:
+            >>> import numpy as np
+            >>> loadings = np.eye(3, 1)
+            >>> cov = np.eye(1)
+            >>> idio = np.ones(3)
+            >>> fm = FactorModel(factor_loadings=loadings, factor_covariance=cov, idiosyncratic_var=idio)
+            >>> rhs = np.array([1.0, 2.0, 3.0])
+            >>> x = fm.solve(rhs)
+            >>> np.allclose(fm.covariance @ x, rhs)
+            True
+        """
+        n = self.n_assets
+        if rhs.shape != (n,):
+            raise DimensionMismatchError(rhs.size, n)
+
+        # D^{-1} is free because D is diagonal
+        d_inv = 1.0 / self.idiosyncratic_var  # (n,)
+        d_inv_rhs = d_inv * rhs  # D^{-1} b, shape (n,)
+        d_inv_b_mat = d_inv[:, None] * self.factor_loadings  # D^{-1} B, shape (n, k)
+
+        # Inner k x k matrix: F^{-1} + B^T D^{-1} B
+        mid = np.linalg.inv(self.factor_covariance) + self.factor_loadings.T @ d_inv_b_mat  # (k, k)
+
+        _check_and_warn_condition(mid, cond_threshold)
+
+        # Solve mid * w = B^T D^{-1} b
+        rhs_k = self.factor_loadings.T @ d_inv_rhs  # (k,)
+        try:
+            w = _cholesky_solve(mid, rhs_k)  # (k,)
+        except np.linalg.LinAlgError as exc:
+            raise SingularMatrixError(str(exc)) from exc
+
+        # x = D^{-1} b - D^{-1} B w
+        return d_inv_rhs - d_inv_b_mat @ w
 
     @classmethod
     def from_returns(cls, returns: np.ndarray, k: int) -> FactorModel:
