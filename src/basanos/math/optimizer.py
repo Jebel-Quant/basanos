@@ -895,7 +895,7 @@ class BasanosEngine:
                 window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
                 n_sub = int(mask.sum())
                 k_eff = min(win_k, win_w, n_sub)
-                if k_eff < 1:
+                if k_eff < 1:  # pragma: no cover
                     yield i, t, mask, None
                     continue
                 try:
@@ -995,7 +995,10 @@ class BasanosEngine:
                 if np.allclose(expected_mu, 0.0):
                     pos = np.zeros_like(expected_mu)
                 else:
-                    denom = inv_a_norm(expected_mu, matrix)
+                    try:
+                        denom = inv_a_norm(expected_mu, matrix)
+                    except SingularMatrixError:
+                        denom = float("nan")
                     if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
                         _logger.warning(
                             "Positions zeroed at t=%s: normalisation denominator is degenerate "
@@ -1013,7 +1016,10 @@ class BasanosEngine:
                         )
                         pos = np.zeros_like(expected_mu)
                     else:
-                        pos = solve(matrix, expected_mu) / denom
+                        try:
+                            pos = solve(matrix, expected_mu) / denom
+                        except SingularMatrixError:  # pragma: no cover
+                            pos = np.zeros_like(expected_mu)
             else:
                 # ── Sliding window: fit factor model on the last W rows ─────
                 if i + 1 < win_w:
@@ -1026,7 +1032,7 @@ class BasanosEngine:
 
                 n_sub = int(mask.sum())
                 k_eff = min(win_k, win_w, n_sub)
-                if k_eff < 1:
+                if k_eff < 1:  # pragma: no cover
                     continue
 
                 try:

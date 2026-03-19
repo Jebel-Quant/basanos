@@ -669,6 +669,24 @@ def test_cash_position_zeros_and_warns_when_inv_a_norm_returns_nan(caplog) -> No
     assert all("denom=nan" in r.message for r in degen_warnings)
 
 
+def test_cash_position_zeros_when_inv_a_norm_raises_singular(
+    small_prices: pl.DataFrame, small_mu: pl.DataFrame, caplog
+) -> None:
+    """When inv_a_norm raises SingularMatrixError, positions are zeroed and a warning emitted."""
+    cfg = BasanosConfig(corr=5, vola=5, clip=4.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=small_prices, mu=small_mu, cfg=cfg)
+    with (
+        patch("basanos.math.optimizer.inv_a_norm", side_effect=SingularMatrixError("singular")),
+        caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+    ):
+        cp = engine.cash_position
+    for col in engine.assets:
+        vals = cp[col].to_numpy(allow_copy=True)
+        assert not np.any(np.isinf(vals)), f"Unexpected infinite position in column {col}"
+    degen_warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    assert degen_warnings, "Expected a degenerate-denominator warning when inv_a_norm raises SingularMatrixError"
+
+
 # ─── ret_adj, vola, cor properties ────────────────────────────────────────────
 
 
@@ -2170,3 +2188,80 @@ class TestSharpeAtWindowFactors:
         engine.sharpe_at_window_factors(window=30, n_factors=2)
         assert engine.cfg.covariance_mode is original_mode
         assert engine.cfg.covariance_mode is CovarianceMode.ewma_shrink
+
+
+# ─── Sliding window error-path coverage ──────────────────────────────────────
+
+
+class TestSlidingWindowErrorPaths:
+    """Cover defensive error branches in sliding_window cash_position and _iter_matrices."""
+
+    @pytest.fixture
+    def sw_cfg(self) -> BasanosConfig:
+        """Config with sliding_window mode, W=10, k=2."""
+        return BasanosConfig(
+            vola=10,
+            corr=20,
+            clip=3.0,
+            shrink=0.5,
+            aum=1e6,
+            covariance_config=SlidingWindowConfig(window=10, n_factors=2),
+        )
+
+    @pytest.fixture
+    def sw_engine(self, sw_prices: pl.DataFrame, sw_mu: pl.DataFrame, sw_cfg: BasanosConfig) -> BasanosEngine:
+        """Engine configured for sliding window mode."""
+        return BasanosEngine(prices=sw_prices, mu=sw_mu, cfg=sw_cfg)
+
+    def test_zero_mu_yields_zero_positions_post_warmup(self, sw_prices: pl.DataFrame, sw_cfg: BasanosConfig) -> None:
+        """When mu is identically zero, sliding_window must zero positions (not NaN) post-warmup."""
+        n = sw_prices.height
+        zero_mu = pl.DataFrame(
+            {
+                "date": sw_prices["date"],
+                "X": pl.Series(np.zeros(n), dtype=pl.Float64),
+                "Y": pl.Series(np.zeros(n), dtype=pl.Float64),
+                "Z": pl.Series(np.zeros(n), dtype=pl.Float64),
+            }
+        )
+        engine = BasanosEngine(prices=sw_prices, mu=zero_mu, cfg=sw_cfg)
+        pos = engine.cash_position
+        window = sw_cfg.window
+        post_warmup = pos.slice(window).select(["X", "Y", "Z"])
+        for col in post_warmup.columns:
+            assert (post_warmup[col].fill_nan(0.0) == 0.0).all(), f"Expected zero positions for {col}"
+
+    def test_factor_model_svd_failure_in_cash_position_continues(self, sw_engine: BasanosEngine) -> None:
+        """When FactorModel.from_returns raises LinAlgError, cash_position skips that row."""
+        with patch("basanos.math.optimizer.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")):
+            pos = sw_engine.cash_position
+        assert pos.shape == sw_engine.prices.shape
+
+    def test_factor_model_svd_failure_in_iter_matrices_logs_warning(
+        self, sw_engine: BasanosEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When FactorModel.from_returns raises in _iter_matrices, a warning is emitted."""
+        with (
+            patch("basanos.math.optimizer.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")),
+            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        ):
+            _ = sw_engine.condition_number
+        records = [r for r in caplog.records if "Factor model fit failed" in r.message]
+        assert records, "Expected a 'Factor model fit failed' warning"
+
+    def test_woodbury_solve_failure_zeros_positions(
+        self, sw_engine: BasanosEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When fm.solve raises LinAlgError, positions are zeroed and a warning is logged."""
+        from unittest.mock import MagicMock
+
+        mock_fm = MagicMock()
+        mock_fm.solve.side_effect = np.linalg.LinAlgError("singular")
+        with (
+            patch("basanos.math.optimizer.FactorModel.from_returns", return_value=mock_fm),
+            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        ):
+            pos = sw_engine.cash_position
+        assert pos.shape == sw_engine.prices.shape
+        records = [r for r in caplog.records if "Woodbury solve failed" in r.message]
+        assert records, "Expected a 'Woodbury solve failed' warning"
