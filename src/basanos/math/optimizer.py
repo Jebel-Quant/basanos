@@ -63,7 +63,7 @@ dataset sizes.
 import dataclasses
 import logging
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import polars as pl
@@ -701,7 +701,7 @@ class BasanosEngine:
             tuple: ``(t, R)`` where *t* is the date key and *R* is a
             ``np.ndarray`` of shape ``(cfg.n, m)``.
         """
-        n = self.cfg.n  # type: ignore[arg-type]
+        n = cast(int, self.cfg.n)
         assets = self.assets
         ret_adj_np = self.ret_adj.select(assets).to_numpy().astype(float)
         # Replace NaN with 0 — zero return is a neutral fill that keeps every
@@ -796,7 +796,7 @@ class BasanosEngine:
 
         cov_iter: Iterator[tuple[Any, np.ndarray]]
         if use_factor:
-            k = self.cfg.k  # type: ignore[arg-type]
+            k = cast(int, self.cfg.k)
             cov_iter = self._factor_window_iter()
         else:
             cor = self.cor
