@@ -1909,15 +1909,13 @@ class TestSlidingWindowWarmupWarning:
         "clip": 3.0,
         "shrink": 0.5,
         "aum": 1e6,
-        "covariance_mode": "sliding_window",
-        "n_factors": 2,
     }
 
     def test_warning_emitted_when_dataset_shorter_than_2w(self, caplog: pytest.LogCaptureFixture) -> None:
         """A WARNING must be logged when n_rows < 2 * window at engine construction."""
         window = 50
         prices, mu = _make_sw_prices_mu(n=60)  # 60 < 2 * 50 = 100
-        cfg = BasanosConfig(**self._sw_cfg_kwargs, window=window)
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, covariance_config=SlidingWindowConfig(window=window, n_factors=2))
         with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
             BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
@@ -1928,7 +1926,7 @@ class TestSlidingWindowWarmupWarning:
         """The warning message must mention the number of zero-position rows."""
         window = 40
         prices, mu = _make_sw_prices_mu(n=50)  # 50 < 2 * 40 = 80
-        cfg = BasanosConfig(**self._sw_cfg_kwargs, window=window)
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, covariance_config=SlidingWindowConfig(window=window, n_factors=2))
         with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
             BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
@@ -1940,7 +1938,7 @@ class TestSlidingWindowWarmupWarning:
         """No warm-up warning should be emitted when n_rows >= 2 * window."""
         window = 30
         prices, mu = _make_sw_prices_mu(n=120)  # 120 >= 2 * 30 = 60
-        cfg = BasanosConfig(**self._sw_cfg_kwargs, window=window)
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, covariance_config=SlidingWindowConfig(window=window, n_factors=2))
         with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
             BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
@@ -1961,7 +1959,7 @@ class TestSlidingWindowWarmupWarning:
         """No warm-up warning when dataset length equals exactly 2 * window (boundary)."""
         window = 30
         prices, mu = _make_sw_prices_mu(n=2 * window)  # exactly at threshold
-        cfg = BasanosConfig(**self._sw_cfg_kwargs, window=window)
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, covariance_config=SlidingWindowConfig(window=window, n_factors=2))
         with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
             BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
