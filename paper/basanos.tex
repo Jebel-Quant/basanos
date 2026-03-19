@@ -50,6 +50,10 @@
 \newcommand{\R}{\mathbb{R}}
 \newcommand{\norm}[1]{\left\|#1\right\|}
 \newcommand{\abs}[1]{\left|#1\right|}
+\newcommand{\Rmat}{\mathbf{R}}
+\newcommand{\Cmat}{\mathbf{C}}
+\newcommand{\W}{\mathbf{W}}
+\newcommand{\Sig}{\bm{\Sigma}}
 \DeclareMathOperator{\tr}{tr}
 \DeclareMathOperator{\rank}{rank}
 \DeclareMathOperator{\eff}{eff\text{-}rank}
@@ -236,12 +240,21 @@ Basanos computes cash positions through a three-step pipeline:
 \begin{enumerate}
   \item \textbf{Volatility adjustment} --- normalise returns and compute
     per-asset EWMA volatility.
-  \item \textbf{Correlation estimation with shrinkage} --- compute the
-    time-varying EWMA correlation matrix and regularise it toward the
-    identity.
-  \item \textbf{Normalised linear solve} --- solve $\C_t\,\x_t = \muvec_t$
-    for the risk position vector, then scale by realised P\&L variance and
-    divide by per-asset volatility to obtain cash positions.
+  \item \textbf{Correlation estimation} --- one of two paths depending on
+    configuration:
+    \begin{itemize}
+      \item \emph{EWMA path} (default) --- compute the time-varying EWMA
+        correlation matrix and regularise it toward the identity
+        (Sections~\ref{sec:corr}--\ref{sec:shrinkage}).
+      \item \emph{Factor-model path} (when \texttt{cfg.n} and \texttt{cfg.k}
+        are set) --- derive a low-rank correlation estimate from the dominant
+        principal directions of a rolling return window
+        (Section~\ref{sec:factor}).
+    \end{itemize}
+  \item \textbf{Normalised linear solve} --- solve $\tilde{\C}_t\,\x_t =
+    \muvec_t$ for the risk position vector, then scale by realised P\&L
+    variance and divide by per-asset volatility to obtain cash positions
+    (Section~\ref{sec:solve}).
 \end{enumerate}
 
 \subsection{Volatility Adjustment}
@@ -357,6 +370,118 @@ Table~\ref{tab:shrinkage_guide} summarises the recommended ranges.
     \bottomrule
   \end{tabular}
 \end{table}
+
+\subsection{Factor-Model Covariance (Alternative to EWMA)}
+\label{sec:factor}
+
+The EWMA path stores a full $m \times m$ correlation matrix for every
+timestamp, requiring $O(T m^2)$ memory.  When the asset universe is large or
+the rolling-window approach is preferred, Basanos offers an alternative
+covariance source driven by a \textbf{rolling SVD factor model}, activated by
+setting \texttt{cfg.n} (lookback rows) and \texttt{cfg.k} (number of factors).
+
+\subsubsection{Rolling Returns Window}
+
+At each timestamp $t$, assemble the $n$ most recent rows of vol-adjusted
+returns into the window matrix
+\begin{equation}
+  \label{eq:factor_window}
+  \Rmat_t \in \R^{n \times m},
+\end{equation}
+where $n = \texttt{cfg.n}$ and $m$ is the number of assets.  The window slides
+forward by one row each period: the oldest row is dropped and the current row
+$\tilde{\mathbf{r}}_t$ is appended.  Missing values (NaN) are filled with zero
+--- the neutral, no-information fill that keeps every window finite without
+biasing the principal directions.
+
+\subsubsection{Factor Extraction via Truncated SVD}
+
+Compute the economy-size singular value decomposition
+\begin{equation}
+  \label{eq:svd}
+  \Rmat_t = \mathbf{U}_t\,\mathbf{S}_t\,\mathbf{V}_t^\top,
+  \quad \mathbf{U}_t \in \R^{n \times \min(n,m)},\;
+        \mathbf{S}_t \in \R^{\min(n,m) \times \min(n,m)},\;
+        \mathbf{V}_t \in \R^{m \times \min(n,m)}.
+\end{equation}
+Retain the first $k = \texttt{cfg.k}$ left singular vectors as the
+\emph{factor matrix}:
+\begin{equation}
+  \label{eq:factor_matrix}
+  \mathbf{F}_t = \mathbf{U}_t[:,\,0{:}k] \in \R^{n \times k}.
+\end{equation}
+The columns of $\mathbf{F}_t$ are the $k$ principal directions of the return
+history that capture the most variance over the lookback window.  They are
+orthonormal by construction: $\mathbf{F}_t^\top\mathbf{F}_t = \I_k$.
+
+\subsubsection{Asset Projection}
+
+Project all $m$ asset columns of $\Rmat_t$ onto the factor space:
+\begin{equation}
+  \label{eq:projection}
+  \W_t = \mathbf{F}_t^\top \Rmat_t \in \R^{k \times m}.
+\end{equation}
+Each column of $\W_t$ is the factor-exposure vector for one asset; each row
+is one factor's loadings across the universe.
+
+\subsubsection{Low-Rank Covariance and Correlation}
+
+Form the rank-$k$ sample covariance estimate in the original asset space:
+\begin{equation}
+  \label{eq:factor_cov}
+  \hat{\Sig}_t = \frac{1}{k}\,\W_t^\top \W_t \in \R^{m \times m}.
+\end{equation}
+Dividing by $k$ normalises the scale so that the diagonal entries are
+comparable across different values of $k$.
+
+Normalise entry-wise to a correlation matrix:
+\begin{equation}
+  \label{eq:factor_corr}
+  \hat{C}_{ij,t}
+  = \frac{\hat{\Sigma}_{ij,t}}
+         {\sqrt{\hat{\Sigma}_{ii,t}\,\hat{\Sigma}_{jj,t}}},
+  \quad \hat{C}_{ii,t} = 1.
+\end{equation}
+This correlation matrix is then shrunk toward the identity exactly as in
+Eq.~\eqref{eq:shrinkage}:
+\begin{equation}
+  \label{eq:factor_shrunk}
+  \tilde{\C}_t = \lambda\,\hat{\mathbf{C}}_t + (1-\lambda)\,\I_m,
+\end{equation}
+and passed to the same normalised linear solver described in
+Section~\ref{sec:solve}.
+
+\subsubsection{Memory and Compute Comparison}
+
+\begin{table}[h]
+  \centering
+  \caption{Memory and per-step compute for the two covariance paths.
+           $T$ = total timestamps, $m$ = assets, $n$ = lookback rows,
+           $k$ = factors.}
+  \label{tab:factor_complexity}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Path} & \textbf{Peak memory} & \textbf{Per-step compute} \\
+    \midrule
+    EWMA (default) & $O(T m^2)$ & $O(m^2)$ via \texttt{lfilter} \\
+    Factor model   & $O(n m)$   & $O(nm)$ window + $O(nk)$ SVD \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\noindent
+The factor model is advantageous when $m$ is large and $k \ll m$: storage
+reduces from $O(T m^2)$ to $O(nm)$, and the per-step SVD truncates at
+rank $k$ rather than computing all $m^2$ EWMA pairs.
+
+\begin{remark}
+  The factor model is the natural finite-sample analogue of the outer-product
+  interpretation in Section~\ref{sec:corr}: whereas the EWMA outer products
+  accumulate exponentially over all $T$ rows, the factor model uses only the
+  $n$ most recent rows and compresses them into $k$ directions via SVD.  As
+  $n \to T$ and $k \to m$ the two estimates converge (modulo the exponential
+  weighting).
+\end{remark}
 
 \subsection{The Normalised Linear Solve}
 \label{sec:solve}

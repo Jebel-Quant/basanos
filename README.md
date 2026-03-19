@@ -29,6 +29,7 @@ Basanos computes **correlation-adjusted risk positions** from price data and exp
 - [Notebooks](#notebooks)
 - [How It Works](#how-it-works)
 - [Shrinkage Methodology](#shrinkage-methodology)
+- [Factor Model](#factor-model)
 - [Performance Characteristics](#performance-characteristics)
 - [API Reference](#api-reference)
 - [Configuration Reference](#configuration-reference)
@@ -296,13 +297,15 @@ The optimizer implements a three-step pipeline per timestamp:
 
 1. **Volatility adjustment** — Log returns are normalized by an EWMA volatility estimate and clipped at `cfg.clip` standard deviations to limit the influence of outliers.
 
-2. **Correlation estimation** — An EWMA correlation matrix is computed from the vol-adjusted returns using a lookback of `cfg.corr` days. The matrix is shrunk toward the identity matrix with retention weight `cfg.shrink` (λ):
+2. **Correlation estimation** — One of two paths, selected by whether `cfg.n` and `cfg.k` are set:
 
-   ```
-   C_shrunk = λ · C_ewma + (1 − λ) · I
-   ```
+   - **EWMA path** (default, `cfg.n` and `cfg.k` are `None`) — An EWMA correlation matrix is computed from the vol-adjusted returns using a lookback of `cfg.corr` days. The matrix is shrunk toward the identity with retention weight `cfg.shrink` (λ):
+     ```
+     C_shrunk = λ · C_ewma + (1 − λ) · I
+     ```
+     See [Shrinkage Methodology](#shrinkage-methodology) for guidance on choosing λ.
 
-   where λ = `cfg.shrink`. `λ = 1.0` uses the raw EWMA matrix; `λ = 0.0` replaces it with the identity (treating all assets as uncorrelated). See [Shrinkage Methodology](#shrinkage-methodology) below for guidance on choosing λ.
+   - **Factor model path** (when `cfg.n` and `cfg.k` are both set) — A rolling window of `n` vol-adjusted return rows is maintained and a low-rank correlation estimate is derived from it via SVD. See [Factor Model](#factor-model) below.
 
 3. **Position solving** — For each timestamp, the system `C_shrunk · x = mu` is solved for `x` (the risk position vector). The solution is normalized by the inverse-matrix norm of `mu`, making positions scale-invariant with respect to signal magnitude. Positions are further scaled by a running profit-variance estimate to adapt risk dynamically.
 
@@ -375,6 +378,109 @@ stability for a realistic synthetic dataset.
 - Stein, C. (1956). *Inadmissibility of the usual estimator for the mean of a
   multivariate normal distribution.* Proceedings of the Third Berkeley
   Symposium, 1, 197–206.
+
+## Factor Model
+
+When the EWMA correlation matrix is too expensive to compute (large *m* or
+long history) or simply too slow to adapt, Basanos offers an alternative
+covariance source driven by a **rolling SVD factor model**. It is activated by
+setting both `cfg.n` (lookback window) and `cfg.k` (number of factors) in the
+configuration.
+
+### Motivation
+
+The EWMA path stores correlations for all *T* timestamps simultaneously —
+O(T · m²) memory. The factor model replaces this with a sliding window of
+just *n* rows (O(n · m) peak memory) and derives the correlation structure
+from the dominant principal directions of that compact window. With k ≪ m
+factors the effective number of free parameters drops from O(m²) to O(m · k),
+reducing both storage and compute.
+
+### Mathematics
+
+**Step 1 — Rolling returns window.**
+At each timestamp *t*, collect the *n* most recent rows of vol-adjusted returns
+into a matrix:
+
+```
+R ∈ ℝ^(n × m)    (n lookback rows, m assets)
+```
+
+The window slides forward one row per period: the oldest row is dropped and
+the current return is appended. Missing values are filled with zero (the
+neutral, no-information fill).
+
+**Step 2 — Factor extraction via SVD.**
+Compute the economy-size SVD of *R*:
+
+```
+R = U S Vᵀ,    U ∈ ℝ^(n × min(n,m)),  S diagonal,  V ∈ ℝ^(m × min(n,m))
+```
+
+Take the first *k* left singular vectors as the factor matrix:
+
+```
+C = U[:, :k] ∈ ℝ^(n × k)
+```
+
+The columns of *C* are the *k* principal directions of the return history —
+the axes that capture the most variance over the lookback window.
+
+**Step 3 — Asset projection.**
+Project all *m* asset columns of *R* onto the factor space:
+
+```
+W = Cᵀ · R ∈ ℝ^(k × m)
+```
+
+Each column of *W* is one asset's factor-exposure vector; each row is one
+factor's loading across the universe.
+
+**Step 4 — Low-rank covariance.**
+Form a rank-*k* sample covariance estimate in the original asset space:
+
+```
+Σ = Wᵀ W / k ∈ ℝ^(m × m)
+```
+
+Dividing by *k* normalises the scale so that the diagonal entries are
+comparable across different values of *k*.
+
+**Step 5 — Normalise to correlation and shrink.**
+Extract the standard deviations, normalise Σ entry-wise to a correlation
+matrix, then apply the same identity shrinkage used in the EWMA path:
+
+```
+corr_ij = Σ_ij / sqrt(Σ_ii · Σ_jj)       (with diagonal forced to 1)
+C_shrunk = λ · corr + (1 − λ) · I
+```
+
+The shrunk matrix is then passed to the same linear solver as the EWMA path
+— the rest of the position-sizing pipeline is identical.
+
+### Constraints and configuration
+
+| Parameter | Constraint | Meaning |
+|-----------|-----------|---------|
+| `n` | `> 0`, must be set with `k` | Lookback rows in the rolling window |
+| `k` | `1 ≤ k ≤ m` (number of assets), must be set with `n`, `n ≥ k` | Number of latent factors |
+
+```python
+cfg = BasanosConfig(
+    vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6,
+    n=60,   # rolling window: 60 most recent return rows
+    k=5,    # extract 5 principal factors
+)
+```
+
+### Memory and compute comparison
+
+| Path | Peak memory | Per-step compute |
+|------|------------|-----------------|
+| EWMA (default) | O(T · m²) | O(m²) per step via `lfilter` |
+| Factor model | **O(n · m)** | O(n · m) window + O(n · k) SVD per step |
+
+The factor model is particularly advantageous when `m` is large and `k ≪ m`.
 
 ## Performance Characteristics
 
@@ -485,6 +591,7 @@ from basanos.math import BasanosConfig, BasanosEngine
 | `vola` | `pl.DataFrame` | Per-asset EWMA volatility |
 | `cor` | `dict[date, np.ndarray]` | EWMA correlation matrices keyed by date |
 | `cash_position` | `pl.DataFrame` | Optimized cash positions |
+| `factor_returns_matrix` | `dict[date, np.ndarray]` | Rolling `(n, m)` returns windows keyed by date (requires `cfg.n` and `cfg.k`) |
 | `portfolio` | `Portfolio` | Ready-to-use portfolio for analytics |
 | `config_report` | `ConfigReport` | HTML report with lambda-sweep chart + parameter table |
 
@@ -623,6 +730,8 @@ dark-themed styling, a statistics table, and embedded interactive Plotly charts.
 | `clip` | `float` | `> 0` | Clipping threshold for vol-adjusted returns |
 | `shrink` | `float` | `[0, 1]` | Shrinkage intensity — `0` = no shrinkage, `1` = identity |
 | `aum` | `float` | `> 0` | Assets under management for position scaling |
+| `n` | `int \| None` | `> 0`, must be set with `k`, `n ≥ k` | Lookback rows for the rolling factor-model window (default `None` → EWMA path) |
+| `k` | `int \| None` | `1 ≤ k ≤ m`, must be set with `n` | Number of latent factors extracted by SVD (default `None` → EWMA path) |
 
 ```python
 from basanos.math import BasanosConfig
