@@ -1878,7 +1878,98 @@ class TestBasanosConfigSlidingWindow:
         assert sw_cfg.n_factors == 2
 
 
-# ─── Sliding window cash_position ────────────────────────────────────────────
+# ─── Sliding window warm-up warning ──────────────────────────────────────────
+
+
+def _make_sw_prices_mu(n: int, seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Build a minimal price/mu pair with *n* rows for warm-up warning tests."""
+    rng = np.random.default_rng(seed)
+    start = date(2022, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(100.0 + np.cumsum(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "B": pl.Series(50.0 + np.cumsum(rng.normal(0, 0.3, n)), dtype=pl.Float64),
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(np.tanh(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "B": pl.Series(np.tanh(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+        }
+    )
+    return prices, mu
+
+
+class TestSlidingWindowWarmupWarning:
+    """BasanosEngine emits a warning when dataset length < 2 * window."""
+
+    _sw_cfg_kwargs = {
+        "vola": 10,
+        "corr": 20,
+        "clip": 3.0,
+        "shrink": 0.5,
+        "aum": 1e6,
+        "covariance_mode": "sliding_window",
+        "n_factors": 2,
+    }
+
+    def test_warning_emitted_when_dataset_shorter_than_2w(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A WARNING must be logged when n_rows < 2 * window at engine construction."""
+        window = 50
+        prices, mu = _make_sw_prices_mu(n=60)  # 60 < 2 * 50 = 100
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, window=window)
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        records = [r for r in caplog.records if "warm-up" in r.message.lower() or "2 * window" in r.message]
+        assert records, "Expected a warm-up warning when dataset length < 2 * window"
+
+    def test_warning_mentions_zero_positions_and_warmup_count(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The warning message must mention the number of zero-position rows."""
+        window = 40
+        prices, mu = _make_sw_prices_mu(n=50)  # 50 < 2 * 40 = 80
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, window=window)
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        records = [r for r in caplog.records if "zero positions" in r.message]
+        assert records, "Warning should mention 'zero positions'"
+        assert str(window - 1) in records[0].message, "Warning should state the warm-up row count"
+
+    def test_no_warning_when_dataset_long_enough(self, caplog: pytest.LogCaptureFixture) -> None:
+        """No warm-up warning should be emitted when n_rows >= 2 * window."""
+        window = 30
+        prices, mu = _make_sw_prices_mu(n=120)  # 120 >= 2 * 30 = 60
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, window=window)
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        warmup_records = [r for r in caplog.records if "warm-up" in r.message.lower() or "2 * window" in r.message]
+        assert not warmup_records, "No warm-up warning expected when dataset is long enough"
+
+    def test_no_warning_for_ewma_shrink_mode(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The warm-up warning must NOT fire for ewma_shrink mode."""
+        prices, mu = _make_sw_prices_mu(n=30)
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        warmup_records = [r for r in caplog.records if "warm-up" in r.message.lower() or "2 * window" in r.message]
+        assert not warmup_records, "Warm-up warning should not fire for ewma_shrink mode"
+
+    def test_no_warning_at_exactly_2w_rows(self, caplog: pytest.LogCaptureFixture) -> None:
+        """No warm-up warning when dataset length equals exactly 2 * window (boundary)."""
+        window = 30
+        prices, mu = _make_sw_prices_mu(n=2 * window)  # exactly at threshold
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, window=window)
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        warmup_records = [r for r in caplog.records if "warm-up" in r.message.lower() or "2 * window" in r.message]
+        assert not warmup_records, "No warm-up warning expected when n_rows == 2 * window"
 
 
 @pytest.fixture

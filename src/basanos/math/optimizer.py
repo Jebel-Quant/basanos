@@ -375,6 +375,9 @@ class BasanosConfig(BaseModel):
         Rolling window length :math:`W \\geq 1`.  Rule of thumb: :math:`W
         \\geq 2n` keeps the sample covariance well-posed before truncation.
         Required when ``covariance_mode = "sliding_window"``.
+        **Warm-up gap**: the first :math:`W - 1` timestamps yield zero
+        positions while the rolling buffer fills; on a dataset shorter than
+        :math:`2W` rows this gap dominates the output.
 
     ``n_factors``
         Number of latent factors :math:`k \\geq 1`.  :math:`k = 1` recovers
@@ -490,7 +493,9 @@ class BasanosConfig(BaseModel):
         description=(
             "Sliding window length W (number of most recent observations). "
             "Required when covariance_mode='sliding_window'. "
-            "Rule of thumb: W >= 2 * n_assets to keep the sample covariance well-posed."
+            "Rule of thumb: W >= 2 * n_assets to keep the sample covariance well-posed. "
+            "Warm-up gap: the first window - 1 timestamps yield zero positions while the "
+            "rolling buffer fills."
         ),
     )
     n_factors: int | None = Field(
@@ -654,6 +659,20 @@ class BasanosEngine:
                 diffs = col.diff().drop_nulls()
                 if (diffs >= 0).all() or (diffs <= 0).all():
                     raise MonotonicPricesError(asset)
+
+        # warn when the dataset is too short to benefit from the sliding window
+        if self.cfg.covariance_mode == CovarianceMode.sliding_window and self.cfg.window is not None:
+            w: int = self.cfg.window
+            n_rows = self.prices.height
+            if n_rows < 2 * w:
+                _logger.warning(
+                    "Dataset length (%d rows) is less than 2 * window (%d). "
+                    "The first %d timestamps will yield zero positions during warm-up; "
+                    "consider using a longer history or reducing 'window'.",
+                    n_rows,
+                    2 * w,
+                    w - 1,
+                )
 
     @property
     def assets(self) -> list[str]:
