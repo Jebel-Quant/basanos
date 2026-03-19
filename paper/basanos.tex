@@ -53,6 +53,9 @@
 \DeclareMathOperator{\tr}{tr}
 \DeclareMathOperator{\rank}{rank}
 \DeclareMathOperator{\eff}{eff\text{-}rank}
+\newcommand{\Bload}{\mathbf{B}}
+\newcommand{\Ffac}{\mathbf{F}}
+\newcommand{\Dspe}{\mathbf{D}}
 
 \newtheorem{remark}{Remark}
 \newtheorem{proposition}{Proposition}
@@ -134,10 +137,15 @@ The paper is structured as follows.  Section~\ref{sec:problem} formalises the
 signal assessment problem and the impact of portfolio construction.
 Section~\ref{sec:approach} describes the mathematical approach: volatility
 adjustment, EWMA correlation estimation, shrinkage, and the normalised linear
-solve.  Section~\ref{sec:analytics} documents the analytical tools available in
-the library, distinguishing optimizer-level diagnostics from portfolio-level
-performance analytics.  Section~\ref{sec:usage} describes the development
-infrastructure and illustrates usage with code examples.
+solve.  Section~\ref{sec:factor_models} introduces factor risk models as an
+alternative covariance parameterisation, derives latent factors via the
+singular value decomposition, and shows how the Sherman--Morrison--Woodbury
+identity enables efficient inversion under a low-rank factor structure; it
+concludes with a sliding-window estimator parametrised by window length~$n$
+and factor count~$k$.  Section~\ref{sec:analytics} documents the analytical
+tools available in the library, distinguishing optimizer-level diagnostics from
+portfolio-level performance analytics.  Section~\ref{sec:usage} describes the
+development infrastructure and illustrates usage with code examples.
 Section~\ref{sec:conclusion} concludes.
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -421,6 +429,250 @@ default $10^6$).
   information ratio under the given correlation structure.  This is the
   Markowitz efficient direction in the unconstrained, full-information limit.
 \end{remark}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Factor Risk Models}
+\label{sec:factor_models}
+% ─────────────────────────────────────────────────────────────────────────────
+
+The EWMA-plus-shrinkage framework described in Section~\ref{sec:approach}
+estimates a full $n \times n$ correlation matrix at every timestamp and
+regularises it toward the identity.  An alternative and complementary approach
+is to posit a \emph{factor structure} for the covariance matrix: the returns
+of $n$ assets are driven by a small number $k \ll n$ of common factors plus
+independent idiosyncratic noise.  This section develops that structure, shows
+how latent factors can be extracted from data via the Singular Value
+Decomposition (SVD), derives an efficient solve via the
+Sherman--Morrison--Woodbury identity, and describes a sliding-window estimator
+parametrised by the pair $(n, k)$.
+
+\subsection{The Factor Model Decomposition}
+\label{sec:factor_model_decomp}
+
+A factor risk model decomposes the $n \times n$ covariance matrix as
+\begin{equation}
+  \label{eq:factor_model}
+  \bm{\Sigma} = \Bload\Ffac\Bload^\top + \Dspe,
+\end{equation}
+where
+\begin{itemize}
+  \item $\Bload \in \R^{n \times k}$ is the \emph{factor loading matrix}: column~$j$
+    gives the sensitivity of each asset to factor~$j$;
+  \item $\Ffac \in \R^{k \times k}$ is the \emph{factor covariance matrix}
+    (positive definite), capturing how the $k$ factors co-vary with one
+    another; and
+  \item $\Dspe = \operatorname{diag}(d_1, \dots, d_n)$ with $d_i > 0$ is the
+    \emph{idiosyncratic risk matrix}, capturing the asset-specific variance
+    unexplained by the common factors.
+\end{itemize}
+
+The central assumption is $k \ll n$: the dominant systematic
+sources of risk---market direction, sector exposures, style tilts, and so
+on---are captured by a handful of factors, while the idiosyncratic component
+$\Dspe$ is, by construction, uncorrelated across assets.  Because $k \ll n$,
+the model reduces the number of free parameters from $O(n^2)$ to $O(nk)$,
+making estimation far more tractable when the observation count $T$ is small
+relative to $n$.
+
+Classic \emph{explicit} factor models specify $\Bload$ and $\Ffac$ using
+economic theory or commercial risk-factor vendors, such as the Fama--French
+three-factor model \citep{fama1993}.  In the purely data-driven setting
+explored here the factors are \emph{latent} and must be inferred from returns.
+
+\begin{remark}
+  When $\Ffac = \I_k$ and the columns of $\Bload$ are orthonormal,
+  Eq.~\eqref{eq:factor_model} reduces to a principal-component
+  decomposition of $\bm{\Sigma}$: each factor corresponds to a principal
+  direction and its loading magnitude equals the corresponding eigenvalue.
+\end{remark}
+
+\subsection{Latent Factors via the Singular Value Decomposition}
+\label{sec:svd_factors}
+
+The most natural way to extract latent factors from a return matrix is the
+Singular Value Decomposition \citep{golub1996}.  Let
+$\mathbf{R} \in \R^{T \times n}$ be the matrix whose $(t, i)$ entry is the
+volatility-adjusted return $\tilde{r}_{i,t}$.  Its thin SVD is
+\begin{equation}
+  \label{eq:svd}
+  \mathbf{R} = \mathbf{U}\bm{\Sigma}_{\mathrm{sv}}\mathbf{V}^\top,
+\end{equation}
+where $\mathbf{U} \in \R^{T \times n}$ has orthonormal columns
+($\mathbf{U}^\top\mathbf{U} = \I_n$),
+$\bm{\Sigma}_{\mathrm{sv}} = \operatorname{diag}(\sigma_1, \dots, \sigma_n)$
+with $\sigma_1 \geq \sigma_2 \geq \cdots \geq \sigma_n \geq 0$, and
+$\mathbf{V} \in \R^{n \times n}$ is orthogonal.  The sample correlation matrix
+(assuming unit-variance columns) satisfies
+\begin{equation}
+  \label{eq:svd_cov}
+  \hat{\C} = \frac{1}{T}\mathbf{R}^\top\mathbf{R}
+           = \frac{1}{T}\mathbf{V}\bm{\Sigma}_{\mathrm{sv}}^2\mathbf{V}^\top.
+\end{equation}
+The columns $\mathbf{v}_j$ of $\mathbf{V}$ are the \emph{latent factor
+directions} in asset space: $\mathbf{v}_1$ points in the direction of maximum
+variance, $\mathbf{v}_2$ in the direction of maximum residual variance
+orthogonal to $\mathbf{v}_1$, and so on.  The scalar $\sigma_j^2 / T$ is the
+variance explained by factor~$j$.
+
+The Eckart--Young--Mirsky theorem \citep{eckart1936} guarantees that retaining
+only the top-$k$ singular triplets gives the best rank-$k$ approximation to
+$\mathbf{R}$ (and to $\hat{\C}$) in both the Frobenius and spectral norms:
+\begin{equation}
+  \label{eq:truncated_svd}
+  \mathbf{R}_k = \mathbf{U}_k\bm{\Sigma}_k\mathbf{V}_k^\top,
+  \qquad
+  \hat{\C}^{(k)} = \frac{1}{T}\mathbf{V}_k\bm{\Sigma}_k^2\mathbf{V}_k^\top
+                 + \hat{\Dspe},
+\end{equation}
+where $\mathbf{U}_k \in \R^{T \times k}$,
+$\bm{\Sigma}_k = \operatorname{diag}(\sigma_1, \dots, \sigma_k)$,
+$\mathbf{V}_k \in \R^{n \times k}$, and $\hat{\Dspe}$ is a diagonal correction
+chosen so that $\hat{\C}^{(k)}$ has unit diagonal (i.e., is a valid
+correlation matrix).
+
+Identifying $\Bload = \mathbf{V}_k$ and
+$\Ffac = \bm{\Sigma}_k^2/T$ establishes the correspondence with
+Eq.~\eqref{eq:factor_model}: the latent factors are the right singular
+vectors, the factor covariance is diagonal with entries $\sigma_j^2/T$, and
+the idiosyncratic matrix $\hat{\Dspe}$ absorbs the residual variance.
+
+\paragraph{Choosing $k$.}
+A common heuristic is to retain enough components to explain a target fraction
+$\theta$ of total variance:
+\begin{equation}
+  k^* = \min\!\left\{k : \frac{\sum_{j=1}^{k}\sigma_j^2}
+                              {\sum_{j=1}^{n}\sigma_j^2} \geq \theta\right\}.
+\end{equation}
+Alternatively, the Marchenko--Pastur bulk edge \citep{marchenko1967} provides a
+noise-floor threshold: retain only singular values exceeding
+$\sigma_{\max}^{\mathrm{MP}} = \sigma_{\mathrm{noise}}\sqrt{(1 + \sqrt{n/T})^2}$,
+where $\sigma_{\mathrm{noise}}$ is an estimate of the noise level.  Both
+criteria typically select $k$ in the range $3$--$20$ for equity universes with
+daily data.
+
+\subsection{Efficient Inversion via the Sherman--Morrison--Woodbury Identity}
+\label{sec:woodbury}
+
+For large $n$, the direct solve $\hat{\C}^{(k)}\,\x = \muvec$ is expensive
+because forming and factorising the full $n \times n$ matrix costs $O(n^3)$.
+The factor structure permits a much cheaper path via the \emph{Woodbury matrix
+identity} \citep{woodbury1950}:
+\begin{equation}
+  \label{eq:woodbury}
+  \bigl(\Dspe + \Bload\Ffac\Bload^\top\bigr)^{-1}
+  = \Dspe^{-1}
+    - \Dspe^{-1}\Bload
+      \underbrace{\bigl(\Ffac^{-1} + \Bload^\top\Dspe^{-1}\Bload\bigr)^{-1}}_{k \times k}
+      \Bload^\top\Dspe^{-1}.
+\end{equation}
+Because $\Dspe$ is diagonal, $\Dspe^{-1}$ costs $O(n)$.  The bracketed
+term is a $k \times k$ matrix whose inversion costs $O(k^3)$, and the
+surrounding multiplications cost $O(kn)$.  The total cost is therefore
+$O(k^3 + kn)$, which is $O(kn)$ for $k \ll n$---a dramatic improvement
+over $O(n^3)$ when $n$ is large and $k$ is small.
+
+\begin{remark}
+  For the pure SVD factor model ($\Ffac = \bm{\Sigma}_k^2/T$,
+  $\Bload = \mathbf{V}_k$), the Woodbury formula specialises to
+  \begin{equation}
+    \Bigl(\hat{\Dspe}
+           + \tfrac{1}{T}\mathbf{V}_k\bm{\Sigma}_k^2\mathbf{V}_k^\top\Bigr)^{-1}
+    = \hat{\Dspe}^{-1}
+      - \hat{\Dspe}^{-1}\mathbf{V}_k
+        \Bigl(T\bm{\Sigma}_k^{-2}
+               + \mathbf{V}_k^\top\hat{\Dspe}^{-1}\mathbf{V}_k\Bigr)^{-1}
+        \mathbf{V}_k^\top\hat{\Dspe}^{-1}.
+  \end{equation}
+  The inner matrix $T\bm{\Sigma}_k^{-2} + \mathbf{V}_k^\top\hat{\Dspe}^{-1}\mathbf{V}_k$
+  is $k \times k$ and positive definite, admitting a stable Cholesky
+  factorisation.
+\end{remark}
+
+The \emph{Sherman--Morrison formula} is the rank-$1$ special case ($k = 1$)
+of the Woodbury identity:
+\begin{equation}
+  \label{eq:sherman_morrison}
+  (\mathbf{A} + \mathbf{u}\mathbf{v}^\top)^{-1}
+  = \mathbf{A}^{-1}
+    - \frac{\mathbf{A}^{-1}\mathbf{u}\,\mathbf{v}^\top\mathbf{A}^{-1}}
+           {1 + \mathbf{v}^\top\mathbf{A}^{-1}\mathbf{u}},
+\end{equation}
+valid whenever $1 + \mathbf{v}^\top\mathbf{A}^{-1}\mathbf{u} \neq 0$.  When
+the factor model has $k = 1$ (a single dominant factor, e.g.\ the market), the
+full matrix inverse follows from a single $n$-vector computation, making
+the per-timestamp solve $O(n)$.
+
+\subsection{A Sliding Window with $k$ Factors}
+\label{sec:sliding_window}
+
+The EWMA correlation estimator of Section~\ref{sec:corr} assigns
+exponentially decaying weights to all past observations, maintaining a running
+estimate that is updated at each timestamp---an \emph{infinite-memory}
+estimator.  An alternative is the \emph{sliding window} (or rolling-window)
+estimator, which restricts attention to a fixed block of the $W$ most recent
+observations and assigns them equal weight.
+
+\paragraph{Construction.}
+At timestamp $t$, let $\mathbf{R}_t \in \R^{W \times n}$ denote the submatrix
+of volatility-adjusted returns for the window $[t - W + 1,\, t]$ across all
+$n$ assets.  Its truncated SVD retaining $k$ components is
+\begin{equation}
+  \label{eq:sliding_svd}
+  \mathbf{R}_t \approx \mathbf{U}_{k,t}\bm{\Sigma}_{k,t}\mathbf{V}_{k,t}^\top,
+\end{equation}
+and the factor-based correlation estimate used for the solve at time $t$ is
+\begin{equation}
+  \label{eq:sliding_corr}
+  \hat{\C}_t^{(W,k)}
+  = \frac{1}{W}\mathbf{V}_{k,t}\bm{\Sigma}_{k,t}^2\mathbf{V}_{k,t}^\top
+  + \hat{\Dspe}_t,
+\end{equation}
+with $\hat{\Dspe}_t$ chosen to enforce unit diagonal.  The system
+$\hat{\C}_t^{(W,k)}\,\x_t = \muvec_t$ can then be solved efficiently using
+the Woodbury identity from Section~\ref{sec:woodbury}.
+
+\paragraph{Parameters and trade-offs.}
+The pair $(W, k)$ jointly controls the estimator:
+\begin{itemize}
+  \item \textbf{Window length $W$.}  Longer windows yield more stable factor
+    directions but adapt slowly to regime changes.  A common rule of thumb is
+    $W \geq 2n$ to ensure the sample covariance is well-posed before
+    truncation.
+  \item \textbf{Number of factors $k$.}  Small $k$ (e.g.\ $1$--$5$) captures
+    only the dominant systematic risk (market, sector), giving a smooth,
+    low-variance estimate.  Larger $k$ (up to $\min(W, n)$) captures finer
+    correlation structure at the cost of higher estimation noise.  The
+    $k = 1$ case recovers the market-factor model; $k = n$ (full rank)
+    recovers the standard sample correlation matrix.
+\end{itemize}
+
+\paragraph{Comparison with EWMA.}
+The EWMA and sliding-window estimators exhibit complementary properties.
+EWMA assigns exponentially decaying weights, which is well suited to tracking
+smooth regime transitions; its estimate is never zero-weight and is always
+influenced by distant past data to some degree.  The sliding window assigns
+uniform weights within the window and zero outside it: this hard truncation
+makes the estimator more responsive to sudden structural breaks but introduces
+a discrete jump whenever a large observation enters or leaves the window.
+Table~\ref{tab:ewma_vs_sliding} summarises the comparison.
+
+\begin{table}[h]
+  \centering
+  \caption{EWMA correlation versus sliding-window factor model.}
+  \label{tab:ewma_vs_sliding}
+  \begin{tabular}{lll}
+    \toprule
+    \textbf{Property} & \textbf{EWMA (shrinkage)} & \textbf{Sliding window ($W$, $k$)} \\
+    \midrule
+    Observation weights & Exponential decay & Uniform within window \\
+    Memory horizon      & Infinite (soft)   & Exactly $W$ steps (hard) \\
+    Free parameters     & $\lambda$, $h_\rho$ & $W$, $k$ \\
+    Covariance rank     & Full $n$          & At most $k$ (plus diagonal) \\
+    Per-step solve cost & $O(n^3)$          & $O(k^3 + kn)$ \\
+    Regime responsiveness & Gradual          & Sharp at boundary \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Available Analytics}
