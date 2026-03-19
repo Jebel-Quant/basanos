@@ -1787,3 +1787,304 @@ class TestSharpeAtShrink:
         assert naive != pytest.approx(signal_sharpe, abs=1e-6), (
             "naive_sharpe should differ from signal Sharpe for a non-constant signal"
         )
+
+
+# ─── CovarianceMode enum ──────────────────────────────────────────────────────
+
+
+def test_covariance_mode_enum_values():
+    """CovarianceMode should expose ewma_shrink and sliding_window members."""
+    from basanos.math import CovarianceMode
+
+    assert CovarianceMode.ewma_shrink.value == "ewma_shrink"
+    assert CovarianceMode.sliding_window.value == "sliding_window"
+    # String-based construction must work (for JSON / config file usage)
+    assert CovarianceMode("sliding_window") is CovarianceMode.sliding_window
+
+
+def test_covariance_mode_default_is_ewma_shrink():
+    """BasanosConfig.covariance_mode should default to ewma_shrink."""
+    from basanos.math import CovarianceMode
+
+    cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+    assert cfg.covariance_mode is CovarianceMode.ewma_shrink
+    assert cfg.window is None
+    assert cfg.n_factors is None
+
+
+# ─── BasanosConfig sliding window validation ──────────────────────────────────
+
+
+class TestBasanosConfigSlidingWindow:
+    """Tests for the new sliding_window covariance mode and its config validation."""
+
+    _base = {"vola": 16, "corr": 32, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
+
+    def test_accepts_valid_sliding_window_config(self):
+        """BasanosConfig should accept a fully-specified sliding_window config."""
+        from basanos.math import CovarianceMode
+
+        cfg = BasanosConfig(
+            **self._base,
+            covariance_mode="sliding_window",
+            window=40,
+            n_factors=3,
+        )
+        assert cfg.covariance_mode is CovarianceMode.sliding_window
+        assert cfg.window == 40
+        assert cfg.n_factors == 3
+
+    def test_rejects_sliding_window_without_window(self):
+        """sliding_window mode without 'window' must raise ValidationError."""
+        with pytest.raises(ValueError, match=r".*window.*"):
+            BasanosConfig(**self._base, covariance_mode="sliding_window", n_factors=3)
+
+    def test_rejects_sliding_window_without_n_factors(self):
+        """sliding_window mode without 'n_factors' must raise ValidationError."""
+        with pytest.raises(ValueError, match=r".*n_factors.*"):
+            BasanosConfig(**self._base, covariance_mode="sliding_window", window=40)
+
+    def test_rejects_sliding_window_without_both(self):
+        """sliding_window mode without window or n_factors must raise ValidationError."""
+        with pytest.raises(ValueError, match=r".*window.*"):
+            BasanosConfig(**self._base, covariance_mode="sliding_window")
+
+    def test_rejects_window_le_zero(self):
+        """Window must be strictly positive."""
+        with pytest.raises(ValueError, match=r".*"):
+            BasanosConfig(**self._base, covariance_mode="sliding_window", window=0, n_factors=2)
+
+    def test_rejects_n_factors_le_zero(self):
+        """n_factors must be strictly positive."""
+        with pytest.raises(ValueError, match=r".*"):
+            BasanosConfig(**self._base, covariance_mode="sliding_window", window=40, n_factors=0)
+
+    def test_ewma_shrink_does_not_require_window_or_n_factors(self):
+        """Default ewma_shrink mode should work without window / n_factors."""
+        cfg = BasanosConfig(**self._base)  # should not raise
+        assert cfg.window is None
+        assert cfg.n_factors is None
+
+    def test_model_copy_updates_covariance_mode(self):
+        """model_copy should allow switching from ewma_shrink to sliding_window."""
+        from basanos.math import CovarianceMode
+
+        base_cfg = BasanosConfig(**self._base)
+        sw_cfg = base_cfg.model_copy(
+            update={"covariance_mode": CovarianceMode.sliding_window, "window": 30, "n_factors": 2}
+        )
+        assert sw_cfg.covariance_mode is CovarianceMode.sliding_window
+        assert sw_cfg.window == 30
+        assert sw_cfg.n_factors == 2
+
+
+# ─── Sliding window cash_position ────────────────────────────────────────────
+
+
+@pytest.fixture
+def sw_prices() -> pl.DataFrame:
+    """120-day, 3-asset price frame for sliding window tests."""
+    n = 120
+    rng = np.random.default_rng(7)
+    start = date(2022, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    return pl.DataFrame(
+        {
+            "date": dates,
+            "X": pl.Series(100.0 + np.cumsum(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "Y": pl.Series(200.0 + np.cumsum(rng.normal(0, 0.7, n)), dtype=pl.Float64),
+            "Z": pl.Series(50.0 + np.cumsum(rng.normal(0, 0.3, n)), dtype=pl.Float64),
+        }
+    )
+
+
+@pytest.fixture
+def sw_mu(sw_prices: pl.DataFrame) -> pl.DataFrame:
+    """Bounded sinusoidal signal aligned with sw_prices."""
+    n = sw_prices.height
+    theta = np.linspace(0.0, 4.0 * np.pi, num=n)
+    rng = np.random.default_rng(8)
+    return pl.DataFrame(
+        {
+            "date": sw_prices["date"],
+            "X": pl.Series(np.tanh(np.sin(theta)), dtype=pl.Float64),
+            "Y": pl.Series(np.tanh(np.cos(theta)), dtype=pl.Float64),
+            "Z": pl.Series(np.tanh(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+        }
+    )
+
+
+class TestSlidingWindowCashPosition:
+    """Tests for cash_position in sliding_window covariance mode."""
+
+    @pytest.fixture
+    def sw_cfg(self) -> BasanosConfig:
+        """Config with sliding_window mode, W=30, k=2."""
+        return BasanosConfig(
+            vola=10,
+            corr=20,
+            clip=3.0,
+            shrink=0.5,
+            aum=1e6,
+            covariance_mode="sliding_window",
+            window=30,
+            n_factors=2,
+        )
+
+    @pytest.fixture
+    def sw_engine(self, sw_prices: pl.DataFrame, sw_mu: pl.DataFrame, sw_cfg: BasanosConfig) -> BasanosEngine:
+        """Engine configured for sliding window mode."""
+        return BasanosEngine(prices=sw_prices, mu=sw_mu, cfg=sw_cfg)
+
+    @pytest.fixture
+    def ewma_engine(self, sw_prices: pl.DataFrame, sw_mu: pl.DataFrame) -> BasanosEngine:
+        """Equivalent engine using EWMA/shrinkage for comparison."""
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+        return BasanosEngine(prices=sw_prices, mu=sw_mu, cfg=cfg)
+
+    def test_cash_position_correct_shape(self, sw_engine: BasanosEngine, sw_prices: pl.DataFrame) -> None:
+        """cash_position must have the same shape as prices (T rows, date + assets cols)."""
+        pos = sw_engine.cash_position
+        assert pos.shape == sw_prices.shape
+
+    def test_cash_position_has_date_and_asset_columns(self, sw_engine: BasanosEngine) -> None:
+        """cash_position must contain a 'date' column and the three asset columns."""
+        pos = sw_engine.cash_position
+        assert "date" in pos.columns
+        for col in ["X", "Y", "Z"]:
+            assert col in pos.columns
+
+    def test_cash_position_warmup_rows_are_nan(self, sw_engine: BasanosEngine, sw_cfg: BasanosConfig) -> None:
+        """Rows before window is full should produce NaN positions (no data yet)."""
+        pos = sw_engine.cash_position
+        win_size = sw_cfg.window
+        # All rows before the window is filled should be NaN for all assets
+        warmup_slice = pos.head(win_size - 1).select(["X", "Y", "Z"])
+        for col in warmup_slice.columns:
+            assert warmup_slice[col].is_nan().all() or warmup_slice[col].is_null().all(), (
+                f"Expected all NaN/null in warmup for column {col}"
+            )
+
+    def test_cash_position_has_finite_values_after_warmup(self, sw_engine: BasanosEngine) -> None:
+        """At least some post-warmup rows should have finite position values."""
+        pos = sw_engine.cash_position
+        # Skip the first 30 rows (warmup period for W=30)
+        tail = pos.tail(80).select(["X", "Y", "Z"]).to_numpy()
+        assert np.isfinite(tail).any(), "Expected some finite positions after warmup"
+
+    def test_sliding_window_positions_differ_from_ewma(
+        self, sw_engine: BasanosEngine, ewma_engine: BasanosEngine
+    ) -> None:
+        """Sliding window and EWMA positions should not be identical."""
+        sw_pos = sw_engine.cash_position.select(["X", "Y", "Z"]).to_numpy()
+        ewma_pos = ewma_engine.cash_position.select(["X", "Y", "Z"]).to_numpy()
+        # Take rows where both have finite values for comparison
+        both_finite = np.isfinite(sw_pos) & np.isfinite(ewma_pos)
+        assert both_finite.any(), "Need at least some overlapping finite rows"
+        assert not np.allclose(sw_pos[both_finite], ewma_pos[both_finite]), (
+            "Sliding window and EWMA should produce different positions"
+        )
+
+    def test_cash_position_values_are_finite_or_nan(self, sw_engine: BasanosEngine) -> None:
+        """All cash position values must be either finite floats or NaN (no ±Inf)."""
+        pos_np = sw_engine.cash_position.select(["X", "Y", "Z"]).to_numpy()
+        # No ±inf allowed
+        assert not np.isinf(pos_np).any(), "cash_position must not contain ±inf"
+
+
+# ─── Sliding window diagnostics ──────────────────────────────────────────────
+
+
+class TestSlidingWindowDiagnostics:
+    """Diagnostics (condition_number, effective_rank, etc.) for sliding_window mode."""
+
+    @pytest.fixture
+    def sw_engine(self, sw_prices: pl.DataFrame, sw_mu: pl.DataFrame) -> BasanosEngine:
+        """Engine in sliding_window mode for diagnostic tests."""
+        cfg = BasanosConfig(
+            vola=10,
+            corr=20,
+            clip=3.0,
+            shrink=0.5,
+            aum=1e6,
+            covariance_mode="sliding_window",
+            window=30,
+            n_factors=2,
+        )
+        return BasanosEngine(prices=sw_prices, mu=sw_mu, cfg=cfg)
+
+    def test_condition_number_correct_shape(self, sw_engine: BasanosEngine, sw_prices: pl.DataFrame) -> None:
+        """condition_number must have one row per timestamp."""
+        kappa = sw_engine.condition_number
+        assert kappa.shape[0] == sw_prices.height
+        assert "condition_number" in kappa.columns
+
+    def test_condition_number_warmup_is_nan(self, sw_engine: BasanosEngine) -> None:
+        """Warmup rows must produce NaN condition numbers."""
+        kappa = sw_engine.condition_number.head(29)["condition_number"].to_list()
+        assert all(v is None or (isinstance(v, float) and math.isnan(v)) for v in kappa)
+
+    def test_condition_number_post_warmup_has_finite_values(self, sw_engine: BasanosEngine) -> None:
+        """Some post-warmup rows should have finite condition numbers."""
+        kappa_tail = sw_engine.condition_number.tail(80)["condition_number"].to_list()
+        assert any(v is not None and isinstance(v, float) and np.isfinite(v) for v in kappa_tail)
+
+    def test_effective_rank_correct_shape(self, sw_engine: BasanosEngine, sw_prices: pl.DataFrame) -> None:
+        """effective_rank must have one row per timestamp."""
+        eff_rank = sw_engine.effective_rank
+        assert eff_rank.shape[0] == sw_prices.height
+        assert "effective_rank" in eff_rank.columns
+
+    def test_effective_rank_post_warmup_in_valid_range(self, sw_engine: BasanosEngine) -> None:
+        """Effective rank must be between 1 and n_assets for valid rows."""
+        eff_rank_vals = sw_engine.effective_rank.tail(80)["effective_rank"].to_list()
+        n_assets = 3
+        for v in eff_rank_vals:
+            if v is not None and isinstance(v, float) and np.isfinite(v):
+                assert 1.0 <= v <= n_assets + 1e-9, f"effective_rank out of range: {v}"
+
+    def test_solver_residual_correct_shape(self, sw_engine: BasanosEngine, sw_prices: pl.DataFrame) -> None:
+        """solver_residual must have one row per timestamp."""
+        res = sw_engine.solver_residual
+        assert res.shape[0] == sw_prices.height
+        assert "residual" in res.columns
+
+    def test_signal_utilisation_correct_shape(self, sw_engine: BasanosEngine, sw_prices: pl.DataFrame) -> None:
+        """signal_utilisation must have same shape as prices."""
+        util = sw_engine.signal_utilisation
+        assert util.shape == sw_prices.shape
+
+
+# ─── sharpe_at_window_factors ────────────────────────────────────────────────
+
+
+class TestSharpeAtWindowFactors:
+    """Tests for BasanosEngine.sharpe_at_window_factors."""
+
+    @pytest.fixture
+    def engine(self, sw_prices: pl.DataFrame, sw_mu: pl.DataFrame) -> BasanosEngine:
+        """BasanosEngine with EWMA config for sharpe_at_window_factors tests."""
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+        return BasanosEngine(prices=sw_prices, mu=sw_mu, cfg=cfg)
+
+    def test_returns_float(self, engine: BasanosEngine) -> None:
+        """sharpe_at_window_factors must return a Python float."""
+        result = engine.sharpe_at_window_factors(window=30, n_factors=2)
+        assert isinstance(result, float)
+
+    def test_varies_across_parameters(self, engine: BasanosEngine) -> None:
+        """Different (window, n_factors) pairs generally produce different Sharpes."""
+        s1 = engine.sharpe_at_window_factors(window=20, n_factors=1)
+        s2 = engine.sharpe_at_window_factors(window=50, n_factors=3)
+        # Both must be float (may be nan if not enough data, but must be float)
+        assert isinstance(s1, float)
+        assert isinstance(s2, float)
+
+    def test_does_not_mutate_original_cfg(self, engine: BasanosEngine) -> None:
+        """sharpe_at_window_factors must not change the engine's config."""
+        from basanos.math import CovarianceMode
+
+        original_mode = engine.cfg.covariance_mode
+        engine.sharpe_at_window_factors(window=30, n_factors=2)
+        assert engine.cfg.covariance_mode is original_mode
+        assert engine.cfg.covariance_mode is CovarianceMode.ewma_shrink

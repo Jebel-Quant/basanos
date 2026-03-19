@@ -61,12 +61,13 @@ dataset sizes.
 """
 
 import dataclasses
+import enum
 import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from scipy.signal import lfilter
 from scipy.stats import spearmanr
 
@@ -80,6 +81,7 @@ from ..exceptions import (
     ShapeMismatchError,
     SingularMatrixError,
 )
+from ._factor_model import FactorModel
 from ._linalg import inv_a_norm, solve, valid
 from ._signal import shrink2id, vol_adj
 
@@ -204,6 +206,43 @@ def _ewm_corr_numpy(
     return result
 
 
+class CovarianceMode(enum.StrEnum):
+    r"""Covariance estimation mode for the Basanos optimizer.
+
+    Attributes:
+        ewma_shrink: EWMA correlation matrix with linear shrinkage toward the
+            identity.  Controlled by :attr:`BasanosConfig.shrink`.
+            This is the default mode.
+        sliding_window: Rolling-window factor model.  A fixed block of the
+            ``W`` most recent volatility-adjusted returns is decomposed via
+            truncated SVD into ``k`` latent factors, giving the estimator
+
+            .. math::
+
+                \\hat{C}_t^{(W,k)} = \\frac{1}{W}
+                    \\mathbf{V}_{k,t}\\mathbf{\\Sigma}_{k,t}^2\\mathbf{V}_{k,t}^\\top
+                    + \\hat{D}_t
+
+            where :math:`\\hat{D}_t` is chosen to enforce unit diagonal.
+            The system is solved efficiently via the Woodbury identity
+            (Section 4.3 of basanos.pdf) at :math:`O(k^3 + kn)` per step
+            rather than :math:`O(n^3)`.
+            Controlled by :attr:`BasanosConfig.window` and
+            :attr:`BasanosConfig.n_factors`.
+
+    Examples:
+        >>> CovarianceMode.ewma_shrink
+        <CovarianceMode.ewma_shrink: 'ewma_shrink'>
+        >>> CovarianceMode.sliding_window
+        <CovarianceMode.sliding_window: 'sliding_window'>
+        >>> CovarianceMode("sliding_window")
+        <CovarianceMode.sliding_window: 'sliding_window'>
+    """
+
+    ewma_shrink = "ewma_shrink"
+    sliding_window = "sliding_window"
+
+
 class BasanosConfig(BaseModel):
     r"""Configuration for correlation-aware position optimization.
 
@@ -312,12 +351,49 @@ class BasanosConfig(BaseModel):
         information.  Callers who want a stricter gate can lower this
         value; callers running on sparse data can raise it toward 1.0.
 
+    Sliding-window mode
+    -------------------
+    When ``covariance_mode = "sliding_window"``, the EWMA correlation
+    estimator is replaced by a rolling-window factor model (Section 4.4 of
+    basanos.pdf).  At each timestamp *t* the :math:`W \\times n` submatrix of
+    the :math:`W` most recent volatility-adjusted returns is decomposed via
+    truncated SVD to extract :math:`k` latent factors.  The resulting
+    correlation estimate is
+
+    .. math::
+
+        \\hat{C}_t^{(W,k)}
+        = \\frac{1}{W}\\mathbf{V}_{k,t}\\mathbf{\\Sigma}_{k,t}^2
+          \\mathbf{V}_{k,t}^\\top + \\hat{D}_t
+
+    where :math:`\\hat{D}_t` enforces unit diagonal.  The linear system
+    :math:`\\hat{C}_t^{(W,k)}\\mathbf{x}_t = \\boldsymbol{\\mu}_t` is solved
+    via the Woodbury identity (:func:`~basanos.math._factor_model.FactorModel.solve`)
+    at cost :math:`O(k^3 + kn)` per step rather than :math:`O(n^3)`.
+
+    ``window``
+        Rolling window length :math:`W \\geq 1`.  Rule of thumb: :math:`W
+        \\geq 2n` keeps the sample covariance well-posed before truncation.
+        Required when ``covariance_mode = "sliding_window"``.
+
+    ``n_factors``
+        Number of latent factors :math:`k \\geq 1`.  :math:`k = 1` recovers
+        the single market-factor model; larger :math:`k` captures finer
+        correlation structure at the cost of higher estimation noise.
+        Required when ``covariance_mode = "sliding_window"``.
+
     Examples:
         >>> cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
         >>> cfg.vola
         32
         >>> cfg.corr
         64
+        >>> sw_cfg = BasanosConfig(
+        ...     vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6,
+        ...     covariance_mode="sliding_window", window=60, n_factors=3,
+        ... )
+        >>> sw_cfg.covariance_mode
+        <CovarianceMode.sliding_window: 'sliding_window'>
     """
 
     vola: int = Field(..., gt=0, description="EWMA lookback for volatility normalization.")
@@ -334,7 +410,8 @@ class BasanosConfig(BaseModel):
             "with the identity (maximum shrinkage, positions are treated as uncorrelated). "
             "Values in [0.3, 0.8] are typical for daily financial return data. "
             "Lower values improve numerical stability when assets are many relative to the "
-            "lookback (high concentration ratio n/T). See shrink2id() for full guidance."
+            "lookback (high concentration ratio n/T). See shrink2id() for full guidance. "
+            "Only used when covariance_mode='ewma_shrink'."
         ),
     )
     aum: float = Field(..., gt=0.0, description="Assets under management for portfolio scaling.")
@@ -398,6 +475,34 @@ class BasanosConfig(BaseModel):
             "that are almost entirely null."
         ),
     )
+    covariance_mode: CovarianceMode = Field(
+        default=CovarianceMode.ewma_shrink,
+        description=(
+            "Covariance estimation mode. "
+            "'ewma_shrink': EWMA correlation with linear shrinkage toward the identity (default). "
+            "'sliding_window': rolling-window factor model with k latent factors; requires "
+            "'window' and 'n_factors' to be set. See Section 4.4 of basanos.pdf."
+        ),
+    )
+    window: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Sliding window length W (number of most recent observations). "
+            "Required when covariance_mode='sliding_window'. "
+            "Rule of thumb: W >= 2 * n_assets to keep the sample covariance well-posed."
+        ),
+    )
+    n_factors: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Number of latent factors k for the sliding window factor model. "
+            "Required when covariance_mode='sliding_window'. "
+            "k=1 recovers the single market-factor model; larger k captures finer correlation "
+            "structure at the cost of higher estimation noise."
+        ),
+    )
 
     model_config = {"frozen": True, "extra": "forbid"}
 
@@ -440,6 +545,16 @@ class BasanosConfig(BaseModel):
         if vola is not None and v < vola:
             raise ValueError
         return v
+
+    @model_validator(mode="after")
+    def _validate_sliding_window_params(self) -> "BasanosConfig":
+        """Enforce that window and n_factors are set in sliding_window mode."""
+        if self.covariance_mode == CovarianceMode.sliding_window:
+            if self.window is None:
+                raise ValueError("'window' must be set when covariance_mode='sliding_window'")  # noqa: TRY003
+            if self.n_factors is None:
+                raise ValueError("'n_factors' must be set when covariance_mode='sliding_window'")  # noqa: TRY003
+        return self
 
 
 @dataclasses.dataclass(frozen=True)
@@ -640,32 +755,101 @@ class BasanosEngine:
         """
         return np.stack(list(self.cor.values()), axis=0)
 
+    def _iter_matrices(self):
+        r"""Yield ``(i, t, mask, matrix)`` for every timestamp.
+
+        ``matrix`` is the effective :math:`(n_{\\text{sub}},\\ n_{\\text{sub}})`
+        correlation matrix for the active assets (those with finite prices at
+        timestamp *t*).  Yields ``None`` when no valid matrix is available
+        (e.g., before the warm-up period has elapsed or when no assets have
+        finite prices).
+
+        The behaviour depends on :attr:`BasanosConfig.covariance_mode`:
+
+        * ``ewma_shrink``:  Applies :func:`~basanos.math._signal.shrink2id` to
+          the EWMA correlation matrix (same computation as
+          :attr:`cash_position`).
+        * ``sliding_window``: Builds a
+          :class:`~basanos.math._factor_model.FactorModel` from the last
+          ``cfg.window`` rows of vol-adjusted returns and returns its
+          :attr:`~basanos.math._factor_model.FactorModel.covariance`.
+
+        Yields:
+            tuple: ``(i, t, mask, matrix)`` where
+
+            * ``i`` (*int*): Row index into ``self.prices``.
+            * ``t``: Timestamp value from ``self.prices["date"]``.
+            * ``mask`` (*np.ndarray[bool]*): Shape ``(n_assets,)``; ``True``
+              for assets with finite prices at row *i*.
+            * ``matrix`` (*np.ndarray | None*): Shape
+              ``(mask.sum(), mask.sum())`` or ``None``.
+        """
+        assets = self.assets
+        prices_num = self.prices.select(assets).to_numpy()
+        dates = self.prices["date"].to_list()
+
+        if self.cfg.covariance_mode == CovarianceMode.ewma_shrink:
+            cor = self.cor
+            for i, t in enumerate(dates):
+                mask = np.isfinite(prices_num[i])
+                if not mask.any():
+                    yield i, t, mask, None
+                    continue
+                corr_n = cor[t]
+                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+                yield i, t, mask, matrix
+        else:
+            win_w = self.cfg.window
+            win_k = self.cfg.n_factors
+            ret_adj_np = self.ret_adj.select(assets).to_numpy()
+            for i, t in enumerate(dates):
+                mask = np.isfinite(prices_num[i])
+                if not mask.any() or i + 1 < win_w:  # type: ignore[operator]
+                    yield i, t, mask, None
+                    continue
+                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]  # type: ignore[index]
+                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
+                n_sub = int(mask.sum())
+                k_eff = min(win_k, win_w, n_sub)  # type: ignore[arg-type]
+                if k_eff < 1:
+                    yield i, t, mask, None
+                    continue
+                try:
+                    fm = FactorModel.from_returns(window_ret, k=k_eff)
+                    yield i, t, mask, fm.covariance
+                except Exception:
+                    yield i, t, mask, None
+
     @property
     def cash_position(self) -> pl.DataFrame:
-        """Optimize correlation-aware risk positions for each timestamp.
+        r"""Optimize correlation-aware risk positions for each timestamp.
 
-        Computes EWMA correlations (via ``self.cor``), applies shrinkage toward
-        the identity matrix with intensity ``cfg.shrink``, and solves a
-        normalized linear system A x = mu per timestamp to obtain stable,
-        scale-invariant positions. Non-finite or ill-posed cases yield zero
-        positions for safety.
+        Supports two covariance modes controlled by ``cfg.covariance_mode``:
+
+        * ``'ewma_shrink'`` (default): Computes EWMA correlations, applies
+          linear shrinkage toward the identity, and solves a normalised linear
+          system :math:`C\\,x = \\mu` per timestamp via Cholesky / LU.
+
+        * ``'sliding_window'``: At each timestamp uses the ``cfg.window`` most
+          recent vol-adjusted returns to fit a rank-``cfg.n_factors`` factor
+          model via truncated SVD and solves the system via the Woodbury identity
+          at :math:`O(k^3 + kn)` rather than :math:`O(n^3)` per step.
+
+        Non-finite or ill-posed cases yield zero positions for safety.
 
         Returns:
             pl.DataFrame: DataFrame with columns ['date'] + asset names containing
             the per-timestamp cash positions (risk divided by EWMA volatility).
 
         Performance:
-            Dominant cost is ``self.cor`` (O(T·N²) time, O(T·N²) memory — see
-            :func:`_ewm_corr_numpy`).  The per-timestamp linear solve via
-            Cholesky / LU decomposition adds O(N³) per row for a total solve
-            cost of O(T·N³).  For *N* = 100 and *T* = 2 520 (~10 years daily)
-            the solve contributes approximately 2.52 * 10^9 floating-point
-            operations (upper bound; Cholesky is N³/3 + O(N²)); at *N* = 1 000
-            this rises to roughly 2.52 * 10^12, making the per-row solve the
-            dominant compute bottleneck for large universes.
+            For ``ewma_shrink``: dominant cost is ``self.cor`` (O(T·N²) time,
+            O(T·N²) memory — see :func:`_ewm_corr_numpy`).  The per-timestamp
+            linear solve adds O(N³) per row.
+
+            For ``sliding_window``: O(T·W·N·k) for sliding SVDs plus
+            O(T·(k³ + kN)) for Woodbury solves.  Memory is O(W·N) per step,
+            independent of T.
         """
-        # compute the correlation matrices
-        cor = self.cor
         assets = self.assets
 
         # Compute risk positions row-by-row using correlation shrinkage (NumPy)
@@ -681,7 +865,19 @@ class BasanosEngine:
         profit_variance = self.cfg.profit_variance_init
         lamb = self.cfg.profit_variance_decay
 
-        for i, t in enumerate(cor.keys()):
+        if self.cfg.covariance_mode == CovarianceMode.ewma_shrink:
+            # ── EWMA / shrinkage path ───────────────────────────────────────
+            cor = self.cor
+            index_iter = list(cor.keys())
+        else:
+            # ── Sliding window path ─────────────────────────────────────────
+            cor = None
+            index_iter = self.prices["date"].to_list()
+            ret_adj_np = self.ret_adj.select(assets).to_numpy()
+            win_w = self.cfg.window
+            win_k = self.cfg.n_factors
+
+        for i, t in enumerate(index_iter):
             # get the mask of finite prices for this timestamp
             mask = np.isfinite(prices_num[i])
 
@@ -700,41 +896,82 @@ class BasanosEngine:
             if not mask.any():
                 continue
 
-            # get the correlation matrix for this timestamp
-            corr_n = cor[t]
+            if self.cfg.covariance_mode == CovarianceMode.ewma_shrink:
+                # get the correlation matrix for this timestamp and shrink it
+                corr_n = cor[t]  # type: ignore[index]
+                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
 
-            # shrink the correlation matrix towards identity
-            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+                # get the expected-return vector for this timestamp
+                expected_mu = np.nan_to_num(mu[i][mask])
 
-            # get the expected-return vector for this timestamp
-            expected_mu = np.nan_to_num(mu[i][mask])
-
-            # Short-circuit when signal is zero - no position needed, skip norm computation
-            if np.allclose(expected_mu, 0.0):
-                pos = np.zeros_like(expected_mu)
-            else:
-                # Normalize solution; guard against zero/near-zero norm to avoid NaNs.
-                # inv_a_norm returns float(np.nan) when no valid entries exist (never None).
-                denom = inv_a_norm(expected_mu, matrix)
-
-                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                    _logger.warning(
-                        "Positions zeroed at t=%s: normalisation denominator is degenerate "
-                        "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
-                        t,
-                        denom,
-                        self.cfg.denom_tol,
-                        extra={
-                            "context": {
-                                "t": str(t),
-                                "denom": denom,
-                                "denom_tol": self.cfg.denom_tol,
-                            }
-                        },
-                    )
+                # Short-circuit when signal is zero
+                if np.allclose(expected_mu, 0.0):
                     pos = np.zeros_like(expected_mu)
                 else:
-                    pos = solve(matrix, expected_mu) / denom
+                    denom = inv_a_norm(expected_mu, matrix)
+                    if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                        _logger.warning(
+                            "Positions zeroed at t=%s: normalisation denominator is degenerate "
+                            "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
+                            t,
+                            denom,
+                            self.cfg.denom_tol,
+                            extra={
+                                "context": {
+                                    "t": str(t),
+                                    "denom": denom,
+                                    "denom_tol": self.cfg.denom_tol,
+                                }
+                            },
+                        )
+                        pos = np.zeros_like(expected_mu)
+                    else:
+                        pos = solve(matrix, expected_mu) / denom
+            else:
+                # ── Sliding window: fit factor model on the last W rows ─────
+                if i + 1 < win_w:  # type: ignore[operator]
+                    continue  # not enough history yet
+
+                # Extract the (W, n_sub) window of vol-adjusted returns
+                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]  # type: ignore[index]
+                # Replace NaN with 0 (neutral: no systematic contribution)
+                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
+
+                n_sub = int(mask.sum())
+                k_eff = min(win_k, win_w, n_sub)  # type: ignore[arg-type]
+                if k_eff < 1:
+                    continue
+
+                try:
+                    fm = FactorModel.from_returns(window_ret, k=k_eff)
+                except Exception as exc:
+                    _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
+                    continue
+
+                expected_mu = np.nan_to_num(mu[i][mask])
+
+                if np.allclose(expected_mu, 0.0):
+                    pos = np.zeros(n_sub)
+                else:
+                    try:
+                        # Solve Ĉ x = μ via Woodbury identity: x = fm.solve(μ)
+                        x = fm.solve(expected_mu)
+                        # Normalisation denominator sqrt(μᵀ C⁻¹ μ) = sqrt(μᵀ x)
+                        denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
+                    except Exception:
+                        pos = np.zeros(n_sub)
+                    else:
+                        if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                            _logger.warning(
+                                "Positions zeroed at t=%s (sliding_window): normalisation "
+                                "denominator is degenerate (denom=%s, denom_tol=%s).",
+                                t,
+                                denom,
+                                self.cfg.denom_tol,
+                            )
+                            pos = np.zeros(n_sub)
+                        else:
+                            pos = x / denom
 
             risk_pos_np[i, mask] = pos / profit_variance
             with np.errstate(invalid="ignore"):
@@ -791,27 +1028,22 @@ class BasanosEngine:
 
     @property
     def condition_number(self) -> pl.DataFrame:
-        """Condition number κ of the shrunk correlation matrix C_shrunk at each timestamp.
+        """Condition number κ of the effective correlation matrix at each timestamp.
 
-        Applies the same shrinkage as ``cash_position`` (``cfg.shrink``) to the
-        per-timestamp EWM correlation matrix and computes ``np.linalg.cond``.
-        Only the sub-matrix corresponding to assets with finite prices at that
-        timestamp is used; rows with no finite prices yield ``NaN``.
+        Uses the same covariance mode as :attr:`cash_position`: for
+        ``ewma_shrink`` this is the shrunk EWMA matrix; for ``sliding_window``
+        it is the factor-model covariance.  Only the sub-matrix corresponding
+        to assets with finite prices at that timestamp is used; rows with no
+        finite prices yield ``NaN``.
 
         Returns:
             pl.DataFrame: Two-column DataFrame ``{'date': ..., 'condition_number': ...}``.
         """
-        cor = self.cor
-        assets = self.assets
-        prices_num = self.prices.select(assets).to_numpy()
-
         kappas: list[float] = []
-        for i, (_t, corr_n) in enumerate(cor.items()):
-            mask = np.isfinite(prices_num[i])
-            if not mask.any():
+        for _i, _t, _mask, matrix in self._iter_matrices():
+            if matrix is None:
                 kappas.append(float(np.nan))
                 continue
-            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
             _v, mat = valid(matrix)
             if not _v.any():
                 kappas.append(float(np.nan))
@@ -822,7 +1054,7 @@ class BasanosEngine:
 
     @property
     def effective_rank(self) -> pl.DataFrame:
-        r"""Effective rank of the shrunk correlation matrix C_shrunk at each timestamp.
+        r"""Effective rank of the effective correlation matrix at each timestamp.
 
         Measures the true dimensionality of the portfolio by computing the
         entropy-based effective rank:
@@ -832,26 +1064,20 @@ class BasanosEngine:
             \\text{eff\\_rank} = \\exp\\!\\left(-\\sum_i p_i \\ln p_i\\right),
             \\quad p_i = \\frac{\\lambda_i}{\\sum_j \\lambda_j}
 
-        where :math:`\\lambda_i` are the eigenvalues of ``C_shrunk`` (restricted
-        to assets with finite prices at that timestamp).  A value equal to the
-        number of assets indicates a perfectly uniform spectrum (identity-like
-        matrix); a value of 1 indicates a rank-1 matrix dominated by one
-        direction.
+        where :math:`\\lambda_i` are the eigenvalues of the effective
+        correlation matrix (restricted to assets with finite prices at that
+        timestamp).  Uses the same covariance mode as :attr:`cash_position`.
+        A value equal to the number of assets indicates a perfectly uniform
+        spectrum; a value of 1 indicates a rank-1 matrix.
 
         Returns:
             pl.DataFrame: Two-column DataFrame ``{'date': ..., 'effective_rank': ...}``.
         """
-        cor = self.cor
-        assets = self.assets
-        prices_num = self.prices.select(assets).to_numpy()
-
         ranks: list[float] = []
-        for i, (_t, corr_n) in enumerate(cor.items()):
-            mask = np.isfinite(prices_num[i])
-            if not mask.any():
+        for _i, _t, _mask, matrix in self._iter_matrices():
+            if matrix is None:
                 ranks.append(float(np.nan))
                 continue
-            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
             _v, mat = valid(matrix)
             if not _v.any():
                 ranks.append(float(np.nan))
@@ -871,31 +1097,28 @@ class BasanosEngine:
 
     @property
     def solver_residual(self) -> pl.DataFrame:
-        r"""Per-timestamp solver residual ``‖C_shrunk·x - μ‖₂``.
+        r"""Per-timestamp solver residual ``‖C·x - μ‖₂``.
 
-        After solving the normalised linear system ``C_shrunk · x = μ`` at
+        After solving the normalised linear system ``C · x = μ`` at
         each timestamp, this property reports the Euclidean residual norm.
         For a well-posed, well-conditioned system the residual is near machine
         epsilon; large values flag numerical difficulties (near-singular
         matrices, extreme condition numbers, or solver fall-back to LU).
+        Uses the same covariance mode as :attr:`cash_position`.
 
         Returns:
             pl.DataFrame: Two-column DataFrame ``{'date': ..., 'residual': ...}``.
             Zero is returned when ``μ`` is the zero vector (no solve is
             performed).  ``NaN`` is returned when no asset has finite prices.
         """
-        cor = self.cor
         assets = self.assets
         mu_np = self.mu.select(assets).to_numpy()
-        prices_num = self.prices.select(assets).to_numpy()
 
         residuals: list[float] = []
-        for i, (t, corr_n) in enumerate(cor.items()):
-            mask = np.isfinite(prices_num[i])
-            if not mask.any():
+        for i, t, mask, matrix in self._iter_matrices():
+            if matrix is None:
                 residuals.append(float(np.nan))
                 continue
-            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
             expected_mu = np.nan_to_num(mu_np[i][mask])
             if np.allclose(expected_mu, 0.0):
                 residuals.append(0.0)
@@ -903,11 +1126,7 @@ class BasanosEngine:
             try:
                 x = solve(matrix, expected_mu)
             except SingularMatrixError:
-                # The (shrunk) covariance matrix is degenerate — e.g. the EWM
-                # window has not yet accumulated enough data, or the asset
-                # returns are collinear.  The linear system has no unique
-                # solution, so the residual norm is undefined and NaN is the
-                # correct sentinel.
+                # The covariance matrix is degenerate — residual is undefined.
                 _logger.warning(
                     "solver_residual: SingularMatrixError at t=%s - covariance matrix is "
                     "degenerate; residual set to NaN.",
@@ -933,12 +1152,14 @@ class BasanosEngine:
 
         .. math::
 
-            u_i = \\frac{(C_{\\text{shrunk}}^{-1}\\,\\mu)_i}{\\mu_i}
+            u_i = \\frac{(C^{-1}\\,\\mu)_i}{\\mu_i}
 
-        where :math:`C_{\\text{shrunk}}^{-1}\\,\\mu` is the unnormalised solve
-        result.  When :math:`C = I` (identity) all assets have utilisation 1.
-        Off-diagonal correlations attenuate some assets (:math:`u_i < 1`) and
-        may amplify negatively correlated ones (:math:`u_i > 1`).
+        where :math:`C^{-1}\\,\\mu` is the unnormalised solve result using
+        the effective correlation matrix for the current
+        :attr:`~BasanosConfig.covariance_mode`.  When :math:`C = I`
+        (identity) all assets have utilisation 1.  Off-diagonal correlations
+        attenuate some assets (:math:`u_i < 1`) and may amplify negatively
+        correlated ones (:math:`u_i > 1`).
 
         A value of ``0.0`` is returned when the entire signal vector
         :math:`\\mu` is near zero at that timestamp (no solve is performed).
@@ -948,20 +1169,16 @@ class BasanosEngine:
         Returns:
             pl.DataFrame: DataFrame with columns ``['date'] + assets``.
         """
-        cor = self.cor
         assets = self.assets
         mu_np = self.mu.select(assets).to_numpy()
-        prices_num = self.prices.select(assets).to_numpy()
 
         _mu_tol = 1e-14  # treat |μ_i| below this as zero to avoid spurious large ratios
         n_assets = len(assets)
         util_np = np.full((self.prices.height, n_assets), np.nan)
 
-        for i, (t, corr_n) in enumerate(cor.items()):
-            mask = np.isfinite(prices_num[i])
-            if not mask.any():
+        for i, t, mask, matrix in self._iter_matrices():
+            if matrix is None:
                 continue
-            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
             expected_mu = np.nan_to_num(mu_np[i][mask])
             if np.allclose(expected_mu, 0.0):
                 util_np[i, mask] = 0.0
@@ -969,10 +1186,7 @@ class BasanosEngine:
             try:
                 x = solve(matrix, expected_mu)
             except SingularMatrixError:
-                # The (shrunk) covariance matrix is degenerate — the portfolio
-                # allocation is undefined at this timestamp.  All asset
-                # utilisations remain NaN (the array was pre-filled with NaN),
-                # which correctly signals that no valid ratio could be computed.
+                # The covariance matrix is degenerate — utilisation is undefined.
                 _logger.warning(
                     "signal_utilisation: SingularMatrixError at t=%s - covariance matrix is "
                     "degenerate; utilisation set to NaN.",
@@ -1047,6 +1261,54 @@ class BasanosEngine:
             True
         """
         new_cfg = self.cfg.model_copy(update={"shrink": shrink})
+        engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
+        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+
+    def sharpe_at_window_factors(self, window: int, n_factors: int) -> float:
+        r"""Return the annualised portfolio Sharpe ratio for the given sliding-window parameters.
+
+        Constructs a new :class:`BasanosEngine` with ``covariance_mode`` set to
+        ``"sliding_window"`` and the supplied ``window`` / ``n_factors``, keeping
+        all other configuration identical to ``self``.
+
+        Use this method to sweep ``(W, k)`` and compare the sliding-window
+        estimator against the EWMA baseline (via :meth:`sharpe_at_shrink`).
+
+        Args:
+            window: Rolling window length :math:`W \\geq 1`.
+                Rule of thumb: :math:`W \\geq 2 \\cdot n_{\\text{assets}}`.
+            n_factors: Number of latent factors :math:`k \\geq 1`.
+
+        Returns:
+            Annualised Sharpe ratio of the portfolio returns as a ``float``.
+            Returns ``float("nan")`` when the Sharpe ratio cannot be computed
+            (e.g. not enough history to fill the first window).
+
+        Raises:
+            ValidationError: When ``window`` or ``n_factors`` fail field
+                constraints (delegated to :class:`BasanosConfig`).
+
+        Examples:
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
+            >>> dates = pl.Series("date", list(range(200)))
+            >>> rng = np.random.default_rng(0)
+            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
+            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> s = engine.sharpe_at_window_factors(window=40, n_factors=2)
+            >>> isinstance(s, float)
+            True
+        """
+        new_cfg = self.cfg.model_copy(
+            update={
+                "covariance_mode": CovarianceMode.sliding_window,
+                "window": window,
+                "n_factors": n_factors,
+            }
+        )
         engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
         return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
 
