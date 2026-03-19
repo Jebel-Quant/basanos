@@ -61,6 +61,9 @@ The output of the solve is a *risk position* (units of volatility). Dividing by 
 
 - **Correlation-Aware Optimization** — EWMA correlation estimation with shrinkage towards identity
 - **Dynamic Risk Management** — Volatility-normalized positions with configurable clipping and variance scaling
+- **Signal Evaluation** — IC and Rank IC time series, ICIR summary statistics, and a naïve equal-weight Sharpe benchmark to isolate signal skill
+- **Diagnostic Properties** — Condition number, effective rank, solver residual, signal utilisation, risk position, and gross leverage for every timestamp
+- **Factor Risk Model** — `FactorModel` decomposition Σ = B·F·Bᵀ + D fitted via truncated SVD for low-rank covariance inspection
 - **Portfolio Analytics** — Sharpe, VaR, CVaR, drawdown, skew, kurtosis, and more
 - **Performance Attribution** — Tilt/timing decomposition to isolate allocation vs. selection effects
 - **Interactive Visualizations** — Plotly dashboards for NAV, drawdown, lead/lag analysis, and correlation heatmaps
@@ -468,13 +471,14 @@ See [`BENCHMARKS.md`](BENCHMARKS.md) for full results and regression baselines.
 ### `basanos.math`
 
 ```python
-from basanos.math import BasanosConfig, BasanosEngine
+from basanos.math import BasanosConfig, BasanosEngine, FactorModel
 ```
 
 | Class | Description |
 |-------|-------------|
 | `BasanosConfig` | Immutable configuration (Pydantic model) |
 | `BasanosEngine` | Core optimizer; produces positions and a `Portfolio` |
+| `FactorModel` | Factor risk model decomposition Σ = B·F·Bᵀ + D |
 
 **`BasanosEngine` properties**
 
@@ -484,9 +488,30 @@ from basanos.math import BasanosConfig, BasanosEngine
 | `ret_adj` | `pl.DataFrame` | Vol-adjusted, clipped log returns |
 | `vola` | `pl.DataFrame` | Per-asset EWMA volatility |
 | `cor` | `dict[date, np.ndarray]` | EWMA correlation matrices keyed by date |
-| `cash_position` | `pl.DataFrame` | Optimized cash positions |
+| `cor_tensor` | `np.ndarray` | All correlation matrices stacked as a `(T, N, N)` tensor; supports `.npy` round-trip |
+| `cash_position` | `pl.DataFrame` | Optimized cash positions (risk divided by EWMA volatility) |
+| `risk_position` | `pl.DataFrame` | Risk positions before volatility scaling (= `cash_position × vola`) |
+| `position_leverage` | `pl.DataFrame` | L1 norm of cash positions (gross leverage) per timestamp |
+| `condition_number` | `pl.DataFrame` | Condition number κ of the shrunk correlation matrix per timestamp |
+| `effective_rank` | `pl.DataFrame` | Entropy-based effective rank of the shrunk correlation matrix per timestamp |
+| `solver_residual` | `pl.DataFrame` | Euclidean residual norm ‖C_shrunk·x − μ‖₂ per timestamp |
+| `signal_utilisation` | `pl.DataFrame` | Per-asset fraction of μ surviving the correlation filter; 1 when C = I |
+| `ic` | `pl.DataFrame` | Cross-sectional Pearson IC time series (signal vs. one-period forward return) |
+| `rank_ic` | `pl.DataFrame` | Cross-sectional Spearman Rank IC time series |
+| `ic_mean` | `float` | Mean IC across all timestamps (NaN-ignoring) |
+| `ic_std` | `float` | Sample standard deviation of IC |
+| `icir` | `float` | IC Information Ratio (`ic_mean / ic_std`) |
+| `rank_ic_mean` | `float` | Mean Rank IC across all timestamps |
+| `rank_ic_std` | `float` | Sample standard deviation of Rank IC |
+| `naive_sharpe` | `float` | Sharpe ratio of the naïve equal-weight signal (μ = 1 benchmark) |
 | `portfolio` | `Portfolio` | Ready-to-use portfolio for analytics |
 | `config_report` | `ConfigReport` | HTML report with lambda-sweep chart + parameter table |
+
+**`BasanosEngine` methods**
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `sharpe_at_shrink` | `sharpe_at_shrink(shrink: float) → float` | Annualised Sharpe ratio for a given shrinkage weight λ ∈ [0, 1]; use for lambda sweeps |
 
 **`BasanosConfig` properties**
 
@@ -579,6 +604,48 @@ from basanos.analytics import Portfolio
 
 ---
 
+### `basanos.math.FactorModel`
+
+A frozen dataclass representing a factor risk model decomposition:
+
+```
+Σ = B · F · Bᵀ + D
+```
+
+where **B** (n×k) is the factor loading matrix, **F** (k×k) is the factor covariance matrix, and **D** is the diagonal idiosyncratic variance.
+
+```python
+from basanos.math import FactorModel
+import numpy as np
+
+# Fit from a return matrix (T×n) using truncated SVD
+returns = np.random.default_rng(0).normal(size=(200, 5))
+fm = FactorModel.from_returns(returns, k=2)
+
+fm.n_assets    # 5
+fm.n_factors   # 2
+fm.covariance  # reconstructed (5, 5) covariance matrix
+```
+
+**`FactorModel` attributes**
+
+| Attribute | Shape | Description |
+|-----------|-------|-------------|
+| `factor_loadings` | `(n, k)` | Factor loading matrix **B**; column *j* gives each asset's sensitivity to factor *j* |
+| `factor_covariance` | `(k, k)` | Factor covariance matrix **F** (positive definite) |
+| `idiosyncratic_var` | `(n,)` | Per-asset idiosyncratic variance (strictly positive) |
+
+**`FactorModel` properties and methods**
+
+| Name | Returns | Description |
+|------|---------|-------------|
+| `n_assets` | `int` | Number of assets *n* |
+| `n_factors` | `int` | Number of factors *k* |
+| `covariance` | `np.ndarray (n, n)` | Reconstructed full covariance matrix Σ = B·F·Bᵀ + D |
+| `from_returns(returns, k)` | `FactorModel` | Class method; fits the model from a `(T, n)` return matrix via truncated SVD |
+
+---
+
 ### `basanos.math.ConfigReport`
 
 Accessed via `cfg.report` (config-only) or `engine.config_report` (includes lambda sweep).
@@ -616,13 +683,26 @@ dark-themed styling, a statistics table, and embedded interactive Plotly charts.
 
 ## Configuration Reference
 
+**Required parameters**
+
 | Parameter | Type | Constraint | Description |
 |-----------|------|------------|-------------|
 | `vola` | `int` | `> 0` | EWMA lookback for volatility (days) |
 | `corr` | `int` | `>= vola` | EWMA lookback for correlation (days) |
 | `clip` | `float` | `> 0` | Clipping threshold for vol-adjusted returns |
-| `shrink` | `float` | `[0, 1]` | Shrinkage intensity — `0` = no shrinkage, `1` = identity |
+| `shrink` | `float` | `[0, 1]` | Shrinkage intensity — `0` = identity (no correlation adj.), `1` = raw EWMA |
 | `aum` | `float` | `> 0` | Assets under management for position scaling |
+
+**Optional parameters** (sensible defaults for most use cases)
+
+| Parameter | Type | Default | Constraint | Description |
+|-----------|------|---------|------------|-------------|
+| `profit_variance_init` | `float` | `1.0` | `> 0` | Initial value for the profit-variance EMA |
+| `profit_variance_decay` | `float` | `0.99` | `(0, 1)` | EMA decay factor λ for realised P&L variance; default gives ~69-period half-life |
+| `denom_tol` | `float` | `1e-12` | `> 0` | Minimum normalisation denominator; positions are zeroed at or below this threshold |
+| `position_scale` | `float` | `1e6` | `> 0` | Multiplicative factor applied to dimensionless risk positions to obtain base-currency cash positions |
+| `min_corr_denom` | `float` | `1e-14` | `> 0` | Guard threshold for the EWMA correlation denominator; correlations below this are set to NaN |
+| `max_nan_fraction` | `float` | `0.9` | `(0, 1)` | Maximum tolerated fraction of null values in any asset price column before raising `ExcessiveNullsError` |
 
 ```python
 from basanos.math import BasanosConfig
