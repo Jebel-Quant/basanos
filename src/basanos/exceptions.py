@@ -351,3 +351,27 @@ class MonotonicPricesError(BasanosError, ValueError):
             "(all non-decreasing or all non-increasing), indicating malformed or synthetic data."
         )
         self.asset = asset
+
+
+class FactorCountError(BasanosError, ValueError):
+    """Raised when the number of factors k exceeds the number of assets m.
+
+    The factor model requires k ≤ m: you cannot extract more factors than
+    there are assets in the universe.
+
+    Args:
+        k: Requested number of factors.
+        m: Actual number of assets available.
+
+    Examples:
+        >>> raise FactorCountError(5, 3)
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.FactorCountError: Factor count k=5 must not exceed the number of assets m=3.
+    """
+
+    def __init__(self, k: int, m: int) -> None:
+        """Initialize with the offending factor count and asset count."""
+        super().__init__(f"Factor count k={k} must not exceed the number of assets m={m}.")
+        self.k = k
+        self.m = m

@@ -28,6 +28,7 @@ import pytest
 from basanos.exceptions import (
     ColumnMismatchError,
     ExcessiveNullsError,
+    FactorCountError,
     MissingDateColumnError,
     MonotonicPricesError,
     NonPositivePricesError,
@@ -247,6 +248,63 @@ def test_basanos_config_new_fields_validation():
 
     with pytest.raises(ValueError, match=r".*"):
         BasanosConfig(**base, max_nan_fraction=1.0)
+
+
+# ─── Factor model config validation ──────────────────────────────────────────
+
+
+_base_cfg = {"vola": 16, "corr": 32, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
+
+
+def test_factor_config_defaults_are_none():
+    """N and k default to None when not provided."""
+    cfg = BasanosConfig(**_base_cfg)
+    assert cfg.n is None
+    assert cfg.k is None
+
+
+def test_factor_config_accepts_valid_n_and_k():
+    """N and k are accepted when both are set and n >= k."""
+    cfg = BasanosConfig(**_base_cfg, n=20, k=3)
+    assert cfg.n == 20
+    assert cfg.k == 3
+
+
+def test_factor_config_n_equals_k_is_valid():
+    """N == k is a valid boundary case."""
+    cfg = BasanosConfig(**_base_cfg, n=5, k=5)
+    assert cfg.n == 5
+    assert cfg.k == 5
+
+
+def test_factor_config_n_lt_k_raises():
+    """Setting n < k must raise a validation error."""
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**_base_cfg, n=3, k=5)
+
+
+def test_factor_config_only_n_raises():
+    """Setting only n (without k) must raise a validation error."""
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**_base_cfg, n=10)
+
+
+def test_factor_config_only_k_raises():
+    """Setting only k (without n) must raise a validation error."""
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**_base_cfg, k=3)
+
+
+def test_factor_config_n_zero_raises():
+    """N must be strictly positive."""
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**_base_cfg, n=0, k=1)
+
+
+def test_factor_config_k_zero_raises():
+    """K must be strictly positive."""
+    with pytest.raises(ValueError, match=r".*"):
+        BasanosConfig(**_base_cfg, n=5, k=0)
 
 
 # ─── BasanosEngine construction validation ────────────────────────────────────
@@ -1786,4 +1844,161 @@ class TestSharpeAtShrink:
         # They may coincidentally agree on some seeds, but with a sinusoidal signal they should differ
         assert naive != pytest.approx(signal_sharpe, abs=1e-6), (
             "naive_sharpe should differ from signal Sharpe for a non-constant signal"
+        )
+
+
+# ─── Factor model engine properties ──────────────────────────────────────────
+
+
+@pytest.fixture
+def factor_prices() -> pl.DataFrame:
+    """50-day, 4-asset non-monotonic price frame for factor model tests."""
+    n = 50
+    rng = np.random.default_rng(99)
+    start = date(2022, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    data = {
+        "date": dates,
+        "A": pl.Series(100.0 + np.cumsum(rng.normal(0.0, 0.5, n)), dtype=pl.Float64),
+        "B": pl.Series(200.0 + np.cumsum(rng.normal(0.0, 0.7, n)), dtype=pl.Float64),
+        "C": pl.Series(150.0 + np.cumsum(rng.normal(0.0, 0.4, n)), dtype=pl.Float64),
+        "D": pl.Series(80.0 + np.cumsum(rng.normal(0.0, 0.6, n)), dtype=pl.Float64),
+    }
+    return pl.DataFrame(data)
+
+
+@pytest.fixture
+def factor_mu(factor_prices: pl.DataFrame) -> pl.DataFrame:
+    """Sinusoidal signal aligned with factor_prices."""
+    n = factor_prices.height
+    theta = np.linspace(0.0, 4.0 * np.pi, num=n)
+    return pl.DataFrame(
+        {
+            "date": factor_prices["date"],
+            "A": pl.Series(np.tanh(np.sin(theta)), dtype=pl.Float64),
+            "B": pl.Series(np.tanh(np.cos(theta)), dtype=pl.Float64),
+            "C": pl.Series(np.tanh(np.sin(2.0 * theta)), dtype=pl.Float64),
+            "D": pl.Series(np.tanh(np.cos(2.0 * theta)), dtype=pl.Float64),
+        }
+    )
+
+
+class TestFactorModelEngine:
+    """Tests for BasanosEngine factor model integration.
+
+    The factor model feeds into ``cash_position`` via a yield-based rolling
+    window generator.  At each timestep the generator yields one R window;
+    C and W are computed on-the-fly inside the optimiser loop and are never
+    stored collectively.  These tests verify:
+
+    - ``FactorCountError`` is raised when k > m at engine construction time.
+    - ``factor_returns_matrix`` exposes the rolling R windows for inspection.
+    - ``cash_position`` runs end-to-end with the factor model path and
+      produces a well-shaped, finite-valued result consistent with a live
+      optimisation (not pre-stored intermediates).
+    - The factor path produces *different* positions than the EWMA path,
+      confirming the generator really does feed a different covariance.
+    - ``factor_returns_matrix`` raises when n/k are not configured.
+    """
+
+    @pytest.fixture
+    def engine(self, factor_prices: pl.DataFrame, factor_mu: pl.DataFrame) -> BasanosEngine:
+        """Engine configured with n=20, k=2 for 4-asset factor model tests."""
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6, n=20, k=2)
+        return BasanosEngine(prices=factor_prices, mu=factor_mu, cfg=cfg)
+
+    @pytest.fixture
+    def ewma_engine(self, factor_prices: pl.DataFrame, factor_mu: pl.DataFrame) -> BasanosEngine:
+        """Matching engine without factor params — uses the EWMA path."""
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+        return BasanosEngine(prices=factor_prices, mu=factor_mu, cfg=cfg)
+
+    def test_factor_count_error_raised_when_k_gt_m(self, factor_prices: pl.DataFrame, factor_mu: pl.DataFrame) -> None:
+        """FactorCountError must be raised when k exceeds the number of assets."""
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6, n=20, k=10)
+        with pytest.raises(FactorCountError) as exc_info:
+            BasanosEngine(prices=factor_prices, mu=factor_mu, cfg=cfg)
+        assert exc_info.value.k == 10
+        assert exc_info.value.m == 4  # 4 assets
+
+    def test_factor_returns_matrix_keys_match_dates(self, engine: BasanosEngine) -> None:
+        """factor_returns_matrix keys must match the price dates exactly."""
+        rm = engine.factor_returns_matrix
+        expected_dates = engine.prices["date"].to_list()
+        assert list(rm.keys()) == expected_dates
+
+    def test_factor_returns_matrix_shape(self, engine: BasanosEngine) -> None:
+        """Every rolling returns matrix must have shape (n, m)."""
+        n, m = engine.cfg.n, len(engine.assets)
+        rm = engine.factor_returns_matrix
+        for _t, ret_window in rm.items():
+            assert ret_window.shape == (n, m), f"Expected ({n}, {m}), got {ret_window.shape}"
+
+    def test_factor_returns_matrix_rolling_update(self, engine: BasanosEngine) -> None:
+        """The last row of R at each timestamp must match the vol-adj return for that step.
+
+        The rolling window slides forward by one row each period: row i of
+        ret_adj should appear as the bottom row of the window at timestamp i.
+        NaN values are replaced with 0 (the neutral fill used before SVD).
+
+        Three representative checkpoints are tested:
+        - ``n``: the first fully-populated window (no zero-padding)
+        - ``n + 5``: mid-series, well past warmup
+        - ``last``: the final timestamp, verifying end-of-series correctness
+        """
+        rm = engine.factor_returns_matrix
+        ret_adj_np = engine.ret_adj.select(engine.assets).to_numpy()
+        dates = engine.prices["date"].to_list()
+        for idx in [engine.cfg.n, engine.cfg.n + 5, len(dates) - 1]:
+            t = dates[idx]
+            np.testing.assert_allclose(
+                rm[t][-1],
+                np.nan_to_num(ret_adj_np[idx], nan=0.0),
+                atol=1e-10,
+            )
+
+    def test_factor_returns_matrix_raises_without_n_k(
+        self, factor_prices: pl.DataFrame, factor_mu: pl.DataFrame
+    ) -> None:
+        """factor_returns_matrix must raise ValueError when n/k are not configured."""
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=factor_prices, mu=factor_mu, cfg=cfg)
+        with pytest.raises(ValueError, match=r"cfg\.n"):
+            _ = engine.factor_returns_matrix
+
+    def test_cash_position_factor_path_shape(self, engine: BasanosEngine) -> None:
+        """cash_position with factor model must return a frame with the expected shape."""
+        cp = engine.cash_position
+        assert cp.shape == (engine.prices.height, len(engine.prices.columns))
+
+    def test_cash_position_factor_path_columns(self, engine: BasanosEngine) -> None:
+        """cash_position with factor model must include 'date' and all asset columns."""
+        cp = engine.cash_position
+        assert "date" in cp.columns
+        for asset in engine.assets:
+            assert asset in cp.columns
+
+    def test_cash_position_factor_path_finite_after_warmup(self, engine: BasanosEngine) -> None:
+        """After the rolling-window warmup, positions must be finite floats."""
+        cp = engine.cash_position
+        warmup = engine.cfg.n  # first n rows may be zero-padded
+        tail = cp.slice(warmup).select(engine.assets).to_numpy()
+        # At least some positions past warmup must be finite
+        assert np.isfinite(tail).any()
+
+    def test_cash_position_factor_differs_from_ewma(self, engine: BasanosEngine, ewma_engine: BasanosEngine) -> None:
+        """The factor-model path must produce different positions than the EWMA path.
+
+        Both engines share identical prices, signals, and hyper-parameters;
+        only the covariance source differs.  Positions should diverge because
+        the factor covariance is a low-rank sample estimate while EWMA uses an
+        exponentially-weighted filter.
+        """
+        cp_factor = engine.cash_position.select(engine.assets).to_numpy()
+        cp_ewma = ewma_engine.cash_position.select(ewma_engine.assets).to_numpy()
+        # Mask to rows where both have finite values
+        both_finite = np.isfinite(cp_factor) & np.isfinite(cp_ewma)
+        assert both_finite.any(), "No common finite positions to compare"
+        assert not np.allclose(cp_factor[both_finite], cp_ewma[both_finite]), (
+            "Factor-model positions are identical to EWMA positions — the factor path may not be active"
         )

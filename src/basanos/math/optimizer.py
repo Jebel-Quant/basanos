@@ -62,11 +62,12 @@ dataset sizes.
 
 import dataclasses
 import logging
-from typing import TYPE_CHECKING
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import polars as pl
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from scipy.signal import lfilter
 from scipy.stats import spearmanr
 
@@ -74,6 +75,7 @@ from ..analytics import Portfolio
 from ..exceptions import (
     ColumnMismatchError,
     ExcessiveNullsError,
+    FactorCountError,
     MissingDateColumnError,
     MonotonicPricesError,
     NonPositivePricesError,
@@ -81,7 +83,7 @@ from ..exceptions import (
     SingularMatrixError,
 )
 from ._linalg import inv_a_norm, solve, valid
-from ._signal import shrink2id, vol_adj
+from ._signal import factor_extract, factor_project, shrink2id, vol_adj
 
 if TYPE_CHECKING:
     from ._config_report import ConfigReport
@@ -398,6 +400,26 @@ class BasanosConfig(BaseModel):
             "that are almost entirely null."
         ),
     )
+    n: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Number of most recent return rows per asset for the rolling factor model "
+            "(lookback window).  Forms the returns matrix R of shape (n, m) that slides "
+            "forward by one row each period.  Must satisfy n >= k.  Both n and k must "
+            "be set together; leave both as None to use the default EWMA correlation approach."
+        ),
+    )
+    k: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Number of latent factors for the factor model (k <= m, where m is the number "
+            "of assets).  Extracted from R via truncated SVD; the factor covariance "
+            "W.T @ W / k replaces the full EWMA correlation matrix in the optimizer. "
+            "Both k and n must be set together."
+        ),
+    )
 
     model_config = {"frozen": True, "extra": "forbid"}
 
@@ -409,7 +431,7 @@ class BasanosConfig(BaseModel):
         parameters, a shrinkage-guidance table, and a theory section on
         Ledoit-Wolf shrinkage.
 
-        To also include a lambda-sweep chart (Sharpe vs λ), use
+        To also include a lambda-sweep chart (Sharpe vs lambda), use
         :attr:`BasanosEngine.config_report` instead, which requires price and
         signal data.
 
@@ -432,7 +454,7 @@ class BasanosConfig(BaseModel):
     @field_validator("corr")
     @classmethod
     def corr_greater_than_vola(cls, v: int, info: ValidationInfo) -> int:
-        """Optionally enforce corr ≥ vola for stability.
+        """Optionally enforce corr >= vola for stability.
 
         Pydantic v2 passes ValidationInfo; use info.data to access other fields.
         """
@@ -440,6 +462,20 @@ class BasanosConfig(BaseModel):
         if vola is not None and v < vola:
             raise ValueError
         return v
+
+    @model_validator(mode="after")
+    def _validate_factor_params(self) -> "BasanosConfig":
+        """Enforce mutual presence and ordering constraints for n and k.
+
+        Both ``n`` and ``k`` must either both be set or both be ``None``.
+        When both are set, ``n`` must be greater than or equal to ``k``.
+        """
+        n, k = self.n, self.k
+        if (n is None) != (k is None):
+            raise ValueError
+        if n is not None and k is not None and n < k:
+            raise ValueError
+        return self
 
 
 @dataclasses.dataclass(frozen=True)
@@ -539,6 +575,12 @@ class BasanosEngine:
                 diffs = col.diff().drop_nulls()
                 if (diffs >= 0).all() or (diffs <= 0).all():
                     raise MonotonicPricesError(asset)
+
+        # check factor model constraint: k must not exceed the number of assets m
+        if self.cfg.k is not None:
+            m = len(self.assets)
+            if self.cfg.k > m:
+                raise FactorCountError(self.cfg.k, m)
 
     @property
     def assets(self) -> list[str]:
@@ -640,35 +682,104 @@ class BasanosEngine:
         """
         return np.stack(list(self.cor.values()), axis=0)
 
+    def _factor_window_iter(self):
+        """Yield ``(t, R)`` pairs for the rolling vol-adjusted returns window.
+
+        Iterates through all timestamps in a single pass, materialising one
+        ``(n, m)`` window at a time.  Each ``R`` is a freshly allocated array
+        — callers that only need the current step can discard it immediately
+        after use, keeping peak memory at ``O(n · m)`` instead of ``O(T · n · m)``.
+
+        NaN values in the vol-adjusted returns are replaced with 0 so that
+        every window passed to :func:`~basanos.math._signal.factor_extract` is
+        finite and the SVD is well-defined.  A zero return is the natural
+        "no-information" fill: it contributes nothing to the principal
+        directions while keeping the matrix full-rank when combined with
+        other rows.
+
+        Yields:
+            tuple: ``(t, R)`` where *t* is the date key and *R* is a
+            ``np.ndarray`` of shape ``(cfg.n, m)``.
+        """
+        n = self.cfg.n  # type: ignore[arg-type]
+        assets = self.assets
+        ret_adj_np = self.ret_adj.select(assets).to_numpy().astype(float)
+        # Replace NaN with 0 — zero return is a neutral fill that keeps every
+        # window finite without biasing the principal directions.
+        ret_adj_np = np.nan_to_num(ret_adj_np, nan=0.0)
+        dates = self.prices["date"].to_list()
+        m = len(assets)
+        for i, t in enumerate(dates):
+            start = max(0, i - n + 1)
+            window = ret_adj_np[start : i + 1]
+            if window.shape[0] < n:
+                pad = np.zeros((n - window.shape[0], m))
+                window = np.vstack([pad, window])
+            yield t, window
+
+    def _require_factor_params(self, caller: str) -> None:
+        """Raise :exc:`ValueError` when ``cfg.n`` or ``cfg.k`` is not set."""
+        if self.cfg.n is None or self.cfg.k is None:
+            raise ValueError(f"{caller} requires cfg.n and cfg.k to be set.")  # noqa: TRY003
+
+    @property
+    def factor_returns_matrix(self) -> dict[object, np.ndarray]:
+        r"""Rolling returns matrix of shape ``(n, m)`` at each timestamp.
+
+        For each timestamp *t*, collects the *n* most recent rows of
+        vol-adjusted returns (from ``ret_adj``) into a window of shape
+        ``(n, m)``.  The oldest row is dropped and a new row is appended each
+        period, implementing a rolling window of length ``cfg.n``.  When fewer
+        than *n* rows of history are available (i.e. at the start of the series)
+        the window is zero-padded at the top.
+
+        NaN entries in the vol-adjusted returns are replaced with 0 so every
+        window is finite and can be passed directly to SVD.
+
+        Requires ``cfg.n`` and ``cfg.k`` to be set.
+
+        Returns:
+            dict: Mapping ``date -> np.ndarray`` of shape ``(n, m)``.
+
+        Raises:
+            ValueError: When ``cfg.n`` or ``cfg.k`` is ``None``.
+        """
+        self._require_factor_params("factor_returns_matrix")
+        return dict(self._factor_window_iter())
+
     @property
     def cash_position(self) -> pl.DataFrame:
         """Optimize correlation-aware risk positions for each timestamp.
 
-        Computes EWMA correlations (via ``self.cor``), applies shrinkage toward
-        the identity matrix with intensity ``cfg.shrink``, and solves a
-        normalized linear system A x = mu per timestamp to obtain stable,
-        scale-invariant positions. Non-finite or ill-posed cases yield zero
-        positions for safety.
+        When ``cfg.n`` and ``cfg.k`` are both set the optimizer uses a
+        **factor-model covariance** in place of the EWMA correlation matrix.
+        The rolling returns window R is fed from :meth:`_factor_window_iter`
+        one step at a time; at each step the k latent factors are extracted via
+        SVD and the assets are projected onto the factor space.  The resulting
+        low-rank covariance estimate ``Σ = Wᵀ W / k`` is normalised to a
+        correlation matrix, shrunk, and passed to the same linear solver used
+        in the standard path — so positions are computed in a single pass
+        without ever materialising the full collection of factor or projection
+        matrices.
+
+        When ``cfg.n`` and ``cfg.k`` are ``None`` (the default) the existing
+        EWMA correlation path is used.
 
         Returns:
             pl.DataFrame: DataFrame with columns ['date'] + asset names containing
             the per-timestamp cash positions (risk divided by EWMA volatility).
 
         Performance:
-            Dominant cost is ``self.cor`` (O(T·N²) time, O(T·N²) memory — see
-            :func:`_ewm_corr_numpy`).  The per-timestamp linear solve via
-            Cholesky / LU decomposition adds O(N³) per row for a total solve
-            cost of O(T·N³).  For *N* = 100 and *T* = 2 520 (~10 years daily)
-            the solve contributes approximately 2.52 * 10^9 floating-point
-            operations (upper bound; Cholesky is N³/3 + O(N²)); at *N* = 1 000
-            this rises to roughly 2.52 * 10^12, making the per-row solve the
-            dominant compute bottleneck for large universes.
-        """
-        # compute the correlation matrices
-        cor = self.cor
-        assets = self.assets
+            Standard path dominant cost is ``self.cor`` (O(T·N²) time,
+            O(T·N²) memory — see :func:`_ewm_corr_numpy`).  The per-timestamp
+            linear solve via Cholesky / LU decomposition adds O(N³) per row for
+            a total solve cost of O(T·N³).
 
-        # Compute risk positions row-by-row using correlation shrinkage (NumPy)
+            Factor model path cost is O(T·n·m) for the rolling windows plus
+            O(T·n·k) for the truncated SVD — storage is O(n·m) at peak since
+            only one window is live at a time.
+        """
+        assets = self.assets
         prices_num = self.prices.select(assets).to_numpy()
         returns_num = np.zeros_like(prices_num, dtype=float)
         returns_num[1:] = prices_num[1:] / prices_num[:-1] - 1.0
@@ -681,7 +792,17 @@ class BasanosEngine:
         profit_variance = self.cfg.profit_variance_init
         lamb = self.cfg.profit_variance_decay
 
-        for i, t in enumerate(cor.keys()):
+        use_factor = self.cfg.n is not None and self.cfg.k is not None
+
+        cov_iter: Iterator[tuple[Any, np.ndarray]]
+        if use_factor:
+            k = self.cfg.k  # type: ignore[arg-type]
+            cov_iter = self._factor_window_iter()
+        else:
+            cor = self.cor
+            cov_iter = iter(cor.items())
+
+        for i, (t, cov_data) in enumerate(cov_iter):
             # get the mask of finite prices for this timestamp
             mask = np.isfinite(prices_num[i])
 
@@ -700,11 +821,22 @@ class BasanosEngine:
             if not mask.any():
                 continue
 
-            # get the correlation matrix for this timestamp
-            corr_n = cor[t]
-
-            # shrink the correlation matrix towards identity
-            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            if use_factor:
+                # Factor model path: derive per-step covariance from W = factor_mat.T @ ret_window.
+                # Only the current window is live; factor_mat and projection are discarded after use.
+                ret_masked = cov_data[:, mask]  # (n, sum(mask))
+                factor_mat = factor_extract(ret_masked, k)  # (n, k)
+                projection = factor_project(factor_mat, ret_masked)  # (k, sum(mask))
+                sigma = projection.T @ projection / k  # low-rank covariance (sum(mask), sum(mask))
+                # normalise to a correlation matrix
+                std = np.sqrt(np.diag(sigma))
+                safe_std = np.where(std > self.cfg.min_corr_denom, std, 1.0)
+                corr_n = sigma / np.outer(safe_std, safe_std)
+                np.fill_diagonal(corr_n, 1.0)
+                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)
+            else:
+                # EWMA correlation path (existing behaviour)
+                matrix = shrink2id(cov_data, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
 
             # get the expected-return vector for this timestamp
             expected_mu = np.nan_to_num(mu[i][mask])

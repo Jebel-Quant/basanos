@@ -12,6 +12,66 @@ import numpy as np
 import polars as pl
 
 
+def factor_extract(ret_mat: np.ndarray, k: int) -> np.ndarray:
+    r"""Extract *k* latent factors from the returns matrix via truncated SVD.
+
+    Performs a full (economy-size) SVD on *ret_mat* and returns the first *k* left
+    singular vectors as the factor matrix :math:`C \in \mathbb{R}^{n \times k}`.
+    These columns are the *k* principal directions that capture the most variance
+    in the return history.
+
+    .. math::
+
+        R = U \, S \, V^{\top}, \quad C = U_{:, \, 0:k}
+
+    Args:
+        ret_mat: Returns matrix of shape ``(n, m)`` — *n* lookback rows, *m* assets.
+        k: Number of factors to extract.  Must satisfy ``1 <= k <= min(n, m)``.
+
+    Returns:
+        np.ndarray: Factor matrix of shape ``(n, k)``.
+
+    Examples:
+        >>> import numpy as np
+        >>> rng = np.random.default_rng(0)
+        >>> ret_mat = rng.normal(size=(20, 5))
+        >>> factor_mat = factor_extract(ret_mat, k=3)
+        >>> factor_mat.shape
+        (20, 3)
+    """
+    left_sv, _, _ = np.linalg.svd(ret_mat, full_matrices=False)
+    return left_sv[:, :k]
+
+
+def factor_project(factor_mat: np.ndarray, ret_mat: np.ndarray) -> np.ndarray:
+    r"""Project asset returns onto the factor space.
+
+    Computes :math:`W = C^{\top} \cdot R \in \mathbb{R}^{k \times m}`, the
+    projection of all *m* assets onto the *k*-dimensional factor space defined
+    by the columns of the factor matrix.  Each row of *W* is one factor's
+    exposure across the asset universe; each column is one asset's exposures
+    across all factors.
+
+    Args:
+        factor_mat: Factor matrix of shape ``(n, k)`` — typically the output of
+            :func:`factor_extract`.
+        ret_mat: Returns matrix of shape ``(n, m)`` — must share the same *n*.
+
+    Returns:
+        np.ndarray: Projection matrix of shape ``(k, m)``.
+
+    Examples:
+        >>> import numpy as np
+        >>> rng = np.random.default_rng(0)
+        >>> ret_mat = rng.normal(size=(20, 5))
+        >>> factor_mat = factor_extract(ret_mat, k=3)
+        >>> projection = factor_project(factor_mat, ret_mat)
+        >>> projection.shape
+        (3, 5)
+    """
+    return factor_mat.T @ ret_mat
+
+
 def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
     r"""Shrink a square matrix linearly towards the identity matrix.
 

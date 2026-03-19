@@ -7,6 +7,10 @@ behaviour, and shape preservation.
 vol_adj computes exponentially-weighted volatility-adjusted log-returns and
 is tested for output shape, the mandatory leading null, finiteness of
 subsequent values, ±clip enforcement, and the constant-price degenerate case.
+
+factor_extract extracts k latent factors from a returns matrix R via truncated
+SVD.  factor_project projects R onto the factor space to produce W = C^T @ R.
+Both are tested for output shape, projection accuracy, and degenerate inputs.
 """
 
 import math
@@ -15,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from basanos.math._signal import shrink2id, vol_adj
+from basanos.math._signal import factor_extract, factor_project, shrink2id, vol_adj
 
 # ─── shrink2id ────────────────────────────────────────────────────────────────
 
@@ -110,3 +114,79 @@ def test_vol_adj_constant_price_returns_null_or_nan():
     # All values should be either null or NaN (division by zero vol)
     for v in result["p"].to_list():
         assert v is None or (isinstance(v, float) and math.isnan(v))
+
+
+# ─── factor_extract ───────────────────────────────────────────────────────────
+
+
+def test_factor_extract_shape():
+    """factor_extract must return a factor matrix of shape (n, k)."""
+    rng = np.random.default_rng(0)
+    ret_mat = rng.normal(size=(20, 5))
+    factor_mat = factor_extract(ret_mat, k=3)
+    assert factor_mat.shape == (20, 3)
+
+
+def test_factor_extract_shape_k_equals_m():
+    """factor_extract with k=m must return a factor matrix of shape (n, m)."""
+    rng = np.random.default_rng(1)
+    ret_mat = rng.normal(size=(10, 4))
+    factor_mat = factor_extract(ret_mat, k=4)
+    assert factor_mat.shape == (10, 4)
+
+
+def test_factor_extract_columns_orthonormal():
+    """Columns of the factor matrix must be orthonormal (F^T F ≈ I_k) up to floating-point error."""
+    rng = np.random.default_rng(2)
+    ret_mat = rng.normal(size=(30, 6))
+    k = 4
+    factor_mat = factor_extract(ret_mat, k=k)
+    np.testing.assert_allclose(factor_mat.T @ factor_mat, np.eye(k), atol=1e-10)
+
+
+def test_factor_extract_k1_returns_single_column():
+    """factor_extract with k=1 must return a column vector of shape (n, 1)."""
+    rng = np.random.default_rng(3)
+    ret_mat = rng.normal(size=(15, 3))
+    factor_mat = factor_extract(ret_mat, k=1)
+    assert factor_mat.shape == (15, 1)
+
+
+# ─── factor_project ───────────────────────────────────────────────────────────
+
+
+def test_factor_project_shape():
+    """factor_project must return a projection of shape (k, m)."""
+    rng = np.random.default_rng(4)
+    ret_mat = rng.normal(size=(20, 5))
+    factor_mat = factor_extract(ret_mat, k=3)
+    projection = factor_project(factor_mat, ret_mat)
+    assert projection.shape == (3, 5)
+
+
+def test_factor_project_equals_ft_times_r():
+    """factor_project(factor_mat, ret_mat) must equal factor_mat.T @ ret_mat exactly."""
+    rng = np.random.default_rng(5)
+    ret_mat = rng.normal(size=(20, 5))
+    factor_mat = factor_extract(ret_mat, k=3)
+    projection = factor_project(factor_mat, ret_mat)
+    np.testing.assert_array_equal(projection, factor_mat.T @ ret_mat)
+
+
+def test_factor_project_shape_k_equals_m():
+    """With k=m the projection must have shape (m, m)."""
+    rng = np.random.default_rng(6)
+    m = 4
+    ret_mat = rng.normal(size=(10, m))
+    factor_mat = factor_extract(ret_mat, k=m)
+    projection = factor_project(factor_mat, ret_mat)
+    assert projection.shape == (m, m)
+
+
+def test_factor_project_k1_shape():
+    """factor_project with k=1 must return a projection of shape (1, m)."""
+    rng = np.random.default_rng(7)
+    ret_mat = rng.normal(size=(15, 3))
+    factor_mat = factor_extract(ret_mat, k=1)
+    projection = factor_project(factor_mat, ret_mat)
+    assert projection.shape == (1, 3)
