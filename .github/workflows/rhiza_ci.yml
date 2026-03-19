@@ -131,24 +131,37 @@ jobs:
           version: "0.10.11"
 
       - name: Download coverage report
+        id: download-coverage
+        continue-on-error: true
         uses: actions/download-artifact@v8
         with:
           name: coverage-report
           path: _tests/
 
       - name: Generate coverage badge
+        if: steps.download-coverage.outcome == 'success'
         run: |
-          mkdir -p assets
-          uvx "genbadge[coverage]" coverage -i _tests/coverage.xml -o assets/coverage-badge.svg
+          uvx "genbadge[coverage]" coverage -i _tests/coverage.xml -o /tmp/coverage-badge.svg
 
-      - name: Commit coverage badge
+      - name: Push badge to gh-pages
+        if: steps.download-coverage.outcome == 'success'
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name "github-actions[bot]"
-          git add assets/coverage-badge.svg
+
+          if git fetch origin gh-pages 2>/dev/null; then
+            git checkout gh-pages
+          else
+            git checkout --orphan gh-pages
+            git rm -rf .
+          fi
+
+          cp /tmp/coverage-badge.svg coverage-badge.svg
+          git add coverage-badge.svg
+
           if ! git diff --staged --quiet; then
             git commit -m "chore: update coverage badge [skip ci]"
-            git push
+            git push origin gh-pages
           else
-            echo "Coverage badge unchanged, skipping commit"
+            echo "Coverage badge unchanged, skipping push"
           fi
