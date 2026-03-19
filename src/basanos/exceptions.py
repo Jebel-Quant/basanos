@@ -351,3 +351,125 @@ class MonotonicPricesError(BasanosError, ValueError):
             "(all non-decreasing or all non-increasing), indicating malformed or synthetic data."
         )
         self.asset = asset
+
+
+class FactorLoadingsDimensionError(BasanosError, ValueError):
+    """Raised when ``factor_loadings`` is not a 2-D array.
+
+    Args:
+        ndim: The actual number of dimensions of the array that was supplied.
+
+    Examples:
+        >>> raise FactorLoadingsDimensionError(1)
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.FactorLoadingsDimensionError: factor_loadings must be 2-D, got ndim=1.
+    """
+
+    def __init__(self, ndim: int) -> None:
+        """Initialize with the offending number of dimensions."""
+        super().__init__(f"factor_loadings must be 2-D, got ndim={ndim}.")
+        self.ndim = ndim
+
+
+class FactorCovarianceShapeError(BasanosError, ValueError):
+    """Raised when ``factor_covariance`` shape does not match the number of factors.
+
+    Args:
+        expected_k: Expected side length (number of factors *k*).
+        got: Actual shape of the supplied ``factor_covariance`` array.
+
+    Examples:
+        >>> raise FactorCovarianceShapeError(2, (3, 3))
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.FactorCovarianceShapeError: factor_covariance must have shape (2, 2) ...
+    """
+
+    def __init__(self, expected_k: int, got: tuple[int, ...]) -> None:
+        """Initialize with the expected side length and the actual shape."""
+        super().__init__(
+            f"factor_covariance must have shape ({expected_k}, {expected_k}) to match "
+            f"factor_loadings columns, got {got}."
+        )
+        self.expected_k = expected_k
+        self.got = got
+
+
+class IdiosyncraticVarShapeError(BasanosError, ValueError):
+    """Raised when ``idiosyncratic_var`` length does not match the number of assets.
+
+    Args:
+        expected_n: Expected length (number of assets *n*).
+        got: Actual shape of the supplied ``idiosyncratic_var`` array.
+
+    Examples:
+        >>> raise IdiosyncraticVarShapeError(4, (5,))
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.IdiosyncraticVarShapeError: idiosyncratic_var must have shape (4,) ...
+    """
+
+    def __init__(self, expected_n: int, got: tuple[int, ...]) -> None:
+        """Initialize with the expected length and the actual shape."""
+        super().__init__(f"idiosyncratic_var must have shape ({expected_n},) to match factor_loadings rows, got {got}.")
+        self.expected_n = expected_n
+        self.got = got
+
+
+class NonPositiveIdiosyncraticVarError(BasanosError, ValueError):
+    """Raised when ``idiosyncratic_var`` contains zero or negative entries.
+
+    All idiosyncratic variances must be strictly positive to ensure the
+    factor model covariance matrix is positive definite.
+
+    Examples:
+        >>> raise NonPositiveIdiosyncraticVarError()
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.NonPositiveIdiosyncraticVarError: All entries of idiosyncratic_var must be strictly positive.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the error."""
+        super().__init__("All entries of idiosyncratic_var must be strictly positive.")
+
+
+class ReturnMatrixDimensionError(BasanosError, ValueError):
+    """Raised when the return matrix passed to ``FactorModel.from_returns`` is not 2-D.
+
+    Args:
+        ndim: The actual number of dimensions of the array that was supplied.
+
+    Examples:
+        >>> raise ReturnMatrixDimensionError(1)
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.ReturnMatrixDimensionError: Return matrix must be 2-D, got ndim=1.
+    """
+
+    def __init__(self, ndim: int) -> None:
+        """Initialize with the offending number of dimensions."""
+        super().__init__(f"Return matrix must be 2-D, got ndim={ndim}.")
+        self.ndim = ndim
+
+
+class FactorCountError(BasanosError, ValueError):
+    """Raised when the requested number of factors *k* is out of the valid range.
+
+    Args:
+        k: The requested number of factors.
+        max_k: The maximum valid number of factors (``min(T, n)``).
+
+    Examples:
+        >>> raise FactorCountError(0, 5)
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.FactorCountError: k must satisfy 1 <= k <= min(T, n) = 5, got k=0.
+    """
+
+    def __init__(self, k: int, max_k: int) -> None:
+        """Initialize with the requested and maximum factor counts."""
+        super().__init__(f"k must satisfy 1 <= k <= min(T, n) = {max_k}, got k={k}.")
+        self.k = k
+        self.max_k = max_k
