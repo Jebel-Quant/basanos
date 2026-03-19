@@ -5,6 +5,7 @@ Tests cover:
 - __post_init__ shape and positivity validation
 - Properties: n_assets, n_factors, covariance
 - from_returns classmethod: shapes, unit diagonal, SVD identity, edge cases
+- solve method: Woodbury identity correctness, edge cases, error handling
 """
 
 import dataclasses
@@ -13,6 +14,7 @@ import numpy as np
 import pytest
 
 from basanos.exceptions import (
+    DimensionMismatchError,
     FactorCountError,
     FactorCovarianceShapeError,
     FactorLoadingsDimensionError,
@@ -243,3 +245,101 @@ def test_from_returns_public_api_import():
     from basanos.math import FactorModel as PublicFactorModel
 
     assert PublicFactorModel is FactorModel
+
+
+# ─── solve method ─────────────────────────────────────────────────────────────
+
+
+def test_solve_matches_explicit_inversion():
+    """Solve must return the same result as explicitly forming and inverting Cov."""
+    fm = _make_fm(n=6, k=2)
+    rng = np.random.default_rng(99)
+    rhs = rng.standard_normal(6)
+
+    x_woodbury = fm.solve(rhs)
+    x_direct = np.linalg.solve(fm.covariance, rhs)
+
+    np.testing.assert_allclose(x_woodbury, x_direct, atol=1e-10)
+
+
+def test_solve_satisfies_linear_system():
+    """Cov @ solve(rhs) must recover rhs to near machine precision."""
+    fm = _make_fm(n=5, k=3)
+    rng = np.random.default_rng(7)
+    rhs = rng.standard_normal(5)
+
+    x = fm.solve(rhs)
+    residual = fm.covariance @ x - rhs
+
+    np.testing.assert_allclose(residual, np.zeros(5), atol=1e-10)
+
+
+def test_solve_output_shape():
+    """Solve must return a 1-D array of length n."""
+    fm = _make_fm(n=8, k=3)
+    rhs = np.ones(8)
+    x = fm.solve(rhs)
+    assert x.shape == (8,)
+
+
+def test_solve_identity_factor_model():
+    """With B=0, Cov=D and solve must equal rhs / idiosyncratic_var element-wise."""
+    n = 4
+    d = np.array([2.0, 3.0, 4.0, 5.0])
+    fm = FactorModel(
+        factor_loadings=np.zeros((n, 1)),
+        factor_covariance=np.eye(1),
+        idiosyncratic_var=d,
+    )
+    rhs = np.array([1.0, 1.0, 1.0, 1.0])
+    x = fm.solve(rhs)
+    np.testing.assert_allclose(x, rhs / d, atol=1e-14)
+
+
+def test_solve_k1_sherman_morrison():
+    """For k=1 the Woodbury identity specialises to Sherman-Morrison; verify correctness."""
+    rng = np.random.default_rng(13)
+    n = 10
+    b = rng.standard_normal((n, 1))
+    f = np.array([[2.0]])
+    d = np.abs(rng.standard_normal(n)) + 1.0
+    fm = FactorModel(factor_loadings=b, factor_covariance=f, idiosyncratic_var=d)
+
+    rhs = rng.standard_normal(n)
+    x_woodbury = fm.solve(rhs)
+    x_direct = np.linalg.solve(fm.covariance, rhs)
+
+    np.testing.assert_allclose(x_woodbury, x_direct, atol=1e-10)
+
+
+def test_solve_multiple_rhs_vectors():
+    """Solve must be consistent when called independently with different rhs vectors."""
+    fm = _make_fm(n=5, k=2)
+    rng = np.random.default_rng(21)
+    cov = fm.covariance
+
+    for _ in range(5):
+        rhs = rng.standard_normal(5)
+        x = fm.solve(rhs)
+        np.testing.assert_allclose(cov @ x, rhs, atol=1e-10)
+
+
+@pytest.mark.parametrize("wrong_size", [3, 5])
+def test_solve_raises_on_wrong_rhs_length(wrong_size: int):
+    """Solve must raise DimensionMismatchError when rhs length != n_assets."""
+    fm = _make_fm(n=4, k=2)
+    with pytest.raises(DimensionMismatchError):
+        fm.solve(np.ones(wrong_size))
+
+
+def test_solve_from_returns_matches_explicit():
+    """Solve on a from_returns model must match the explicit covariance solve."""
+    rng = np.random.default_rng(55)
+    ret = rng.standard_normal((100, 6))
+    fm = FactorModel.from_returns(ret, k=2)
+    rhs = rng.standard_normal(6)
+
+    x_woodbury = fm.solve(rhs)
+    x_direct = np.linalg.solve(fm.covariance, rhs)
+
+    np.testing.assert_allclose(x_woodbury, x_direct, atol=1e-10)
