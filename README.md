@@ -735,6 +735,8 @@ Before submitting a PR, ensure all checks pass:
 make fmt && make test && make typecheck
 ```
 
+For architectural decisions and their rationale, see [docs/adr/](docs/adr/).
+
 ## License
 
 See [LICENSE](LICENSE) for details.
