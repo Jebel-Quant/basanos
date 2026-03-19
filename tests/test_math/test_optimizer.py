@@ -1851,12 +1851,12 @@ class TestBasanosConfigSlidingWindow:
 
     def test_rejects_window_le_zero(self):
         """Window must be strictly positive."""
-        with pytest.raises(ValueError, match=r".*"):
+        with pytest.raises(ValueError, match=r"greater than 0"):
             BasanosConfig(**self._base, covariance_mode="sliding_window", window=0, n_factors=2)
 
     def test_rejects_n_factors_le_zero(self):
         """n_factors must be strictly positive."""
-        with pytest.raises(ValueError, match=r".*"):
+        with pytest.raises(ValueError, match=r"greater than 0"):
             BasanosConfig(**self._base, covariance_mode="sliding_window", window=40, n_factors=0)
 
     def test_ewma_shrink_does_not_require_window_or_n_factors(self):

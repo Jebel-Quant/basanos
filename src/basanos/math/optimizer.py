@@ -63,7 +63,7 @@ dataset sizes.
 import dataclasses
 import enum
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import polars as pl
@@ -799,18 +799,19 @@ class BasanosEngine:
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
                 yield i, t, mask, matrix
         else:
-            win_w = self.cfg.window
-            win_k = self.cfg.n_factors
+            # Model validator guarantees these are set for sliding_window mode.
+            win_w: int = cast(int, self.cfg.window)
+            win_k: int = cast(int, self.cfg.n_factors)
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
             for i, t in enumerate(dates):
                 mask = np.isfinite(prices_num[i])
-                if not mask.any() or i + 1 < win_w:  # type: ignore[operator]
+                if not mask.any() or i + 1 < win_w:
                     yield i, t, mask, None
                     continue
-                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]  # type: ignore[index]
+                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
                 window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
                 n_sub = int(mask.sum())
-                k_eff = min(win_k, win_w, n_sub)  # type: ignore[arg-type]
+                k_eff = min(win_k, win_w, n_sub)
                 if k_eff < 1:
                     yield i, t, mask, None
                     continue
@@ -871,11 +872,12 @@ class BasanosEngine:
             index_iter = list(cor.keys())
         else:
             # ── Sliding window path ─────────────────────────────────────────
+            # Model validator guarantees window and n_factors are set here.
             cor = None
             index_iter = self.prices["date"].to_list()
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            win_w = self.cfg.window
-            win_k = self.cfg.n_factors
+            win_w: int = cast(int, self.cfg.window)
+            win_k: int = cast(int, self.cfg.n_factors)
 
         for i, t in enumerate(index_iter):
             # get the mask of finite prices for this timestamp
@@ -929,16 +931,16 @@ class BasanosEngine:
                         pos = solve(matrix, expected_mu) / denom
             else:
                 # ── Sliding window: fit factor model on the last W rows ─────
-                if i + 1 < win_w:  # type: ignore[operator]
+                if i + 1 < win_w:
                     continue  # not enough history yet
 
                 # Extract the (W, n_sub) window of vol-adjusted returns
-                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]  # type: ignore[index]
+                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
                 # Replace NaN with 0 (neutral: no systematic contribution)
                 window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
 
                 n_sub = int(mask.sum())
-                k_eff = min(win_k, win_w, n_sub)  # type: ignore[arg-type]
+                k_eff = min(win_k, win_w, n_sub)
                 if k_eff < 1:
                     continue
 
