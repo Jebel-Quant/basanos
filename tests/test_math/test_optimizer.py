@@ -35,6 +35,7 @@ from basanos.exceptions import (
     SingularMatrixError,
 )
 from basanos.math import BasanosConfig, BasanosEngine
+from basanos.math.optimizer import SlidingWindowConfig
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -1816,48 +1817,46 @@ def test_covariance_mode_default_is_ewma_shrink():
 
 
 class TestBasanosConfigSlidingWindow:
-    """Tests for the new sliding_window covariance mode and its config validation."""
+    """Tests for the sliding_window covariance mode via SlidingWindowConfig."""
 
     _base = {"vola": 16, "corr": 32, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
 
     def test_accepts_valid_sliding_window_config(self):
-        """BasanosConfig should accept a fully-specified sliding_window config."""
+        """BasanosConfig should accept a SlidingWindowConfig covariance_config."""
         from basanos.math import CovarianceMode
 
         cfg = BasanosConfig(
             **self._base,
-            covariance_mode="sliding_window",
-            window=40,
-            n_factors=3,
+            covariance_config=SlidingWindowConfig(window=40, n_factors=3),
         )
         assert cfg.covariance_mode is CovarianceMode.sliding_window
         assert cfg.window == 40
         assert cfg.n_factors == 3
 
     def test_rejects_sliding_window_without_window(self):
-        """sliding_window mode without 'window' must raise ValidationError."""
+        """SlidingWindowConfig without 'window' must raise ValidationError."""
         with pytest.raises(ValueError, match=r".*window.*"):
-            BasanosConfig(**self._base, covariance_mode="sliding_window", n_factors=3)
+            SlidingWindowConfig(n_factors=3)
 
     def test_rejects_sliding_window_without_n_factors(self):
-        """sliding_window mode without 'n_factors' must raise ValidationError."""
+        """SlidingWindowConfig without 'n_factors' must raise ValidationError."""
         with pytest.raises(ValueError, match=r".*n_factors.*"):
-            BasanosConfig(**self._base, covariance_mode="sliding_window", window=40)
+            SlidingWindowConfig(window=40)
 
     def test_rejects_sliding_window_without_both(self):
-        """sliding_window mode without window or n_factors must raise ValidationError."""
+        """SlidingWindowConfig without window or n_factors must raise ValidationError."""
         with pytest.raises(ValueError, match=r".*window.*"):
-            BasanosConfig(**self._base, covariance_mode="sliding_window")
+            SlidingWindowConfig()
 
     def test_rejects_window_le_zero(self):
         """Window must be strictly positive."""
         with pytest.raises(ValueError, match=r"greater than 0"):
-            BasanosConfig(**self._base, covariance_mode="sliding_window", window=0, n_factors=2)
+            SlidingWindowConfig(window=0, n_factors=2)
 
     def test_rejects_n_factors_le_zero(self):
         """n_factors must be strictly positive."""
         with pytest.raises(ValueError, match=r"greater than 0"):
-            BasanosConfig(**self._base, covariance_mode="sliding_window", window=40, n_factors=0)
+            SlidingWindowConfig(window=40, n_factors=0)
 
     def test_ewma_shrink_does_not_require_window_or_n_factors(self):
         """Default ewma_shrink mode should work without window / n_factors."""
@@ -1870,9 +1869,7 @@ class TestBasanosConfigSlidingWindow:
         from basanos.math import CovarianceMode
 
         base_cfg = BasanosConfig(**self._base)
-        sw_cfg = base_cfg.model_copy(
-            update={"covariance_mode": CovarianceMode.sliding_window, "window": 30, "n_factors": 2}
-        )
+        sw_cfg = base_cfg.model_copy(update={"covariance_config": SlidingWindowConfig(window=30, n_factors=2)})
         assert sw_cfg.covariance_mode is CovarianceMode.sliding_window
         assert sw_cfg.window == 30
         assert sw_cfg.n_factors == 2
@@ -2017,9 +2014,7 @@ class TestSlidingWindowCashPosition:
             clip=3.0,
             shrink=0.5,
             aum=1e6,
-            covariance_mode="sliding_window",
-            window=30,
-            n_factors=2,
+            covariance_config=SlidingWindowConfig(window=30, n_factors=2),
         )
 
     @pytest.fixture
@@ -2098,9 +2093,7 @@ class TestSlidingWindowDiagnostics:
             clip=3.0,
             shrink=0.5,
             aum=1e6,
-            covariance_mode="sliding_window",
-            window=30,
-            n_factors=2,
+            covariance_config=SlidingWindowConfig(window=30, n_factors=2),
         )
         return BasanosEngine(prices=sw_prices, mu=sw_mu, cfg=cfg)
 
