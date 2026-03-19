@@ -9,6 +9,7 @@ Tests cover:
 """
 
 import dataclasses
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -21,6 +22,7 @@ from basanos.exceptions import (
     IdiosyncraticVarShapeError,
     NonPositiveIdiosyncraticVarError,
     ReturnMatrixDimensionError,
+    SingularMatrixError,
 )
 from basanos.math._factor_model import FactorModel
 
@@ -343,3 +345,17 @@ def test_solve_from_returns_matches_explicit():
     x_direct = np.linalg.solve(fm.covariance, rhs)
 
     np.testing.assert_allclose(x_woodbury, x_direct, atol=1e-10)
+
+
+def test_solve_raises_singular_matrix_error_when_cholesky_fails():
+    """Solve must raise SingularMatrixError when _cholesky_solve raises LinAlgError."""
+    fm = _make_fm(n=4, k=2)
+    rhs = np.ones(4)
+    with (
+        patch(
+            "basanos.math._factor_model._cholesky_solve",
+            side_effect=np.linalg.LinAlgError("singular matrix"),
+        ),
+        pytest.raises(SingularMatrixError),
+    ):
+        fm.solve(rhs)
