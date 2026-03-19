@@ -50,6 +50,44 @@ Basanos is a mature, production-grade Python library implementing correlation-ad
 
 **9/10** — Exemplary, production-grade, rigorously maintained
 
-**Rationale**:  
+**Rationale**:
 This is a textbook example of how to structure a scientific Python library. The codebase exhibits professional discipline in every dimension: tests, types, documentation, error handling, CI/CD, dependency management, and performance transparency. The mathematical implementation is numerically sound (Cholesky-first solving, condition monitoring) and performance characteristics are documented with refreshing honesty. The few weaknesses identified are minor (stale benchmark baseline, missing compiled paper) or inherent to the problem domain (memory scaling). The only reason this is not a 10/10 is the nascent state of the factor model features (incomplete integration validation) and the absence of sparse matrix optimization for structured portfolios. For a v0.4.2 library, this is outstanding work.
+
+---
+
+## 2026-03-19 — Analysis Entry #2
+
+### Summary
+
+Three PRs merged today address three of the six weaknesses and one of the six risks flagged in the initial entry. The headline change is `sliding_window` covariance mode (PR #214): a rolling-window factor model integrated directly into `BasanosEngine`, implementing Section 4.4 of the paper. The optimizer source grew from ~1,079 to 1,555 lines and its test file from ~1,789 to 2,090 lines, maintaining the 100% coverage invariant. The paper compilation gap is closed (`make paper`). The Rhiza coupling risk is now formally documented with a tested exit strategy (ADR 0001).
+
+### Strengths
+
+- **Sliding window mode is properly engineered**: `CovarianceMode` (StrEnum, `optimizer.py:209`) dispatches cleanly inside `_iter_matrices()` and `cash_position`. The `ewma_shrink` path is unchanged. The new path caps `k_eff = min(win_k, win_w, n_sub)` defensively and falls through to `None` on any exception — correct fail-safe behaviour for production use.
+- **Woodbury solve integrated cleanly**: `FactorModel` (`_factor_model.py`) is now imported and used by the optimizer. Its O(k³+kN) solve path is documented in both the class docstring and `BasanosConfig` field description. The public API exports `CovarianceMode` from `basanos.math.__init__` — users don't need to know where it lives.
+- **`model_validator` enforces cross-field constraints**: `_validate_sliding_window_params` (`optimizer.py:546`) raises at construction time if `window` or `n_factors` are missing in sliding-window mode. Pydantic's `mode="after"` is the correct hook for cross-field validation.
+- **`typing.cast` replaces assertions in `src/`**: Code review applied on PR #214 (`b866177`). `cast(int, self.cfg.window)` / `cast(int, self.cfg.n_factors)` at `optimizer.py:803-804` satisfy the type-checker without runtime overhead and without violating the no-assert-in-src convention.
+- **Paper weakness closed**: `make paper` target (`Makefile:25-31`) guards against missing `latexmk`, prints clear error, and compiles `paper/basanos.tex → paper/basanos.pdf`. The "no paper compilation workflow" weakness from the initial analysis is resolved.
+- **ADR practice adopted**: `docs/adr/0001-rhiza-framework-dependency.md` demonstrates architectural decision logging. The ADR correctly notes that all rhiza files are committed (no runtime fetch), that sync is opt-in via a pinned tag (`v0.8.14`), and provides a four-step exit strategy. Risk now documented and mitigated.
+
+### Weaknesses
+
+- **Silent `except Exception` in `_iter_matrices`** (`optimizer.py:821-822`): Any failure in `FactorModel.from_returns()` — including programming errors, not just numerical ones — silently yields `None` (zero position). This is conservative but makes debugging harder. A narrower except clause (e.g., `except (np.linalg.LinAlgError, ValueError)`) with a logged warning would be safer and easier to diagnose.
+- **`sliding_window` warm-up gap undocumented at API level**: The condition `i + 1 < win_w` (`optimizer.py:808`) means the first `W-1` rows always yield zero positions regardless of signal. This is correct but is not surfaced in `BasanosConfig.window`'s field description. Users setting `window=252` on a 260-row dataset will get 251 rows of zeros with no warning.
+- **No benchmark baseline for `sliding_window` mode**: `BENCHMARKS.md` covers only `ewma_shrink`. The O(T·W·N·k) sliding-window path has a qualitatively different scaling curve and should have its own regression baseline, especially since the hot path calls `np.linalg.svd` per row.
+- **Paper PDF still absent from repository**: `make paper` now compiles locally, but `README.md` still badges to a PDF that is not committed. The badge URL likely points to a CI artifact or external host; this should either be committed or the badge pointed at the CI-generated artifact explicitly.
+- **ADR index is a single file for now**: `docs/adr/README.md` exists but with one entry. Not a weakness yet, but the ADR practice needs to be applied retroactively to prior significant decisions (e.g., choice of polars over pandas, Woodbury identity solve strategy, EWM over rolling correlation) to make the ADR log genuinely useful.
+
+### Risks / Technical Debt
+
+- **`sliding_window` not yet battle-tested**: The feature was implemented and merged in a single sprint. `FactorModel.from_returns()` delegates to `np.linalg.svd` on potentially ill-conditioned windows. Real-world data (NaNs filled with 0.0 at `optimizer.py:812`) could yield degenerate windows. The silent fallback masks failures — this is appropriate for production but needs monitoring hooks to detect systematic fallback rates.
+- **Polars version ceiling still tight**: `polars>=1.37.1,<2` unchanged. This note stands from the initial analysis.
+- **`window` and `n_factors` are `int | None` in frozen config**: The `None` default for fields that are required in one mode is an awkward pattern. If `CovarianceMode` gains a third mode that needs different required fields, this pattern becomes hard to maintain. A discriminated union (`Annotated[Union[EwmaShrinkConfig, SlidingWindowConfig], ...]`) would be cleaner long-term.
+
+### Score
+
+**9/10** — Score unchanged; the quality bar is maintained and previous weaknesses actively addressed
+
+**Rationale**:
+The sliding window integration is technically sound and the public API is clean. Today's PRs directly close three items from the prior weakness/risk list: missing paper compilation, undocumented Rhiza coupling, and unintegrated factor model. The remaining gap (no benchmark for the new mode, silent broad exception, warm-up gap undocumented) are minor. The codebase continues to demonstrate the same discipline as the initial assessment.
 
