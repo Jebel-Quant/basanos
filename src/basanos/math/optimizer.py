@@ -818,7 +818,8 @@ class BasanosEngine:
                 try:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
                     yield i, t, mask, fm.covariance
-                except Exception:
+                except (np.linalg.LinAlgError, ValueError) as exc:
+                    _logger.warning("Factor model fit failed at t=%s: %s", t, exc)
                     yield i, t, mask, None
 
     @property
@@ -946,7 +947,7 @@ class BasanosEngine:
 
                 try:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
-                except Exception as exc:
+                except (np.linalg.LinAlgError, ValueError) as exc:
                     _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
                     continue
 
@@ -960,7 +961,8 @@ class BasanosEngine:
                         x = fm.solve(expected_mu)
                         # Normalisation denominator sqrt(μᵀ C⁻¹ μ) = sqrt(μᵀ x)
                         denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
-                    except Exception:
+                    except (np.linalg.LinAlgError, ValueError) as exc:
+                        _logger.warning("Woodbury solve failed at t=%s: %s", t, exc)
                         pos = np.zeros(n_sub)
                     else:
                         if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
