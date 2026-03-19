@@ -16,7 +16,7 @@ change is introduced.
 
 | Property           | Value                                  |
 |--------------------|----------------------------------------|
-| Date               | 2026-03-18                             |
+| Date               | 2026-03-19                             |
 | Python             | CPython 3.12 (`.python-version`)       |
 | Benchmark Python   | CPython 3.12.3 (GitHub Actions runner) |
 | OS                 | Linux (Ubuntu, Azure runner)           |
@@ -24,16 +24,19 @@ change is introduced.
 | CPU speed          | 3.25 GHz                               |
 | CPU cores          | 4 (virtual, Azure Standard DS2 v2)     |
 | pytest-benchmark   | 5.2.3                                  |
-| basanos version    | 0.3.0                                  |
-| Commit             | `86fb095`                              |
+| basanos version    | 0.4.2                                  |
+| Commit             | `9aa4491`                              |
 
 Dataset sizes used in the benchmarks:
 
-| Suffix | Rows  | Assets | Description            |
-|--------|-------|--------|------------------------|
-| 252_5  | 252   | 5      | ~1 year, 5 assets      |
-| 1260_5 | 1260  | 5      | ~5 years, 5 assets     |
-| 252_20 | 252   | 20     | ~1 year, 20 assets     |
+| Suffix        | Rows  | Assets | Window | Factors | Description                      |
+|---------------|-------|--------|--------|---------|----------------------------------|
+| 252_5         | 252   | 5      | —      | —       | ~1 year, 5 assets (ewma_shrink)  |
+| 1260_5        | 1260  | 5      | —      | —       | ~5 years, 5 assets (ewma_shrink) |
+| 252_20        | 252   | 20     | —      | —       | ~1 year, 20 assets (ewma_shrink) |
+| sw_252_5_60_3 | 252   | 5      | 60     | 3       | ~1 year, 5 assets (sliding_window)  |
+| sw_252_20_60_5| 252   | 20     | 60     | 5       | ~1 year, 20 assets (sliding_window) |
+| sw_1260_5_60_3| 1260  | 5      | 60     | 3       | ~5 years, 5 assets (sliding_window) |
 
 ---
 
@@ -47,39 +50,50 @@ in [`benchmarks/results/baseline.json`](benchmarks/results/baseline.json).
 
 | Benchmark                     | Mean      | Min       | Std Dev  | OPS   | Rounds |
 | ----------------------------- | --------- | --------- | -------- | ----- | ------ |
-| test_profits_252_5            | 3.257 ms  | 3.127 ms  | 89.3 µs  | 307   | 222    |
-| test_profits_1260_5           | 3.303 ms  | 3.139 ms  | 89.2 µs  | 303   | 290    |
-| test_profits_252_20           | 12.012 ms | 11.661 ms | 209.1 µs | 83    | 81     |
-| test_nav_accumulated_252_5    | 3.613 ms  | 3.450 ms  | 125.3 µs | 277   | 253    |
-| test_nav_compounded_252_5     | 4.051 ms  | 3.420 ms  | 619.5 µs | 247   | 260    |
-| test_drawdown_252_5           | 3.860 ms  | 3.465 ms  | 360.4 µs | 259   | 243    |
-| test_drawdown_1260_5          | 3.928 ms  | 3.730 ms  | 217.4 µs | 255   | 249    |
-| test_monthly_252_5            | 4.396 ms  | 4.172 ms  | 120.6 µs | 227   | 177    |
-| test_tilt_timing_decomp_252_5 | 15.758 ms | 15.416 ms | 223.0 µs | 64    | 61     |
-| test_all_252_5                | 7.940 ms  | 7.671 ms  | 445.7 µs | 126   | 128    |
+| test_profits_252_5            | 3.316 ms  | 3.137 ms  | 267.3 µs | 302   | 225    |
+| test_profits_1260_5           | 3.293 ms  | 3.157 ms  | 85.7 µs  | 304   | 288    |
+| test_profits_252_20           | 12.063 ms | 11.693 ms | 213.1 µs | 83    | 80     |
+| test_nav_accumulated_252_5    | 3.629 ms  | 3.477 ms  | 81.2 µs  | 276   | 246    |
+| test_nav_compounded_252_5     | 3.727 ms  | 3.602 ms  | 70.4 µs  | 268   | 255    |
+| test_drawdown_252_5           | 3.832 ms  | 3.704 ms  | 71.2 µs  | 261   | 253    |
+| test_drawdown_1260_5          | 3.903 ms  | 3.763 ms  | 71.0 µs  | 256   | 244    |
+| test_monthly_252_5            | 4.369 ms  | 4.268 ms  | 65.1 µs  | 229   | 213    |
+| test_tilt_timing_decomp_252_5 | 15.864 ms | 15.531 ms | 217.1 µs | 63    | 63     |
+| test_all_252_5                | 7.922 ms  | 7.726 ms  | 97.2 µs  | 126   | 125    |
 
 ### Stats
 
 | Benchmark              | Mean     | Min      | Std Dev | OPS    | Rounds |
 | ---------------------- | -------- | -------- | ------- | ------ | ------ |
-| test_volatility_252    | 196.2 µs | 178.7 µs | 11.8 µs | 5,098  | 3258   |
-| test_sharpe_252        | 201.2 µs | 180.9 µs | 11.6 µs | 4,970  | 3745   |
-| test_value_at_risk_252 | 72.0 µs  | 67.4 µs  | 6.8 µs  | 13,884 | 3463   |
-| test_summary_252       | 4.138 ms | 4.004 ms | 71.9 µs | 242    | 199    |
-| test_summary_1260      | 4.365 ms | 4.181 ms | 89.1 µs | 229    | 221    |
+| test_volatility_252    | 202.5 µs | 182.1 µs | 11.9 µs | 4,938  | 2874   |
+| test_sharpe_252        | 199.8 µs | 181.6 µs | 12.4 µs | 5,005  | 3976   |
+| test_value_at_risk_252 | 76.0 µs  | 70.9 µs  | 7.2 µs  | 13,156 | 3579   |
+| test_summary_252       | 4.197 ms | 4.014 ms | 94.7 µs | 238    | 193    |
+| test_summary_1260      | 4.391 ms | 4.216 ms | 97.2 µs | 228    | 224    |
 
-### BasanosEngine
+### BasanosEngine (ewma_shrink)
 
 | Benchmark                 | Mean       | Min        | Std Dev  | OPS   | Rounds |
 | ------------------------- | ---------- | ---------- | -------- | ----- | ------ |
-| test_ret_adj_252_5        | 427.3 µs   | 403.4 µs   | 13.8 µs  | 2,340 | 1804   |
-| test_vola_252_5           | 251.9 µs   | 219.5 µs   | 19.0 µs  | 3,970 | 4209   |
-| test_cor_252_5            | 1.236 ms   | 1.195 ms   | 20.1 µs  | 809   | 601    |
-| test_cor_1260_5           | 5.047 ms   | 4.897 ms   | 99.1 µs  | 198   | 212    |
-| test_cor_252_20           | 13.387 ms  | 13.096 ms  | 218.5 µs | 75    | 70     |
-| test_cash_position_252_5  | 68.279 ms  | 67.143 ms  | 1.057 ms | 15    | 14     |
-| test_cash_position_1260_5 | 343.011 ms | 341.686 ms | 1.129 ms | 3     | 5      |
-| test_portfolio_252_5      | 68.545 ms  | 67.227 ms  | 769.7 µs | 15    | 15     |
+| test_ret_adj_252_5        | 445.9 µs   | 404.4 µs   | 25.4 µs  | 2,242 | 1805   |
+| test_vola_252_5           | 257.5 µs   | 218.1 µs   | 12.0 µs  | 3,884 | 4151   |
+| test_cor_252_5            | 1.242 ms   | 1.193 ms   | 26.7 µs  | 805   | 460    |
+| test_cor_1260_5           | 5.731 ms   | 5.631 ms   | 52.5 µs  | 175   | 176    |
+| test_cor_252_20           | 14.290 ms  | 13.987 ms  | 547.3 µs | 70    | 68     |
+| test_cash_position_252_5  | 69.242 ms  | 68.734 ms  | 421.1 µs | 14    | 14     |
+| test_cash_position_1260_5 | 351.091 ms | 349.983 ms | 1.583 ms | 3     | 5      |
+| test_portfolio_252_5      | 70.508 ms  | 68.892 ms  | 1.261 ms | 14    | 15     |
+
+### BasanosEngine (sliding_window)
+
+Complexity: O(T·W·N·k) for rolling SVDs, O(T·(k³ + kN)) for Woodbury solves.
+Memory: O(W·N) per step, independent of T.
+
+| Benchmark                         | T    | N  | W  | k | Mean       | Min        | Std Dev  | OPS   | Rounds |
+| --------------------------------- | ---- | -- | -- | - | ---------- | ---------- | -------- | ----- | ------ |
+| test_cash_position_sw_252_5_60_3  | 252  | 5  | 60 | 3 | 57.706 ms  | 57.323 ms  | 246.2 µs | 17    | 18     |
+| test_cash_position_sw_252_20_60_5 | 252  | 20 | 60 | 5 | 76.367 ms  | 75.868 ms  | 279.8 µs | 13    | 14     |
+| test_cash_position_sw_1260_5_60_3 | 1260 | 5  | 60 | 3 | 340.503 ms | 339.861 ms | 471.5 µs | 3     | 5      |
 
 ---
 

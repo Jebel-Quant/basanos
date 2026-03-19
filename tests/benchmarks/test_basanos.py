@@ -67,6 +67,47 @@ def _make_engine(n: int, n_assets: int, seed: int = 42) -> BasanosEngine:
     return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
 
+def _make_sw_engine(n: int, n_assets: int, window: int, n_factors: int, seed: int = 42) -> BasanosEngine:
+    """Return a sliding-window BasanosEngine with ``n`` rows and ``n_assets`` assets.
+
+    Args:
+        n: Number of daily rows (timesteps).
+        n_assets: Number of asset columns.
+        window: Rolling look-back window ``W`` for the factor model.
+        n_factors: Number of PCA factors ``k`` retained per window.
+        seed: RNG seed for reproducibility.
+    """
+    rng = np.random.default_rng(seed)
+    start = date(2015, 1, 1)
+    end = start + timedelta(days=n - 1)
+    dates = pl.date_range(start=start, end=end, interval="1d", eager=True).cast(pl.Date)
+
+    assets = [f"A{i}" for i in range(n_assets)]
+
+    prices_data: dict[str, pl.Series] = {"date": dates}
+    mu_data: dict[str, pl.Series] = {"date": dates}
+    for asset in assets:
+        log_ret = rng.normal(0.0, 0.01, size=n)
+        price = 100.0 * np.exp(np.cumsum(log_ret))
+        prices_data[asset] = pl.Series(price.tolist())
+        signal = rng.normal(0, 1, size=n)
+        mu_data[asset] = pl.Series(signal.tolist())
+
+    prices = pl.DataFrame(prices_data)
+    mu = pl.DataFrame(mu_data)
+    cfg = BasanosConfig(
+        vola=32,
+        corr=64,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e8,
+        covariance_mode="sliding_window",
+        window=window,
+        n_factors=n_factors,
+    )
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+
 # ─── Pre-built fixtures (constructed once per session) ───────────────────────
 
 
@@ -104,6 +145,24 @@ def engine_1260_5() -> BasanosEngine:
 def engine_252_20() -> BasanosEngine:
     """BasanosEngine: 252 days, 20 assets."""
     return _make_engine(252, 20)
+
+
+@pytest.fixture(scope="session")
+def sw_engine_252_5_60_3() -> BasanosEngine:
+    """Sliding-window BasanosEngine: T=252, N=5, W=60, k=3."""
+    return _make_sw_engine(252, 5, window=60, n_factors=3)
+
+
+@pytest.fixture(scope="session")
+def sw_engine_252_20_60_5() -> BasanosEngine:
+    """Sliding-window BasanosEngine: T=252, N=20, W=60, k=5."""
+    return _make_sw_engine(252, 20, window=60, n_factors=5)
+
+
+@pytest.fixture(scope="session")
+def sw_engine_1260_5_60_3() -> BasanosEngine:
+    """Sliding-window BasanosEngine: T=1260, N=5, W=60, k=3."""
+    return _make_sw_engine(1260, 5, window=60, n_factors=3)
 
 
 # ─── Portfolio benchmarks ─────────────────────────────────────────────────────
@@ -256,3 +315,38 @@ class TestBasanosEngineBenchmarks:
         result = benchmark(lambda: engine_252_5.portfolio)
         assert isinstance(result, Portfolio)
         assert result.assets == engine_252_5.assets
+
+
+# ─── Sliding-window BasanosEngine benchmarks ─────────────────────────────────
+
+
+class TestSlidingWindowBenchmarks:
+    """Benchmark ``cash_position`` in sliding-window covariance mode.
+
+    Each fixture name encodes ``sw_<T>_<N>_<W>_<k>`` where:
+
+    - ``T`` – number of daily rows (timesteps)
+    - ``N`` – number of asset columns
+    - ``W`` – rolling look-back window
+    - ``k`` – number of PCA factors retained per window
+
+    The sliding-window path has complexity O(T·W·N·k) for the rolling SVDs
+    and O(T·(k³ + kN)) for the Woodbury solves, with memory O(W·N) per step
+    (independent of T).  These cases exercise the representative corners of
+    that curve so that CI regression detection covers the hot path.
+    """
+
+    def test_cash_position_sw_252_5_60_3(self, benchmark, sw_engine_252_5_60_3):
+        """Benchmark sliding-window cash_position: T=252, N=5, W=60, k=3."""
+        result = benchmark(lambda: sw_engine_252_5_60_3.cash_position)
+        assert result.shape == sw_engine_252_5_60_3.prices.shape
+
+    def test_cash_position_sw_252_20_60_5(self, benchmark, sw_engine_252_20_60_5):
+        """Benchmark sliding-window cash_position: T=252, N=20, W=60, k=5."""
+        result = benchmark(lambda: sw_engine_252_20_60_5.cash_position)
+        assert result.shape == sw_engine_252_20_60_5.prices.shape
+
+    def test_cash_position_sw_1260_5_60_3(self, benchmark, sw_engine_1260_5_60_3):
+        """Benchmark sliding-window cash_position: T=1260, N=5, W=60, k=3."""
+        result = benchmark(lambda: sw_engine_1260_5_60_3.cash_position)
+        assert result.shape == sw_engine_1260_5_60_3.prices.shape
