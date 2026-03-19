@@ -91,3 +91,40 @@ Three PRs merged today address three of the six weaknesses and one of the six ri
 **Rationale**:
 The sliding window integration is technically sound and the public API is clean. Today's PRs directly close three items from the prior weakness/risk list: missing paper compilation, undocumented Rhiza coupling, and unintegrated factor model. The remaining gap (no benchmark for the new mode, silent broad exception, warm-up gap undocumented) are minor. The codebase continues to demonstrate the same discipline as the initial assessment.
 
+---
+
+## 2026-03-19 — Analysis Entry #3
+
+### Summary
+
+Three PRs merged since entry #2 close two of the three issues filed in that session (#222, #223) and go significantly further than asked on the config pattern (#229). The headline change is a structural refactor of `BasanosConfig`: the `covariance_mode / window / n_factors` flat fields are replaced by a Pydantic discriminated union `covariance_config: EwmaShrinkConfig | SlidingWindowConfig`. This removes the cross-field `model_validator`, eliminates the `int | None` tech debt, and makes required sliding-window parameters structurally required at the type level. Issue #224 (warm-up gap documentation) remains open.
+
+### Strengths
+
+- **Discriminated union pattern is architecturally correct** (`optimizer.py:325`): `CovarianceConfig = Annotated[EwmaShrinkConfig | SlidingWindowConfig, Field(discriminator="covariance_mode")]` is the canonical Pydantic v2 solution. Pydantic will raise a clear validation error if a `SlidingWindowConfig` is missing `window` or `n_factors` — no custom validator needed. The `model_validator` is cleanly removed.
+- **Backward-compatible properties preserved**: `BasanosConfig.covariance_mode`, `.window`, `.n_factors` remain as computed `@property` accessors (`optimizer.py:589–602`), so call sites outside `optimizer.py` (tests, user code) require no changes.
+- **`isinstance` dispatch replaces enum comparison**: `if isinstance(self.cfg.covariance_config, EwmaShrinkConfig)` is both type-safe (mypy/ty infer the narrowed type) and forward-compatible (a third mode requires only a new sub-config class, not a new enum value + validator branch).
+- **`cast` use now cleaner**: `sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)` after the `isinstance` check is technically redundant but serves as a type-narrowing hint for static analysis. The previous double-cast pattern (`cast(int, self.cfg.window)`) is gone.
+- **Sub-configs exported from public API**: `EwmaShrinkConfig` and `SlidingWindowConfig` are exported from `basanos.math.__init__`. Users constructing configs programmatically no longer need to import from the private `optimizer` module.
+- **Except clauses narrowed with logging** (PR #227): All three broad `except Exception` blocks in `_iter_matrices` and `cash_position` now catch `(np.linalg.LinAlgError, ValueError)` and log at `WARNING` / `DEBUG` level. Production fallbacks are now observable without code changes.
+- **Benchmark baseline refreshed and extended** (PR #226): `BENCHMARKS.md` now shows v0.4.2 results (replacing stale v0.3.0), covers six sliding-window cases (`sw_252_5_60_3`, `sw_252_20_60_5`, `sw_1260_5_60_3`, etc.), and the CI regression gate covers the new path.
+
+### Weaknesses
+
+- **Issue #224 still open — warm-up gap undocumented**: `SlidingWindowConfig.window` field description (`optimizer.py:289–293`) still reads only *"Rule of thumb: W >= 2 * n_assets"*. The W-1 row warm-up period producing zero positions is not mentioned. The note at `_iter_matrices` docstring line 833 ("before the warm-up period has elapsed") exists but is in an internal method, invisible to users reading `BasanosConfig`.
+- **`EwmaShrinkConfig` is an empty model**: The class body is `covariance_mode: Literal[...] = ...` only. This is correct for now but means any future ewma-specific parameters (e.g., a `corr_override`) would require a potentially breaking change to the field name convention. A comment or docstring note about intentional minimalism would clarify intent.
+- **`CovarianceConfig` type alias not exported**: `CovarianceConfig` (the `Annotated` discriminated union alias) is used as the type of `BasanosConfig.covariance_config` but is not exported from `basanos.math.__init__`. Type-annotated user code that wants to declare a variable of this union type must import from the private `optimizer` module.
+
+### Risks / Technical Debt
+
+- **Three open copilot branches unmerged at time of writing**: `copilot/document-warm-up-gap-in-basanosconfig`, `copilot/fix-paper-pdf-issue`, `copilot/narrow-except-exception-errors` (the last may be superseded by the merged PR #227). Branch accumulation without merge creates review debt.
+- **`SlidingWindowConfig` constructor in `sharpe_at_pca_components`** (`optimizer.py:1378`): The `model_copy(update={"covariance_config": SlidingWindowConfig(...)})` pattern works but is fragile — any frozen field added to `BasanosConfig` that has no default would break the copy silently. Prefer a dedicated factory or constructor kwarg forwarding.
+- **Benchmark commit hash is stale**: `BENCHMARKS.md` records `Commit: 9aa4491` as the baseline, which is two merges behind the code that actually generated the results. Minor, but reduces traceability for regression investigations.
+
+### Score
+
+**9/10** — Score unchanged; structural config quality raised, one open issue remains
+
+**Rationale**:
+The discriminated union refactor is the right long-term design and was delivered quickly. The codebase is now in a cleaner state than it was after the initial sliding-window merge. The one remaining open item (#224) is low-severity. No regressions introduced.
+
