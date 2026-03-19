@@ -63,11 +63,11 @@ dataset sizes.
 import dataclasses
 import enum
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import numpy as np
 import polars as pl
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from scipy.signal import lfilter
 from scipy.stats import spearmanr
 
@@ -227,8 +227,7 @@ class CovarianceMode(enum.StrEnum):
             The system is solved efficiently via the Woodbury identity
             (Section 4.3 of basanos.pdf) at :math:`O(k^3 + kn)` per step
             rather than :math:`O(n^3)`.
-            Controlled by :attr:`BasanosConfig.window` and
-            :attr:`BasanosConfig.n_factors`.
+            Configured via :class:`SlidingWindowConfig`.
 
     Examples:
         >>> CovarianceMode.ewma_shrink
@@ -241,6 +240,84 @@ class CovarianceMode(enum.StrEnum):
 
     ewma_shrink = "ewma_shrink"
     sliding_window = "sliding_window"
+
+
+class EwmaShrinkConfig(BaseModel):
+    """Covariance configuration for the ``ewma_shrink`` mode.
+
+    This is the default covariance mode. No additional parameters are required
+    beyond those already present on :class:`BasanosConfig` (``shrink``, ``corr``).
+
+    Examples:
+        >>> cfg = EwmaShrinkConfig()
+        >>> cfg.covariance_mode
+        <CovarianceMode.ewma_shrink: 'ewma_shrink'>
+    """
+
+    covariance_mode: Literal[CovarianceMode.ewma_shrink] = CovarianceMode.ewma_shrink
+
+    model_config = {"frozen": True}
+
+
+class SlidingWindowConfig(BaseModel):
+    r"""Covariance configuration for the ``sliding_window`` mode.
+
+    Requires both ``window`` (rolling window length) and ``n_factors`` (number
+    of latent factors for the truncated SVD factor model).
+
+    Args:
+        window: Rolling window length :math:`W \\geq 1`.
+            Rule of thumb: :math:`W \\geq 2n` keeps the sample covariance
+            well-posed before truncation.
+        n_factors: Number of latent factors :math:`k \\geq 1`.
+            :math:`k = 1` recovers the single market-factor model; larger
+            :math:`k` captures finer correlation structure at the cost of
+            higher estimation noise.
+
+    Examples:
+        >>> cfg = SlidingWindowConfig(window=60, n_factors=3)
+        >>> cfg.covariance_mode
+        <CovarianceMode.sliding_window: 'sliding_window'>
+        >>> cfg.window
+        60
+        >>> cfg.n_factors
+        3
+    """
+
+    covariance_mode: Literal[CovarianceMode.sliding_window] = CovarianceMode.sliding_window
+    window: int = Field(
+        ...,
+        gt=0,
+        description=(
+            "Sliding window length W (number of most recent observations). "
+            "Rule of thumb: W >= 2 * n_assets to keep the sample covariance well-posed."
+        ),
+    )
+    n_factors: int = Field(
+        ...,
+        gt=0,
+        description=(
+            "Number of latent factors k for the sliding window factor model. "
+            "k=1 recovers the single market-factor model; larger k captures finer correlation "
+            "structure at the cost of higher estimation noise."
+        ),
+    )
+
+    model_config = {"frozen": True}
+
+
+CovarianceConfig = Annotated[
+    EwmaShrinkConfig | SlidingWindowConfig,
+    Field(discriminator="covariance_mode"),
+]
+"""Discriminated union of covariance-mode configurations.
+
+Pydantic selects the correct sub-config based on the ``covariance_mode``
+discriminator field:
+
+* :class:`EwmaShrinkConfig` when ``covariance_mode="ewma_shrink"``
+* :class:`SlidingWindowConfig` when ``covariance_mode="sliding_window"``
+"""
 
 
 class BasanosConfig(BaseModel):
@@ -353,12 +430,12 @@ class BasanosConfig(BaseModel):
 
     Sliding-window mode
     -------------------
-    When ``covariance_mode = "sliding_window"``, the EWMA correlation
-    estimator is replaced by a rolling-window factor model (Section 4.4 of
-    basanos.pdf).  At each timestamp *t* the :math:`W \\times n` submatrix of
-    the :math:`W` most recent volatility-adjusted returns is decomposed via
-    truncated SVD to extract :math:`k` latent factors.  The resulting
-    correlation estimate is
+    When ``covariance_config`` is a :class:`SlidingWindowConfig`, the EWMA
+    correlation estimator is replaced by a rolling-window factor model
+    (Section 4.4 of basanos.pdf).  At each timestamp *t* the
+    :math:`W \\times n` submatrix of the :math:`W` most recent
+    volatility-adjusted returns is decomposed via truncated SVD to extract
+    :math:`k` latent factors.  The resulting correlation estimate is
 
     .. math::
 
@@ -371,16 +448,18 @@ class BasanosConfig(BaseModel):
     via the Woodbury identity (:func:`~basanos.math._factor_model.FactorModel.solve`)
     at cost :math:`O(k^3 + kn)` per step rather than :math:`O(n^3)`.
 
-    ``window``
-        Rolling window length :math:`W \\geq 1`.  Rule of thumb: :math:`W
-        \\geq 2n` keeps the sample covariance well-posed before truncation.
-        Required when ``covariance_mode = "sliding_window"``.
+    ``covariance_config``
+        Pass a :class:`SlidingWindowConfig` instance to enable this mode.
+        The required sub-parameters are:
 
-    ``n_factors``
-        Number of latent factors :math:`k \\geq 1`.  :math:`k = 1` recovers
-        the single market-factor model; larger :math:`k` captures finer
-        correlation structure at the cost of higher estimation noise.
-        Required when ``covariance_mode = "sliding_window"``.
+        ``window``
+            Rolling window length :math:`W \\geq 1`.  Rule of thumb: :math:`W
+            \\geq 2n` keeps the sample covariance well-posed before truncation.
+
+        ``n_factors``
+            Number of latent factors :math:`k \\geq 1`.  :math:`k = 1`
+            recovers the single market-factor model; larger :math:`k` captures
+            finer correlation structure at the cost of higher estimation noise.
 
     Examples:
         >>> cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
@@ -390,7 +469,7 @@ class BasanosConfig(BaseModel):
         64
         >>> sw_cfg = BasanosConfig(
         ...     vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6,
-        ...     covariance_mode="sliding_window", window=60, n_factors=3,
+        ...     covariance_config=SlidingWindowConfig(window=60, n_factors=3),
         ... )
         >>> sw_cfg.covariance_mode
         <CovarianceMode.sliding_window: 'sliding_window'>
@@ -475,36 +554,36 @@ class BasanosConfig(BaseModel):
             "that are almost entirely null."
         ),
     )
-    covariance_mode: CovarianceMode = Field(
-        default=CovarianceMode.ewma_shrink,
+    covariance_config: CovarianceConfig = Field(
+        default_factory=EwmaShrinkConfig,
         description=(
-            "Covariance estimation mode. "
-            "'ewma_shrink': EWMA correlation with linear shrinkage toward the identity (default). "
-            "'sliding_window': rolling-window factor model with k latent factors; requires "
-            "'window' and 'n_factors' to be set. See Section 4.4 of basanos.pdf."
-        ),
-    )
-    window: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Sliding window length W (number of most recent observations). "
-            "Required when covariance_mode='sliding_window'. "
-            "Rule of thumb: W >= 2 * n_assets to keep the sample covariance well-posed."
-        ),
-    )
-    n_factors: int | None = Field(
-        default=None,
-        gt=0,
-        description=(
-            "Number of latent factors k for the sliding window factor model. "
-            "Required when covariance_mode='sliding_window'. "
-            "k=1 recovers the single market-factor model; larger k captures finer correlation "
-            "structure at the cost of higher estimation noise."
+            "Covariance estimation configuration. "
+            "Pass EwmaShrinkConfig() (default) for EWMA correlation with linear shrinkage "
+            "toward the identity, or SlidingWindowConfig(window=W, n_factors=k) for a "
+            "rolling-window factor model. See Section 4.4 of basanos.pdf."
         ),
     )
 
     model_config = {"frozen": True, "extra": "forbid"}
+
+    @property
+    def covariance_mode(self) -> CovarianceMode:
+        """Covariance mode derived from :attr:`covariance_config`."""
+        return self.covariance_config.covariance_mode
+
+    @property
+    def window(self) -> int | None:
+        """Sliding window length, or ``None`` when not in ``sliding_window`` mode."""
+        if isinstance(self.covariance_config, SlidingWindowConfig):
+            return self.covariance_config.window
+        return None
+
+    @property
+    def n_factors(self) -> int | None:
+        """Number of latent factors, or ``None`` when not in ``sliding_window`` mode."""
+        if isinstance(self.covariance_config, SlidingWindowConfig):
+            return self.covariance_config.n_factors
+        return None
 
     @property
     def report(self) -> "ConfigReport":
@@ -545,16 +624,6 @@ class BasanosConfig(BaseModel):
         if vola is not None and v < vola:
             raise ValueError
         return v
-
-    @model_validator(mode="after")
-    def _validate_sliding_window_params(self) -> "BasanosConfig":
-        """Enforce that window and n_factors are set in sliding_window mode."""
-        if self.covariance_mode == CovarianceMode.sliding_window:
-            if self.window is None:
-                raise ValueError("'window' must be set when covariance_mode='sliding_window'")  # noqa: TRY003
-            if self.n_factors is None:
-                raise ValueError("'n_factors' must be set when covariance_mode='sliding_window'")  # noqa: TRY003
-        return self
 
 
 @dataclasses.dataclass(frozen=True)
@@ -764,14 +833,14 @@ class BasanosEngine:
         (e.g., before the warm-up period has elapsed or when no assets have
         finite prices).
 
-        The behaviour depends on :attr:`BasanosConfig.covariance_mode`:
+        The behaviour depends on :attr:`BasanosConfig.covariance_config`:
 
-        * ``ewma_shrink``:  Applies :func:`~basanos.math._signal.shrink2id` to
+        * :class:`EwmaShrinkConfig`:  Applies :func:`~basanos.math._signal.shrink2id` to
           the EWMA correlation matrix (same computation as
           :attr:`cash_position`).
-        * ``sliding_window``: Builds a
+        * :class:`SlidingWindowConfig`: Builds a
           :class:`~basanos.math._factor_model.FactorModel` from the last
-          ``cfg.window`` rows of vol-adjusted returns and returns its
+          ``cfg.covariance_config.window`` rows of vol-adjusted returns and returns its
           :attr:`~basanos.math._factor_model.FactorModel.covariance`.
 
         Yields:
@@ -788,7 +857,7 @@ class BasanosEngine:
         prices_num = self.prices.select(assets).to_numpy()
         dates = self.prices["date"].to_list()
 
-        if self.cfg.covariance_mode == CovarianceMode.ewma_shrink:
+        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
             cor = self.cor
             for i, t in enumerate(dates):
                 mask = np.isfinite(prices_num[i])
@@ -799,9 +868,9 @@ class BasanosEngine:
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
                 yield i, t, mask, matrix
         else:
-            # Model validator guarantees these are set for sliding_window mode.
-            win_w: int = cast(int, self.cfg.window)
-            win_k: int = cast(int, self.cfg.n_factors)
+            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
+            win_w: int = sw_config.window
+            win_k: int = sw_config.n_factors
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
             for i, t in enumerate(dates):
                 mask = np.isfinite(prices_num[i])
@@ -826,16 +895,17 @@ class BasanosEngine:
     def cash_position(self) -> pl.DataFrame:
         r"""Optimize correlation-aware risk positions for each timestamp.
 
-        Supports two covariance modes controlled by ``cfg.covariance_mode``:
+        Supports two covariance modes controlled by ``cfg.covariance_config``:
 
-        * ``'ewma_shrink'`` (default): Computes EWMA correlations, applies
+        * :class:`EwmaShrinkConfig` (default): Computes EWMA correlations, applies
           linear shrinkage toward the identity, and solves a normalised linear
           system :math:`C\\,x = \\mu` per timestamp via Cholesky / LU.
 
-        * ``'sliding_window'``: At each timestamp uses the ``cfg.window`` most
-          recent vol-adjusted returns to fit a rank-``cfg.n_factors`` factor
-          model via truncated SVD and solves the system via the Woodbury identity
-          at :math:`O(k^3 + kn)` rather than :math:`O(n^3)` per step.
+        * :class:`SlidingWindowConfig`: At each timestamp uses the
+          ``cfg.covariance_config.window`` most recent vol-adjusted returns to fit a
+          rank-``cfg.covariance_config.n_factors`` factor model via truncated SVD and
+          solves the system via the Woodbury identity at :math:`O(k^3 + kn)` rather
+          than :math:`O(n^3)` per step.
 
         Non-finite or ill-posed cases yield zero positions for safety.
 
@@ -867,18 +937,18 @@ class BasanosEngine:
         profit_variance = self.cfg.profit_variance_init
         lamb = self.cfg.profit_variance_decay
 
-        if self.cfg.covariance_mode == CovarianceMode.ewma_shrink:
+        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
             # ── EWMA / shrinkage path ───────────────────────────────────────
             cor = self.cor
             index_iter = list(cor.keys())
         else:
             # ── Sliding window path ─────────────────────────────────────────
-            # Model validator guarantees window and n_factors are set here.
+            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
             cor = None
             index_iter = self.prices["date"].to_list()
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            win_w: int = cast(int, self.cfg.window)
-            win_k: int = cast(int, self.cfg.n_factors)
+            win_w: int = sw_config.window
+            win_k: int = sw_config.n_factors
 
         for i, t in enumerate(index_iter):
             # get the mask of finite prices for this timestamp
@@ -899,7 +969,7 @@ class BasanosEngine:
             if not mask.any():
                 continue
 
-            if self.cfg.covariance_mode == CovarianceMode.ewma_shrink:
+            if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
                 # get the correlation matrix for this timestamp and shrink it
                 corr_n = cor[t]  # type: ignore[index]
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
@@ -1308,9 +1378,7 @@ class BasanosEngine:
         """
         new_cfg = self.cfg.model_copy(
             update={
-                "covariance_mode": CovarianceMode.sliding_window,
-                "window": window,
-                "n_factors": n_factors,
+                "covariance_config": SlidingWindowConfig(window=window, n_factors=n_factors),
             }
         )
         engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
