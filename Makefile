@@ -20,6 +20,15 @@ post-validate:: typecheck ## run type checking as part of make validate
 
 ## Custom targets
 
+##@ Paper
+
+.PHONY: paper
+paper: ## compile the LaTeX paper (paper/basanos.tex → paper/basanos.pdf)
+	@command -v latexmk >/dev/null 2>&1 || { printf "${RED}[ERROR] latexmk not found. Install TeX Live (https://tug.org/texlive/) with your package manager.${RESET}\n"; exit 1; }
+	@printf "${BLUE}[INFO] Compiling paper/basanos.tex...${RESET}\n"
+	@cd paper && latexmk -pdf -interaction=nonstopmode basanos.tex
+	@printf "${GREEN}[INFO] Paper compiled: paper/basanos.pdf${RESET}\n"
+
 .PHONY: adr
 adr: install-gh-aw ## Create a new Architecture Decision Record (ADR) using AI assistance
 	@echo "Creating a new ADR..."
