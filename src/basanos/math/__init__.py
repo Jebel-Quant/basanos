@@ -29,3 +29,4 @@ Notes:
 from ._factor_model import FactorModel as FactorModel
 from .optimizer import BasanosConfig as BasanosConfig
 from .optimizer import BasanosEngine as BasanosEngine
+from .optimizer import CovarianceMode as CovarianceMode
