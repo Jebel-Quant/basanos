@@ -895,9 +895,6 @@ class BasanosEngine:
                 window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
                 n_sub = int(mask.sum())
                 k_eff = min(win_k, win_w, n_sub)
-                if k_eff < 1:  # pragma: no cover
-                    yield i, t, mask, None
-                    continue
                 try:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
                     yield i, t, mask, fm.covariance
@@ -1032,9 +1029,6 @@ class BasanosEngine:
 
                 n_sub = int(mask.sum())
                 k_eff = min(win_k, win_w, n_sub)
-                if k_eff < 1:  # pragma: no cover
-                    continue
-
                 try:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
                 except (np.linalg.LinAlgError, ValueError) as exc:
