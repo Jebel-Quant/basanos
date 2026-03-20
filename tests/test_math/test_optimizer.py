@@ -669,6 +669,24 @@ def test_cash_position_zeros_and_warns_when_inv_a_norm_returns_nan(caplog) -> No
     assert all("denom=nan" in r.message for r in degen_warnings)
 
 
+def test_cash_position_zeros_when_inv_a_norm_raises_singular(
+    small_prices: pl.DataFrame, small_mu: pl.DataFrame, caplog
+) -> None:
+    """When inv_a_norm raises SingularMatrixError, positions are zeroed and a warning emitted."""
+    cfg = BasanosConfig(corr=5, vola=5, clip=4.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=small_prices, mu=small_mu, cfg=cfg)
+    with (
+        patch("basanos.math.optimizer.inv_a_norm", side_effect=SingularMatrixError("singular")),
+        caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+    ):
+        cp = engine.cash_position
+    for col in engine.assets:
+        vals = cp[col].to_numpy(allow_copy=True)
+        assert not np.any(np.isinf(vals)), f"Unexpected infinite position in column {col}"
+    degen_warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    assert degen_warnings, "Expected a degenerate-denominator warning when inv_a_norm raises SingularMatrixError"
+
+
 # ─── ret_adj, vola, cor properties ────────────────────────────────────────────
 
 
@@ -1875,7 +1893,96 @@ class TestBasanosConfigSlidingWindow:
         assert sw_cfg.n_factors == 2
 
 
-# ─── Sliding window cash_position ────────────────────────────────────────────
+# ─── Sliding window warm-up warning ──────────────────────────────────────────
+
+
+def _make_sw_prices_mu(n: int, seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Build a minimal price/mu pair with *n* rows for warm-up warning tests."""
+    rng = np.random.default_rng(seed)
+    start = date(2022, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(100.0 + np.cumsum(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "B": pl.Series(50.0 + np.cumsum(rng.normal(0, 0.3, n)), dtype=pl.Float64),
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(np.tanh(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "B": pl.Series(np.tanh(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+        }
+    )
+    return prices, mu
+
+
+class TestSlidingWindowWarmupWarning:
+    """BasanosEngine emits a warning when dataset length < 2 * window."""
+
+    _sw_cfg_kwargs = {
+        "vola": 10,
+        "corr": 20,
+        "clip": 3.0,
+        "shrink": 0.5,
+        "aum": 1e6,
+    }
+
+    def test_warning_emitted_when_dataset_shorter_than_2w(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A WARNING must be logged when n_rows < 2 * window at engine construction."""
+        window = 50
+        prices, mu = _make_sw_prices_mu(n=60)  # 60 < 2 * 50 = 100
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, covariance_config=SlidingWindowConfig(window=window, n_factors=2))
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        records = [r for r in caplog.records if "warm-up" in r.message.lower() or "2 * window" in r.message]
+        assert records, "Expected a warm-up warning when dataset length < 2 * window"
+
+    def test_warning_mentions_zero_positions_and_warmup_count(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The warning message must mention the number of zero-position rows."""
+        window = 40
+        prices, mu = _make_sw_prices_mu(n=50)  # 50 < 2 * 40 = 80
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, covariance_config=SlidingWindowConfig(window=window, n_factors=2))
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        records = [r for r in caplog.records if "zero positions" in r.message]
+        assert records, "Warning should mention 'zero positions'"
+        assert str(window - 1) in records[0].message, "Warning should state the warm-up row count"
+
+    def test_no_warning_when_dataset_long_enough(self, caplog: pytest.LogCaptureFixture) -> None:
+        """No warm-up warning should be emitted when n_rows >= 2 * window."""
+        window = 30
+        prices, mu = _make_sw_prices_mu(n=120)  # 120 >= 2 * 30 = 60
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, covariance_config=SlidingWindowConfig(window=window, n_factors=2))
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        warmup_records = [r for r in caplog.records if "warm-up" in r.message.lower() or "2 * window" in r.message]
+        assert not warmup_records, "No warm-up warning expected when dataset is long enough"
+
+    def test_no_warning_for_ewma_shrink_mode(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The warm-up warning must NOT fire for ewma_shrink mode."""
+        prices, mu = _make_sw_prices_mu(n=30)
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        warmup_records = [r for r in caplog.records if "warm-up" in r.message.lower() or "2 * window" in r.message]
+        assert not warmup_records, "Warm-up warning should not fire for ewma_shrink mode"
+
+    def test_no_warning_at_exactly_2w_rows(self, caplog: pytest.LogCaptureFixture) -> None:
+        """No warm-up warning when dataset length equals exactly 2 * window (boundary)."""
+        window = 30
+        prices, mu = _make_sw_prices_mu(n=2 * window)  # exactly at threshold
+        cfg = BasanosConfig(**self._sw_cfg_kwargs, covariance_config=SlidingWindowConfig(window=window, n_factors=2))
+        with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+            BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        warmup_records = [r for r in caplog.records if "warm-up" in r.message.lower() or "2 * window" in r.message]
+        assert not warmup_records, "No warm-up warning expected when n_rows == 2 * window"
 
 
 @pytest.fixture
@@ -2081,3 +2188,80 @@ class TestSharpeAtWindowFactors:
         engine.sharpe_at_window_factors(window=30, n_factors=2)
         assert engine.cfg.covariance_mode is original_mode
         assert engine.cfg.covariance_mode is CovarianceMode.ewma_shrink
+
+
+# ─── Sliding window error-path coverage ──────────────────────────────────────
+
+
+class TestSlidingWindowErrorPaths:
+    """Cover defensive error branches in sliding_window cash_position and _iter_matrices."""
+
+    @pytest.fixture
+    def sw_cfg(self) -> BasanosConfig:
+        """Config with sliding_window mode, W=10, k=2."""
+        return BasanosConfig(
+            vola=10,
+            corr=20,
+            clip=3.0,
+            shrink=0.5,
+            aum=1e6,
+            covariance_config=SlidingWindowConfig(window=10, n_factors=2),
+        )
+
+    @pytest.fixture
+    def sw_engine(self, sw_prices: pl.DataFrame, sw_mu: pl.DataFrame, sw_cfg: BasanosConfig) -> BasanosEngine:
+        """Engine configured for sliding window mode."""
+        return BasanosEngine(prices=sw_prices, mu=sw_mu, cfg=sw_cfg)
+
+    def test_zero_mu_yields_zero_positions_post_warmup(self, sw_prices: pl.DataFrame, sw_cfg: BasanosConfig) -> None:
+        """When mu is identically zero, sliding_window must zero positions (not NaN) post-warmup."""
+        n = sw_prices.height
+        zero_mu = pl.DataFrame(
+            {
+                "date": sw_prices["date"],
+                "X": pl.Series(np.zeros(n), dtype=pl.Float64),
+                "Y": pl.Series(np.zeros(n), dtype=pl.Float64),
+                "Z": pl.Series(np.zeros(n), dtype=pl.Float64),
+            }
+        )
+        engine = BasanosEngine(prices=sw_prices, mu=zero_mu, cfg=sw_cfg)
+        pos = engine.cash_position
+        window = sw_cfg.window
+        post_warmup = pos.slice(window).select(["X", "Y", "Z"])
+        for col in post_warmup.columns:
+            assert (post_warmup[col].fill_nan(0.0) == 0.0).all(), f"Expected zero positions for {col}"
+
+    def test_factor_model_svd_failure_in_cash_position_continues(self, sw_engine: BasanosEngine) -> None:
+        """When FactorModel.from_returns raises LinAlgError, cash_position skips that row."""
+        with patch("basanos.math.optimizer.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")):
+            pos = sw_engine.cash_position
+        assert pos.shape == sw_engine.prices.shape
+
+    def test_factor_model_svd_failure_in_iter_matrices_logs_warning(
+        self, sw_engine: BasanosEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When FactorModel.from_returns raises in _iter_matrices, a warning is emitted."""
+        with (
+            patch("basanos.math.optimizer.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")),
+            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        ):
+            _ = sw_engine.condition_number
+        records = [r for r in caplog.records if "Factor model fit failed" in r.message]
+        assert records, "Expected a 'Factor model fit failed' warning"
+
+    def test_woodbury_solve_failure_zeros_positions(
+        self, sw_engine: BasanosEngine, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """When fm.solve raises LinAlgError, positions are zeroed and a warning is logged."""
+        from unittest.mock import MagicMock
+
+        mock_fm = MagicMock()
+        mock_fm.solve.side_effect = np.linalg.LinAlgError("singular")
+        with (
+            patch("basanos.math.optimizer.FactorModel.from_returns", return_value=mock_fm),
+            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        ):
+            pos = sw_engine.cash_position
+        assert pos.shape == sw_engine.prices.shape
+        records = [r for r in caplog.records if "Woodbury solve failed" in r.message]
+        assert records, "Expected a 'Woodbury solve failed' warning"

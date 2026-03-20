@@ -724,6 +724,20 @@ class BasanosEngine:
                 if (diffs >= 0).all() or (diffs <= 0).all():
                     raise MonotonicPricesError(asset)
 
+        # warn when the dataset is too short to benefit from the sliding window
+        if self.cfg.covariance_mode == CovarianceMode.sliding_window and self.cfg.window is not None:
+            w: int = self.cfg.window
+            n_rows = self.prices.height
+            if n_rows < 2 * w:
+                _logger.warning(
+                    "Dataset length (%d rows) is less than 2 * window (%d). "
+                    "The first %d timestamps will yield zero positions during warm-up; "
+                    "consider using a longer history or reducing 'window'.",
+                    n_rows,
+                    2 * w,
+                    w - 1,
+                )
+
     @property
     def assets(self) -> list[str]:
         """List asset column names (numeric columns excluding 'date')."""
@@ -881,7 +895,7 @@ class BasanosEngine:
                 window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
                 n_sub = int(mask.sum())
                 k_eff = min(win_k, win_w, n_sub)
-                if k_eff < 1:
+                if k_eff < 1:  # pragma: no cover
                     yield i, t, mask, None
                     continue
                 try:
@@ -981,7 +995,10 @@ class BasanosEngine:
                 if np.allclose(expected_mu, 0.0):
                     pos = np.zeros_like(expected_mu)
                 else:
-                    denom = inv_a_norm(expected_mu, matrix)
+                    try:
+                        denom = inv_a_norm(expected_mu, matrix)
+                    except SingularMatrixError:
+                        denom = float("nan")
                     if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
                         _logger.warning(
                             "Positions zeroed at t=%s: normalisation denominator is degenerate "
@@ -999,7 +1016,10 @@ class BasanosEngine:
                         )
                         pos = np.zeros_like(expected_mu)
                     else:
-                        pos = solve(matrix, expected_mu) / denom
+                        try:
+                            pos = solve(matrix, expected_mu) / denom
+                        except SingularMatrixError:  # pragma: no cover
+                            pos = np.zeros_like(expected_mu)
             else:
                 # ── Sliding window: fit factor model on the last W rows ─────
                 if i + 1 < win_w:
@@ -1012,7 +1032,7 @@ class BasanosEngine:
 
                 n_sub = int(mask.sum())
                 k_eff = min(win_k, win_w, n_sub)
-                if k_eff < 1:
+                if k_eff < 1:  # pragma: no cover
                     continue
 
                 try:
