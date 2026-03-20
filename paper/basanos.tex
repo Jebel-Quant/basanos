@@ -970,6 +970,7 @@ cfg = BasanosConfig(
 # --- Optimization ---
 engine    = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 positions = engine.cash_position       # Optimized cash positions
+status    = engine.position_status     # Per-row reason code (warmup/zero_signal/degenerate/valid)
 
 # --- Optimizer diagnostics ---
 kappa    = engine.condition_number     # Matrix condition over time
@@ -1118,6 +1119,7 @@ friction of a full production system.
     \normalfont\textbf{Property} & \textbf{Description} \\
     \midrule
     cash\_position    & Optimized cash positions; the primary output. \\
+    position\_status  & Per-row reason code: \texttt{warmup}, \texttt{zero\_signal}, \texttt{degenerate}, or \texttt{valid}. \\
     risk\_position    & Cash positions multiplied by per-asset volatility; positions on a common vol-adjusted scale. \\
     position\_leverage & L1 norm of cash positions (gross leverage) per timestamp. \\
     condition\_number & Condition number $\kappa(\tilde{\C}_t)$ per timestamp. \\
