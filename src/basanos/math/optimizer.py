@@ -298,7 +298,10 @@ class SlidingWindowConfig(BaseModel):
         gt=0,
         description=(
             "Sliding window length W (number of most recent observations). "
-            "Rule of thumb: W >= 2 * n_assets to keep the sample covariance well-posed."
+            "Rule of thumb: W >= 2 * n_assets to keep the sample covariance well-posed. "
+            "Note: the first W-1 rows of output will have zero/empty positions while the "
+            "sliding window fills up (warm-up period). Account for this when interpreting "
+            "results or sizing positions."
         ),
     )
     n_factors: int = Field(
