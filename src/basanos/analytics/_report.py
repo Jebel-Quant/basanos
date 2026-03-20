@@ -21,9 +21,16 @@ from typing import TYPE_CHECKING, TypeGuard
 import plotly.graph_objects as go
 import plotly.io as pio
 import polars as pl
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 if TYPE_CHECKING:
     from .portfolio import Portfolio
+
+_TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
+_env = Environment(
+    loader=FileSystemLoader(_TEMPLATES_DIR),
+    autoescape=select_autoescape(["html"]),
+)
 
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
@@ -167,165 +174,6 @@ def _stats_table_html(summary: pl.DataFrame) -> str:
     )
 
 
-# ── CSS / HTML templates ──────────────────────────────────────────────────────
-
-_CSS = """
-/* ── Reset & Base ─────────────────────────────────── */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
-    background: #0f1117;
-    color: #e2e8f0;
-    line-height: 1.6;
-}
-
-/* ── Header ───────────────────────────────────────── */
-.report-header {
-    background: linear-gradient(135deg, #1a1f35 0%, #0d1b2a 100%);
-    border-bottom: 2px solid #2d3748;
-    padding: 2.5rem 2rem 2rem;
-}
-.report-header h1 {
-    font-size: 2rem;
-    font-weight: 700;
-    color: #63b3ed;
-    letter-spacing: -0.5px;
-}
-.report-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.5rem;
-    margin-top: 0.75rem;
-    font-size: 0.875rem;
-    color: #a0aec0;
-}
-.report-meta span strong { color: #e2e8f0; }
-
-/* ── Table of Contents ────────────────────────────── */
-.toc {
-    background: #1a1f35;
-    border-bottom: 1px solid #2d3748;
-    padding: 0.75rem 2rem;
-    display: flex;
-    gap: 1.5rem;
-    flex-wrap: wrap;
-    font-size: 0.8rem;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-}
-.toc a {
-    color: #63b3ed;
-    text-decoration: none;
-    opacity: 0.8;
-    transition: opacity 0.2s;
-}
-.toc a:hover { opacity: 1; text-decoration: underline; }
-
-/* ── Main Content ─────────────────────────────────── */
-.container {
-    max-width: 1400px;
-    margin: 0 auto;
-    padding: 2rem;
-}
-
-/* ── Sections ─────────────────────────────────────── */
-.section { margin-bottom: 3rem; }
-.section-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: #90cdf4;
-    margin-bottom: 1.25rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid #2d3748;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-.section-title::before {
-    content: "";
-    display: inline-block;
-    width: 4px;
-    height: 1.2em;
-    background: #4299e1;
-    border-radius: 2px;
-}
-
-/* ── Chart Grid ───────────────────────────────────── */
-.chart-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1.5rem;
-}
-.chart-grid .chart-card.full-width { grid-column: 1 / -1; }
-.chart-card {
-    background: #1a202c;
-    border: 1px solid #2d3748;
-    border-radius: 12px;
-    padding: 1rem;
-    overflow: hidden;
-}
-.chart-card .js-plotly-plot,
-.chart-card .plotly-graph-div { width: 100% !important; }
-
-/* ── Stats Table ──────────────────────────────────── */
-.stats-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.875rem;
-}
-.stats-table th {
-    background: #2d3748;
-    color: #90cdf4;
-    padding: 0.6rem 1rem;
-    text-align: right;
-    font-weight: 600;
-    white-space: nowrap;
-}
-.stats-table th.metric-header { text-align: left; }
-.stats-table th.asset-header  { text-align: right; }
-.stats-table td {
-    padding: 0.45rem 1rem;
-    border-bottom: 1px solid #2d3748;
-    text-align: right;
-}
-.stats-table td.metric-name {
-    text-align: left;
-    color: #cbd5e0;
-    padding-left: 1.5rem;
-}
-.stats-table tr.table-section-header td {
-    background: #1e2a3a;
-    color: #4299e1;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    padding: 0.4rem 1rem;
-    text-align: left;
-}
-.stats-table tbody tr:hover { background: #1e2a3a; }
-.stats-table td.best-value { color: #68d391; font-weight: 600; }
-.stats-table td.metric-value {
-    font-family: "SFMono-Regular", Consolas, monospace;
-}
-
-/* ── Footer ───────────────────────────────────────── */
-.report-footer {
-    text-align: center;
-    padding: 1.5rem;
-    color: #4a5568;
-    font-size: 0.75rem;
-    border-top: 1px solid #2d3748;
-    margin-top: 3rem;
-}
-
-@media (max-width: 900px) {
-    .chart-grid { grid-template-columns: 1fr; }
-    .chart-card.full-width { grid-column: 1; }
-}
-"""
-
-
 # ── Report dataclass ──────────────────────────────────────────────────────────
 
 
@@ -447,95 +295,25 @@ class Report:
 
         # ── Assemble HTML ─────────────────────────────────────────────────────
         footer_date = end_date if has_date else ""
-        return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{title}</title>
-  <style>{_CSS}</style>
-</head>
-<body>
-
-<header class="report-header">
-  <h1>&#x1F4CA; {title}</h1>
-  <div class="report-meta">
-    <span><strong>Period:</strong> {period_info}</span>
-    <span><strong>Assets:</strong> {assets_list}</span>
-    <span><strong>AUM:</strong> {pf.aum:,.0f}</span>
-  </div>
-</header>
-
-<nav class="toc">
-  <a href="#performance">Performance</a>
-  <a href="#risk">Risk</a>
-  <a href="#annual">Annual</a>
-  <a href="#monthly">Monthly Returns</a>
-  <a href="#stats-table">Statistics</a>
-  <a href="#correlation">Correlation</a>
-  <a href="#leadlag">Lead / Lag</a>
-  <a href="#costs">Trading Costs</a>
-  <a href="#turnover">Turnover</a>
-</nav>
-
-<div class="container">
-
-  <section class="section" id="performance">
-    <h2 class="section-title">Portfolio Performance</h2>
-    <div class="chart-card">{snapshot_div}</div>
-  </section>
-
-  <section class="section" id="risk">
-    <h2 class="section-title">Risk Analysis</h2>
-    <div class="chart-grid">
-      <div class="chart-card">{rolling_sharpe_div}</div>
-      <div class="chart-card">{rolling_vol_div}</div>
-    </div>
-  </section>
-
-  <section class="section" id="annual">
-    <h2 class="section-title">Annual Breakdown</h2>
-    <div class="chart-card">{annual_sharpe_div}</div>
-  </section>
-
-  <section class="section" id="monthly">
-    <h2 class="section-title">Monthly Returns</h2>
-    <div class="chart-card">{monthly_heatmap_div}</div>
-  </section>
-
-  <section class="section" id="stats-table">
-    <h2 class="section-title">Performance Statistics</h2>
-    <div class="chart-card" style="overflow-x: auto;">{stats_table}</div>
-  </section>
-
-  <section class="section" id="correlation">
-    <h2 class="section-title">Correlation Analysis</h2>
-    <div class="chart-card">{corr_div}</div>
-  </section>
-
-  <section class="section" id="leadlag">
-    <h2 class="section-title">Lead / Lag Information Ratio</h2>
-    <div class="chart-card">{lead_lag_div}</div>
-  </section>
-
-  <section class="section" id="costs">
-    <h2 class="section-title">Trading Cost Impact</h2>
-    <div class="chart-card">{trading_cost_div}</div>
-  </section>
-
-  <section class="section" id="turnover">
-    <h2 class="section-title">Turnover Summary</h2>
-    <div class="chart-card" style="overflow-x: auto;">{turnover_html}</div>
-  </section>
-
-</div>
-
-<footer class="report-footer">
-  Generated by <strong>basanos</strong>&nbsp;|&nbsp;{footer_date}
-</footer>
-
-</body>
-</html>"""
+        template = _env.get_template("portfolio_report.html")
+        return template.render(
+            title=title,
+            period_info=period_info,
+            assets_list=assets_list,
+            aum=f"{pf.aum:,.0f}",
+            footer_date=footer_date,
+            snapshot_div=snapshot_div,
+            rolling_sharpe_div=rolling_sharpe_div,
+            rolling_vol_div=rolling_vol_div,
+            annual_sharpe_div=annual_sharpe_div,
+            monthly_heatmap_div=monthly_heatmap_div,
+            corr_div=corr_div,
+            lead_lag_div=lead_lag_div,
+            trading_cost_div=trading_cost_div,
+            stats_table=stats_table,
+            turnover_html=turnover_html,
+            container_max_width="1400px",
+        )
 
     def save(self, path: str | Path, title: str = "Basanos Portfolio Report") -> Path:
         """Save the HTML report to a file.
