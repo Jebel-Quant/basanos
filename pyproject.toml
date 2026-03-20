@@ -18,8 +18,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/jebel-quant/basanos"
-Repository = "https://github.com/jebel-quant/basanos"
+Homepage = "https://github.com/Jebel-Quant/basanos"
+Repository = "https://github.com/Jebel-Quant/basanos"
 Issues = "https://github.com/Jebel-Quant/basanos/issues"
 
 
