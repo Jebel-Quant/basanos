@@ -1040,10 +1040,36 @@ class BasanosEngine:
             * ``mask`` (*np.ndarray[bool]*): Shape ``(n_assets,)``; ``True``
               for assets with finite prices at row *i*.
             * ``pos_or_none`` (*np.ndarray | None*): Per-active-asset position
-              vector **before** ``profit_variance`` scaling, or ``None`` when
-              positions should remain ``NaN`` (warmup period or no-price row).
-              Zero vectors are yielded for ``'zero_signal'`` and
-              ``'degenerate'`` rows.
+              vector **before** ``profit_variance`` scaling.  The value and its
+              downstream effect depend on ``status`` as follows:
+
+              .. list-table::
+                 :header-rows: 1
+
+                 * - ``status``
+                   - ``pos_or_none``
+                   - Downstream effect in :attr:`cash_position`
+                 * - ``'warmup'``
+                   - ``None``
+                   - Positions stay ``NaN`` — insufficient history.
+                 * - ``'zero_signal'``
+                   - ``np.zeros(n_active)``
+                   - Positions written as ``0`` for all active assets.
+                 * - ``'degenerate'``
+                   - ``np.zeros(n_active)`` (empty when no prices)
+                   - Positions written as ``0`` for active assets; rows with
+                     no finite prices have an empty mask so all positions
+                     remain ``NaN`` as a natural consequence.
+                 * - ``'valid'``
+                   - ``np.ndarray`` of shape ``(n_active,)``
+                   - Solved positions written for all active assets.
+
+              ``None`` is yielded **only** for ``'warmup'`` rows.  All other
+              statuses yield an ``np.ndarray`` (possibly zero-length when
+              ``mask`` is all-``False``), so consumers can branch solely on
+              ``pos_or_none is None`` to detect the warmup case without
+              inspecting ``status``.
+
             * ``status`` (*str*): One of ``'warmup'``, ``'zero_signal'``,
               ``'degenerate'``, or ``'valid'``.
         """
@@ -1057,7 +1083,7 @@ class BasanosEngine:
             for i, t in enumerate(dates):
                 mask = np.isfinite(prices_num[i])
                 if not mask.any():
-                    yield i, t, mask, None, "degenerate"
+                    yield i, t, mask, np.zeros(0), "degenerate"
                     continue
                 corr_n = cor[t]
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
@@ -1100,7 +1126,7 @@ class BasanosEngine:
             for i, t in enumerate(dates):
                 mask = np.isfinite(prices_num[i])
                 if not mask.any():
-                    yield i, t, mask, None, "degenerate"
+                    yield i, t, mask, np.zeros(0), "degenerate"
                     continue
                 if i + 1 < win_w:
                     yield i, t, mask, None, "warmup"
@@ -1113,7 +1139,7 @@ class BasanosEngine:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
                 except (np.linalg.LinAlgError, ValueError) as exc:
                     _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
-                    yield i, t, mask, None, "degenerate"
+                    yield i, t, mask, np.zeros(n_sub), "degenerate"
                     continue
                 expected_mu = np.nan_to_num(mu_np[i][mask])
                 if np.allclose(expected_mu, 0.0):
