@@ -234,3 +234,34 @@ Five PRs merged since entry #4 close every weakness and risk filed in that sessi
 
 **Rationale**: All four items filed in entry #4 are resolved, and the implementation quality is genuinely higher: `_iter_solve` is the right abstraction, `BasanosConfig.replace()` is the right pattern, and the consistency tests provide a real regression guard. The score remains 9/10 rather than increasing because the two structural limits — no incremental API and the Polars ceiling — are unchanged, and the single remaining `pragma: no cover` indicates one untested failure mode in the core loop. The codebase is in its cleanest state to date.
 
+---
+
+## 2026-03-20 — Analysis Entry #6
+
+### Summary
+
+Four PRs merged since entry #5 address all three weaknesses and both risks filed in that session. The Polars upper bound is removed (PR #268), the `_iter_solve` docstring has a precise RST contract table for `(status, pos_or_none)` combinations (PR #272), a deterministic test covers the previously-uncovered `SingularMatrixError` branch (PR #270), and dedicated fixtures for all four `position_status` codes are added (PR #269). Coverage holds at 99.81% (584 tests); 3 statements remain uncovered and 4 tests still skip. The skip issue is partially resolved — new dedicated tests exist but the old skip-based tests were not removed.
+
+### Strengths
+
+- **Polars upper bound removed** (`pyproject.toml`): `polars>=1.37.1,<2` → `polars>=1.37.1`. This eliminates the manual-bump maintenance burden noted since the initial analysis. The change is one character; the benefit is permanent removal of a recurring chore.
+- **`_iter_solve` tuple contract fully specified** (`optimizer.py:1025`): The docstring now contains an RST list-table mapping every `(status, pos_or_none)` combination to its downstream effect in `cash_position`. `None` is now exclusive to `'warmup'`; all other statuses yield an `np.ndarray` (possibly zero-length). Future consumers can branch on `pos_or_none is None` without inspecting `status`. This is the right contract and it is clearly documented.
+- **`SingularMatrixError` branch covered** (`test_optimizer_edge_cases.py:+45 lines`, PR #270): The previously `# pragma: no cover` annotated branch is now exercised by a deterministic test that mocks `_cholesky_solve` to raise after `inv_a_norm` succeeds. The annotation is removed; the branch is verified correct.
+- **Dedicated `position_status` fixtures added** (PR #269, `test_optimizer.py:+158 lines`): Fixtures are constructed to guarantee each status code appears at least once — a `SlidingWindowConfig` engine with insufficient history for warmup, a zero-`mu` engine for zero-signal, a NaN-price engine for degenerate, and a valid engine. These tests no longer depend on the standard fixture incidentally producing the right rows.
+
+### Weaknesses
+
+- **Old skip-based consistency tests not removed** (`test_optimizer.py:2635,2650,2665`): PR #269 added dedicated fixtures alongside the skip-based tests but did not remove the originals. The result is that 4 tests still skip on every run, and the same consistency property is now tested twice — once robustly (new dedicated fixtures) and once weakly (old skip guards). This is test-suite noise, not a correctness risk, but it contradicts the stated intent of issue #266.
+- **Sliding-window no-price degenerate path uncovered** (`optimizer.py:1129–1130`): The `not mask.any()` → `yield ..., np.zeros(0), "degenerate"` branch in the sliding-window arm of `_iter_solve` has no test. The analogous EwmaShrink branch is covered. A fixture with at least one all-NaN price row under `SlidingWindowConfig` would close this gap.
+- **`_reject_legacy_flat_kwargs` non-dict path uncovered** (`optimizer.py:601`): The `if not isinstance(data, dict): return data` early-exit is never exercised. Pydantic passes a dict for normal construction; the non-dict path is reached only during model deserialization from an existing instance. Minor, but contributes to the 3 remaining uncovered statements.
+
+### Risks / Technical Debt
+
+- **No streaming / incremental API**: Unchanged.
+
+### Score
+
+**9/10** — Unchanged
+
+**Rationale**: The sprint closes all filed items. The Polars ceiling removal is a long-outstanding dependency hygiene win. The `_iter_solve` contract table is exemplary documentation. The score does not increase because the two remaining coverage gaps (`optimizer.py:1129-1130` and `:601`) are small but real, the old skip tests were not cleaned up, and the structural streaming gap remains. The codebase continues to demonstrate strong engineering discipline; these are polish items rather than material concerns.
+
