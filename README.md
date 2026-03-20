@@ -259,7 +259,7 @@ cfg_engine.config_report.save("output/config_with_sweep")
 
 ## Notebooks
 
-Three interactive [Marimo](https://marimo.io/) notebooks live under
+Four interactive [Marimo](https://marimo.io/) notebooks live under
 `book/marimo/notebooks/`. They are self-contained — each embeds its own
 dependency list ([PEP 723](https://peps.python.org/pep-0723/)), so `uv run`
 installs everything automatically.
@@ -269,6 +269,7 @@ installs everything automatically.
 | [`demo.py`](book/marimo/notebooks/demo.py) | End-to-end interactive demo of the Basanos optimizer | Signal generation, correlation-aware position sizing, portfolio analytics, reactive UI |
 | [`ewm_benchmark.py`](book/marimo/notebooks/ewm_benchmark.py) | Validates and benchmarks the NumPy/SciPy EWM correlation implementation against the legacy pandas version | EWM, `scipy.signal.lfilter`, NaN handling, performance comparison |
 | [`shrinkage_guide.py`](book/marimo/notebooks/shrinkage_guide.py) | Theoretical and empirical guide to tuning the shrinkage parameter λ | Marchenko-Pastur law, linear shrinkage `C(λ) = λ·C_EWMA + (1−λ)·I`, Sharpe vs. λ sweep, turnover analysis |
+| [`diagnostics.py`](book/marimo/notebooks/diagnostics.py) | Guided tour of all five engine diagnostic properties on a dataset with engineered edge cases | `position_status`, `condition_number`, `effective_rank`, `solver_residual`, `signal_utilisation` |
 
 ### Running the notebooks
 
@@ -286,6 +287,7 @@ marimo run book/marimo/notebooks/demo.py
 uv run book/marimo/notebooks/demo.py
 uv run book/marimo/notebooks/ewm_benchmark.py
 uv run book/marimo/notebooks/shrinkage_guide.py
+uv run book/marimo/notebooks/diagnostics.py
 ```
 
 **Prerequisites**: Python ≥ 3.11 and `uv`. Each notebook's dependencies
