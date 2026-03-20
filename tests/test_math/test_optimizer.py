@@ -1538,6 +1538,69 @@ class TestDiagnostics:
                 f"Expected at least one NaN for asset {asset!r} when solve raises SingularMatrixError"
             )
 
+    # ── position_status ───────────────────────────────────────────────────────
+
+    def test_position_status_schema(self, engine: BasanosEngine) -> None:
+        """position_status should have exactly ['date', 'status'] columns."""
+        ps = engine.position_status
+        assert ps.columns == ["date", "status"]
+
+    def test_position_status_height_matches_prices(self, engine: BasanosEngine) -> None:
+        """position_status should have the same number of rows as prices."""
+        assert engine.position_status.height == engine.prices.height
+
+    def test_position_status_only_valid_codes(self, engine: BasanosEngine) -> None:
+        """Every status value must be one of the four defined codes."""
+        valid_codes = {"warmup", "zero_signal", "degenerate", "valid"}
+        codes = set(engine.position_status["status"].unique().to_list())
+        assert codes.issubset(valid_codes), f"Unexpected status codes: {codes - valid_codes}"
+
+    def test_position_status_no_warmup_in_ewma_mode(self, engine: BasanosEngine) -> None:
+        """EWMA mode never produces 'warmup' status (no explicit window skip)."""
+        ps = engine.position_status
+        assert "warmup" not in ps["status"].to_list()
+
+    def test_position_status_has_valid_after_warmup(self, engine: BasanosEngine) -> None:
+        """After the EWMA warmup window, at least some rows should be 'valid'."""
+        warmup = engine.cfg.corr
+        tail_statuses = engine.position_status["status"].slice(warmup).to_list()
+        assert "valid" in tail_statuses, "Expected at least one 'valid' row after warmup"
+
+    def test_position_status_zero_mu_yields_zero_signal_ewma(self) -> None:
+        """When all mu values are zero, every status after warmup should be 'zero_signal'."""
+        prices, _ = _make_prices_mu(80)
+        n = prices.height
+        mu_zero = pl.DataFrame(
+            {
+                "date": prices["date"],
+                "A": pl.Series([0.0] * n, dtype=pl.Float64),
+                "B": pl.Series([0.0] * n, dtype=pl.Float64),
+            }
+        )
+        cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu_zero, cfg=cfg)
+        ps = engine.position_status
+        tail = ps["status"].slice(cfg.corr).to_list()
+        assert all(s == "zero_signal" for s in tail), (
+            f"Expected all 'zero_signal' after warmup with zero mu, got: {set(tail)}"
+        )
+
+    def test_position_status_degenerate_when_inv_a_norm_raises(self, caplog) -> None:
+        """When inv_a_norm raises SingularMatrixError, status should be 'degenerate'."""
+        prices, mu = _make_prices_mu(40)
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        with patch("basanos.math.optimizer.inv_a_norm", side_effect=SingularMatrixError()):
+            ps = engine.position_status
+        statuses = ps["status"].to_list()
+        assert "degenerate" in statuses, "Expected 'degenerate' when inv_a_norm raises SingularMatrixError"
+        assert "valid" not in statuses, "No 'valid' rows expected when all solves fail"
+
+    def test_position_status_dtype_is_string(self, engine: BasanosEngine) -> None:
+        """The 'status' column should have Polars String dtype."""
+        ps = engine.position_status
+        assert ps["status"].dtype == pl.String
+
 
 # ─── Information Coefficient (IC) ────────────────────────────────────────────
 
@@ -2153,6 +2216,31 @@ class TestSlidingWindowDiagnostics:
         """signal_utilisation must have same shape as prices."""
         util = sw_engine.signal_utilisation
         assert util.shape == sw_prices.shape
+
+    def test_position_status_correct_shape(self, sw_engine: BasanosEngine, sw_prices: pl.DataFrame) -> None:
+        """position_status must have one row per timestamp with ['date', 'status'] columns."""
+        ps = sw_engine.position_status
+        assert ps.shape[0] == sw_prices.height
+        assert ps.columns == ["date", "status"]
+
+    def test_position_status_warmup_rows(self, sw_engine: BasanosEngine) -> None:
+        """First window-1 rows must have 'warmup' status in sliding_window mode."""
+        ps = sw_engine.position_status
+        warmup_statuses = ps.head(29)["status"].to_list()
+        assert all(s == "warmup" for s in warmup_statuses), (
+            f"Expected all 'warmup' in first 29 rows, got: {set(warmup_statuses)}"
+        )
+
+    def test_position_status_only_valid_codes(self, sw_engine: BasanosEngine) -> None:
+        """Every status value must be one of the four defined codes."""
+        valid_codes = {"warmup", "zero_signal", "degenerate", "valid"}
+        codes = set(sw_engine.position_status["status"].unique().to_list())
+        assert codes.issubset(valid_codes), f"Unexpected status codes: {codes - valid_codes}"
+
+    def test_position_status_has_valid_after_warmup(self, sw_engine: BasanosEngine) -> None:
+        """After the sliding window warmup, at least some rows should be 'valid'."""
+        tail_statuses = sw_engine.position_status.tail(80)["status"].to_list()
+        assert "valid" in tail_statuses, "Expected at least one 'valid' row after warmup"
 
 
 # ─── sharpe_at_window_factors ────────────────────────────────────────────────

@@ -490,6 +490,7 @@ from basanos.math import BasanosConfig, BasanosEngine, FactorModel
 | `cor` | `dict[date, np.ndarray]` | EWMA correlation matrices keyed by date |
 | `cor_tensor` | `np.ndarray` | All correlation matrices stacked as a `(T, N, N)` tensor; supports `.npy` round-trip |
 | `cash_position` | `pl.DataFrame` | Optimized cash positions (risk divided by EWMA volatility) |
+| `position_status` | `pl.DataFrame` | Per-row reason code for cash_position: `warmup`, `zero_signal`, `degenerate`, or `valid` |
 | `risk_position` | `pl.DataFrame` | Risk positions before volatility scaling (= `cash_position × vola`) |
 | `position_leverage` | `pl.DataFrame` | L1 norm of cash positions (gross leverage) per timestamp |
 | `condition_number` | `pl.DataFrame` | Condition number κ of the shrunk correlation matrix per timestamp |

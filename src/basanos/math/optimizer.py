@@ -1079,6 +1079,106 @@ class BasanosEngine:
         return cash_position
 
     @property
+    def position_status(self) -> pl.DataFrame:
+        """Per-timestamp reason code explaining each :attr:`cash_position` row.
+
+        Labels every row with exactly one of four string codes:
+
+        * ``'warmup'``: Insufficient history for the sliding-window
+          covariance mode (``i + 1 < cfg.covariance_config.window``).
+          Positions are ``NaN`` for all assets at this timestamp.
+        * ``'zero_signal'``: The expected-return vector ``mu`` was
+          all-zeros (or all-NaN) at this timestamp; the optimizer
+          short-circuited and returned zero positions without solving.
+        * ``'degenerate'``: The normalisation denominator was non-finite
+          or below ``cfg.denom_tol``, the Cholesky / Woodbury solve
+          failed, or no asset had a finite price; positions were zeroed
+          for safety.
+        * ``'valid'``: The linear system was solved successfully and
+          positions are non-trivially non-zero.
+
+        The codes map one-to-one onto the three NaN / zero cases
+        described in the issue and allow downstream consumers (backtests,
+        risk monitors) to distinguish data gaps from signal silence from
+        numerical ill-conditioning without re-inspecting ``mu`` or the
+        engine configuration.
+
+        Returns:
+            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'status': ...}``
+            with one row per timestamp.  The ``status`` column has
+            ``Polars`` dtype ``String``.
+        """
+        assets = self.assets
+        prices_num = self.prices.select(assets).to_numpy()
+        mu_np = self.mu.select(assets).to_numpy()
+
+        statuses: list[str] = []
+        dates = self.prices["date"].to_list()
+
+        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
+            cor = self.cor
+            for i, t in enumerate(dates):
+                mask = np.isfinite(prices_num[i])
+                if not mask.any():
+                    statuses.append("degenerate")
+                    continue
+                corr_n = cor[t]  # type: ignore[index]
+                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+                expected_mu = np.nan_to_num(mu_np[i][mask])
+                if np.allclose(expected_mu, 0.0):
+                    statuses.append("zero_signal")
+                else:
+                    try:
+                        denom = inv_a_norm(expected_mu, matrix)
+                    except SingularMatrixError:
+                        denom = float("nan")
+                    if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                        statuses.append("degenerate")
+                    else:
+                        statuses.append("valid")
+        else:
+            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
+            win_w: int = sw_config.window
+            win_k: int = sw_config.n_factors
+            ret_adj_np = self.ret_adj.select(assets).to_numpy()
+            for i, _t in enumerate(dates):
+                mask = np.isfinite(prices_num[i])
+                if not mask.any():
+                    statuses.append("degenerate")
+                    continue
+                if i + 1 < win_w:
+                    statuses.append("warmup")
+                    continue
+                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
+                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
+                n_sub = int(mask.sum())
+                k_eff = min(win_k, win_w, n_sub)
+                if k_eff < 1:  # pragma: no cover
+                    statuses.append("degenerate")
+                    continue
+                try:
+                    fm = FactorModel.from_returns(window_ret, k=k_eff)
+                except (np.linalg.LinAlgError, ValueError):
+                    statuses.append("degenerate")
+                    continue
+                expected_mu = np.nan_to_num(mu_np[i][mask])
+                if np.allclose(expected_mu, 0.0):
+                    statuses.append("zero_signal")
+                else:
+                    try:
+                        x = fm.solve(expected_mu)
+                        denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
+                    except (np.linalg.LinAlgError, ValueError):
+                        statuses.append("degenerate")
+                        continue
+                    if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                        statuses.append("degenerate")
+                    else:
+                        statuses.append("valid")
+
+        return pl.DataFrame({"date": self.prices["date"], "status": pl.Series(statuses, dtype=pl.String)})
+
+    @property
     def risk_position(self) -> pl.DataFrame:
         """Risk positions (before EWMA-volatility scaling) at each timestamp.
 
