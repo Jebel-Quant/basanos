@@ -79,6 +79,7 @@ God-Object complexity:
 """
 
 import dataclasses
+import datetime
 import logging
 from typing import TYPE_CHECKING
 
@@ -317,7 +318,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         )
 
     @property
-    def cor(self) -> dict[object, np.ndarray]:
+    def cor(self) -> dict[datetime.date, np.ndarray]:
         """Compute per-timestamp EWM correlation matrices.
 
         Builds volatility-adjusted returns for all assets, computes an
