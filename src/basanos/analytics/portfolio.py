@@ -21,7 +21,6 @@ import polars as pl
 import polars.selectors as cs
 
 from ..exceptions import (
-    CleaningInvariantError,
     IntegerIndexBoundError,
 )
 from ._plots import Plots
