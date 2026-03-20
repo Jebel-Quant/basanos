@@ -1088,7 +1088,7 @@ class BasanosEngine:
                     continue
                 try:
                     pos = solve(matrix, expected_mu) / denom
-                except SingularMatrixError:  # pragma: no cover
+                except SingularMatrixError:
                     yield i, t, mask, np.zeros_like(expected_mu), "degenerate"
                     continue
                 yield i, t, mask, pos, "valid"
