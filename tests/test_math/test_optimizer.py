@@ -687,6 +687,97 @@ def test_cash_position_zeros_when_inv_a_norm_raises_singular(
     assert degen_warnings, "Expected a degenerate-denominator warning when inv_a_norm raises SingularMatrixError"
 
 
+def test_cash_position_zeros_for_perfectly_correlated_assets_real_inputs(caplog) -> None:
+    """Deterministic regression for the Hypothesis-discovered singular-matrix edge case.
+
+    Two assets with an identical price series have a perfectly correlated EWMA
+    correlation matrix (C = [[1,1],[1,1]]).  With shrink=1.0 (full retention, no
+    identity regularisation) the shrunk matrix remains singular, causing
+    inv_a_norm to raise SingularMatrixError.  The optimizer must absorb the
+    exception, zero the positions, and leave position_leverage non-negative.
+
+    This test pins the regression without relying on the Hypothesis example
+    database (commit 1a7a53f fix), so CI runners that lack a cached
+    .hypothesis/ directory still exercise the fix reliably.
+    """
+    n = 30
+    start = date(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    # Identical price series → perfect EWMA correlation (C = [[1,1],[1,1]]) → singular.
+    # Initial values match the Hypothesis falsifying example (commit 1a7a53f).
+    prices_arr = np.array(
+        [
+            50.0,
+            51.5625,
+            49.951172,
+            52.0,
+            50.5,
+            53.0,
+            51.2,
+            54.0,
+            52.5,
+            55.0,
+            53.1,
+            56.2,
+            54.0,
+            57.0,
+            55.2,
+            58.0,
+            56.1,
+            59.0,
+            57.0,
+            60.0,
+            58.0,
+            61.0,
+            59.1,
+            62.0,
+            60.0,
+            63.0,
+            61.1,
+            64.0,
+            62.0,
+            65.0,
+        ],
+        dtype=np.float64,
+    )
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(prices_arr, dtype=pl.Float64),
+            "B": pl.Series(prices_arr, dtype=pl.Float64),  # identical → singular correlation
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series([1.0] * n, dtype=pl.Float64),
+            "B": pl.Series([0.0] * n, dtype=pl.Float64),
+        }
+    )
+    # shrink=1.0: full retention keeps C = [[1,1],[1,1]] unchanged (singular).
+    cfg = BasanosConfig(corr=5, vola=5, clip=4.0, shrink=1.0, aum=1e6)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+    with caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"):
+        cp = engine.cash_position
+
+    # Positions must never be infinite regardless of warm-up state.
+    for col in ("A", "B"):
+        vals = cp[col].to_numpy(allow_copy=True)
+        assert not np.any(np.isinf(vals)), f"Unexpected infinite position in column {col}"
+        assert np.all(np.isnan(vals) | (vals == 0.0)), (
+            f"Expected only NaN or zero positions in column {col} for perfectly correlated assets"
+        )
+
+    # The degenerate-denominator warning must have been emitted for the singular rows.
+    degen_warnings = [r for r in caplog.records if "normalisation denominator is degenerate" in r.message]
+    assert degen_warnings, "Expected a degenerate-denominator warning for perfectly correlated assets"
+
+    # position_leverage is the L1 norm of cash positions and must always be non-negative.
+    leverage = engine.position_leverage["leverage"].to_numpy()
+    assert np.all(leverage >= 0.0), "position_leverage must be non-negative"
+
+
 # ─── ret_adj, vola, cor properties ────────────────────────────────────────────
 
 
