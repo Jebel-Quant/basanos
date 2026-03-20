@@ -390,7 +390,7 @@ class BasanosConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _reject_legacy_flat_kwargs(cls, data: object) -> object:
+    def _reject_legacy_flat_kwargs(cls, data: dict[str, object]) -> dict[str, object]:
         """Raise an informative TypeError when the pre-v0.4 flat kwargs are used.
 
         Before v0.4 callers passed ``covariance_mode``, ``n_factors``, and
@@ -409,8 +409,6 @@ class BasanosConfig(BaseModel):
             TypeError: ...
         """
         legacy_keys = {"covariance_mode", "n_factors", "window"}
-        if not isinstance(data, dict):
-            return data
         found = legacy_keys & data.keys()
         if found:
             found_str = ", ".join(f"'{k}'" for k in sorted(found))
