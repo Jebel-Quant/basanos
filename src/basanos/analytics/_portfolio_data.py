@@ -17,12 +17,11 @@ from typing import Self
 import polars as pl
 
 from ..exceptions import (
+    CleaningInvariantError,
     InvalidCashPositionTypeError,
     InvalidPricesTypeError,
     MissingDateColumnError,
-    NonFiniteAfterCleaningError,
     NonPositiveAumError,
-    NullsAfterCleaningError,
     RowCountMismatchError,
 )
 
@@ -186,9 +185,14 @@ class PortfolioData:
             for c in assets:
                 s = profits[c]
                 if int(s.null_count()) != 0:
-                    raise NullsAfterCleaningError(c)  # pragma: no cover
+                    raise CleaningInvariantError(  # pragma: no cover
+                        c, "still contains null values after fill_null(0.0)"
+                    )
                 if not bool(pl.Series(s).is_finite().all()):
-                    raise NonFiniteAfterCleaningError(c)  # pragma: no cover
+                    raise CleaningInvariantError(  # pragma: no cover
+                        c,
+                        "still contains non-finite values (NaN/Inf) after replacing all non-finite entries with 0.0",
+                    )
 
         return profits
 
