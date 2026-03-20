@@ -614,6 +614,75 @@ class BasanosConfig(BaseModel):
             raise TypeError(msg)
         return data
 
+    def replace(
+        self,
+        *,
+        vola: int | None = None,
+        corr: int | None = None,
+        clip: float | None = None,
+        shrink: float | None = None,
+        aum: float | None = None,
+        profit_variance_init: float | None = None,
+        profit_variance_decay: float | None = None,
+        denom_tol: float | None = None,
+        position_scale: float | None = None,
+        min_corr_denom: float | None = None,
+        max_nan_fraction: float | None = None,
+        covariance_config: "CovarianceConfig | None" = None,
+    ) -> "BasanosConfig":
+        """Return a new :class:`BasanosConfig` with selected fields replaced.
+
+        Unlike :meth:`model_copy`, this method uses explicit constructor kwarg
+        forwarding so that any new required field added to
+        :class:`BasanosConfig` surfaces immediately as a type or lint error at
+        the call site, rather than silently failing at runtime.
+
+        All parameters default to ``None``, meaning *keep the existing value*.
+        Pass a non-``None`` value for every field you want to change.
+
+        Args:
+            vola: EWMA lookback for volatility normalisation.
+            corr: EWMA lookback for correlation estimation.
+            clip: Clipping threshold for volatility adjustment.
+            shrink: Retention weight λ ∈ [0, 1] for linear shrinkage.
+            aum: Assets under management for portfolio scaling.
+            profit_variance_init: Initial value for the profit-variance EMA.
+            profit_variance_decay: EMA decay factor for realized P&L variance.
+            denom_tol: Minimum normalisation denominator.
+            position_scale: Multiplicative scaling factor for cash positions.
+            min_corr_denom: Guard threshold for the EWMA correlation denominator.
+            max_nan_fraction: Maximum tolerated null fraction per price column.
+            covariance_config: Covariance estimation configuration.
+
+        Returns:
+            A new :class:`BasanosConfig` with the specified fields replaced and
+            all other fields copied from ``self``.
+
+        Examples:
+            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+            >>> cfg2 = cfg.replace(shrink=0.8)
+            >>> cfg2.shrink
+            0.8
+            >>> cfg2.vola == cfg.vola
+            True
+        """
+        return BasanosConfig(
+            vola=self.vola if vola is None else vola,
+            corr=self.corr if corr is None else corr,
+            clip=self.clip if clip is None else clip,
+            shrink=self.shrink if shrink is None else shrink,
+            aum=self.aum if aum is None else aum,
+            profit_variance_init=self.profit_variance_init if profit_variance_init is None else profit_variance_init,
+            profit_variance_decay=self.profit_variance_decay
+            if profit_variance_decay is None
+            else profit_variance_decay,
+            denom_tol=self.denom_tol if denom_tol is None else denom_tol,
+            position_scale=self.position_scale if position_scale is None else position_scale,
+            min_corr_denom=self.min_corr_denom if min_corr_denom is None else min_corr_denom,
+            max_nan_fraction=self.max_nan_fraction if max_nan_fraction is None else max_nan_fraction,
+            covariance_config=self.covariance_config if covariance_config is None else covariance_config,
+        )
+
     @property
     def covariance_mode(self) -> CovarianceMode:
         """Covariance mode derived from :attr:`covariance_config`."""
@@ -1496,7 +1565,7 @@ class BasanosEngine:
             >>> isinstance(s, float)
             True
         """
-        new_cfg = self.cfg.model_copy(update={"shrink": shrink})
+        new_cfg = self.cfg.replace(shrink=shrink)
         engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
         return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
 
@@ -1538,10 +1607,8 @@ class BasanosEngine:
             >>> isinstance(s, float)
             True
         """
-        new_cfg = self.cfg.model_copy(
-            update={
-                "covariance_config": SlidingWindowConfig(window=window, n_factors=n_factors),
-            }
+        new_cfg = self.cfg.replace(
+            covariance_config=SlidingWindowConfig(window=window, n_factors=n_factors),
         )
         engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
         return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
