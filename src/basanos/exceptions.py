@@ -313,56 +313,27 @@ class NonPositiveAumError(BasanosError, ValueError):
         self.aum = aum
 
 
-class NullsAfterCleaningError(BasanosError, ValueError):
-    """Raised when a profit column still contains nulls after the cleaning pass.
+class CleaningInvariantError(BasanosError, ValueError):
+    """Raised when a profit column violates a post-cleaning invariant.
 
-    This is an internal invariant violation: ``fill_null(0.0)`` should eliminate
-    all null entries before this check is reached.  If this error is ever raised
-    it indicates a logic defect in the cleaning step.
-
-    Args:
-        column: Name of the column that still contains null values.
-
-    Examples:
-        >>> raise NullsAfterCleaningError("A")  # doctest: +ELLIPSIS
-        Traceback (most recent call last):
-            ...
-        basanos.exceptions.NullsAfterCleaningError: Column 'A' still contains null values...
-    """
-
-    def __init__(self, column: str) -> None:
-        """Initialize with the name of the column that contains unexpected nulls."""
-        super().__init__(
-            f"Column '{column}' still contains null values after fill_null(0.0). "
-            "This should never happen and indicates a logic defect in the cleaning step."
-        )
-        self.column = column
-
-
-class NonFiniteAfterCleaningError(BasanosError, ValueError):
-    """Raised when a profit column still contains non-finite values after the cleaning pass.
-
-    This is an internal invariant violation: replacing all non-finite entries
-    with ``0.0`` via ``otherwise(0.0)`` should guarantee finite values before
-    this check is reached.  If this error is ever raised it indicates a logic
-    defect in the cleaning step.
+    This is an internal invariant violation that indicates a logic defect in
+    the cleaning step.  It should never be raised under normal operation.
 
     Args:
-        column: Name of the column that still contains non-finite values.
+        column: Name of the column that violates the invariant.
+        detail: Short description of the violation (e.g. ``"still contains null values"``).
 
     Examples:
-        >>> raise NonFiniteAfterCleaningError("A")  # doctest: +ELLIPSIS
+        >>> raise CleaningInvariantError("A", "has unexpected null values after cleaning")  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
-        basanos.exceptions.NonFiniteAfterCleaningError: Column 'A' still contains non-finite values...
+        basanos.exceptions.CleaningInvariantError: Column 'A' has unexpected null values after cleaning...
     """
 
-    def __init__(self, column: str) -> None:
-        """Initialize with the name of the column that contains unexpected non-finite values."""
+    def __init__(self, column: str, detail: str) -> None:
+        """Initialize with the column name and a short description of the violation."""
         super().__init__(
-            f"Column '{column}' still contains non-finite values (NaN/Inf) after "
-            "replacing all non-finite entries with 0.0. "
-            "This should never happen and indicates a logic defect in the cleaning step."
+            f"Column '{column}' {detail}. This should never happen and indicates a logic defect in the cleaning step."
         )
         self.column = column
 
@@ -407,123 +378,16 @@ class MonotonicPricesError(BasanosError, ValueError):
         self.asset = asset
 
 
-class FactorLoadingsDimensionError(BasanosError, ValueError):
-    """Raised when ``factor_loadings`` is not a 2-D array.
+class FactorModelError(BasanosError, ValueError):
+    """Raised when :class:`~basanos.math.FactorModel` arguments fail validation.
 
-    Args:
-        ndim: The actual number of dimensions of the array that was supplied.
-
-    Examples:
-        >>> raise FactorLoadingsDimensionError(1)
-        Traceback (most recent call last):
-            ...
-        basanos.exceptions.FactorLoadingsDimensionError: factor_loadings must be 2-D, got ndim=1.
-    """
-
-    def __init__(self, ndim: int) -> None:
-        """Initialize with the offending number of dimensions."""
-        super().__init__(f"factor_loadings must be 2-D, got ndim={ndim}.")
-        self.ndim = ndim
-
-
-class FactorCovarianceShapeError(BasanosError, ValueError):
-    """Raised when ``factor_covariance`` shape does not match the number of factors.
-
-    Args:
-        expected_k: Expected side length (number of factors *k*).
-        got: Actual shape of the supplied ``factor_covariance`` array.
+    Covers shape mismatches between factor loadings, factor covariance, and
+    idiosyncratic variance arrays, non-positive idiosyncratic variances,
+    invalid return matrix dimensionality, and out-of-range factor counts.
 
     Examples:
-        >>> raise FactorCovarianceShapeError(2, (3, 3))
+        >>> raise FactorModelError("factor_loadings must be 2-D, got ndim=1.")
         Traceback (most recent call last):
             ...
-        basanos.exceptions.FactorCovarianceShapeError: factor_covariance must have shape (2, 2) ...
+        basanos.exceptions.FactorModelError: factor_loadings must be 2-D, got ndim=1.
     """
-
-    def __init__(self, expected_k: int, got: tuple[int, ...]) -> None:
-        """Initialize with the expected side length and the actual shape."""
-        super().__init__(
-            f"factor_covariance must have shape ({expected_k}, {expected_k}) to match "
-            f"factor_loadings columns, got {got}."
-        )
-        self.expected_k = expected_k
-        self.got = got
-
-
-class IdiosyncraticVarShapeError(BasanosError, ValueError):
-    """Raised when ``idiosyncratic_var`` length does not match the number of assets.
-
-    Args:
-        expected_n: Expected length (number of assets *n*).
-        got: Actual shape of the supplied ``idiosyncratic_var`` array.
-
-    Examples:
-        >>> raise IdiosyncraticVarShapeError(4, (5,))
-        Traceback (most recent call last):
-            ...
-        basanos.exceptions.IdiosyncraticVarShapeError: idiosyncratic_var must have shape (4,) ...
-    """
-
-    def __init__(self, expected_n: int, got: tuple[int, ...]) -> None:
-        """Initialize with the expected length and the actual shape."""
-        super().__init__(f"idiosyncratic_var must have shape ({expected_n},) to match factor_loadings rows, got {got}.")
-        self.expected_n = expected_n
-        self.got = got
-
-
-class NonPositiveIdiosyncraticVarError(BasanosError, ValueError):
-    """Raised when ``idiosyncratic_var`` contains zero or negative entries.
-
-    All idiosyncratic variances must be strictly positive to ensure the
-    factor model covariance matrix is positive definite.
-
-    Examples:
-        >>> raise NonPositiveIdiosyncraticVarError()
-        Traceback (most recent call last):
-            ...
-        basanos.exceptions.NonPositiveIdiosyncraticVarError: All entries of idiosyncratic_var must be strictly positive.
-    """
-
-    def __init__(self) -> None:
-        """Initialize the error."""
-        super().__init__("All entries of idiosyncratic_var must be strictly positive.")
-
-
-class ReturnMatrixDimensionError(BasanosError, ValueError):
-    """Raised when the return matrix passed to ``FactorModel.from_returns`` is not 2-D.
-
-    Args:
-        ndim: The actual number of dimensions of the array that was supplied.
-
-    Examples:
-        >>> raise ReturnMatrixDimensionError(1)
-        Traceback (most recent call last):
-            ...
-        basanos.exceptions.ReturnMatrixDimensionError: Return matrix must be 2-D, got ndim=1.
-    """
-
-    def __init__(self, ndim: int) -> None:
-        """Initialize with the offending number of dimensions."""
-        super().__init__(f"Return matrix must be 2-D, got ndim={ndim}.")
-        self.ndim = ndim
-
-
-class FactorCountError(BasanosError, ValueError):
-    """Raised when the requested number of factors *k* is out of the valid range.
-
-    Args:
-        k: The requested number of factors.
-        max_k: The maximum valid number of factors (``min(T, n)``).
-
-    Examples:
-        >>> raise FactorCountError(0, 5)
-        Traceback (most recent call last):
-            ...
-        basanos.exceptions.FactorCountError: k must satisfy 1 <= k <= min(T, n) = 5, got k=0.
-    """
-
-    def __init__(self, k: int, max_k: int) -> None:
-        """Initialize with the requested and maximum factor counts."""
-        super().__init__(f"k must satisfy 1 <= k <= min(T, n) = {max_k}, got k={k}.")
-        self.k = k
-        self.max_k = max_k
