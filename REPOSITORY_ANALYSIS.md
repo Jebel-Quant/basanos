@@ -265,3 +265,40 @@ Four PRs merged since entry #5 address all three weaknesses and both risks filed
 
 **Rationale**: The sprint closes all filed items. The Polars ceiling removal is a long-outstanding dependency hygiene win. The `_iter_solve` contract table is exemplary documentation. The score does not increase because the two remaining coverage gaps (`optimizer.py:1129-1130` and `:601`) are small but real, the old skip tests were not cleaned up, and the structural streaming gap remains. The codebase continues to demonstrate strong engineering discipline; these are polish items rather than material concerns.
 
+---
+
+## 2026-03-20 — Analysis Entry #7
+
+### Summary
+
+Seven commits and four PRs merged since entry #6 close all three weaknesses and resolve the last coverage gaps filed in that session, then immediately advance the codebase with four structural improvements: `Portfolio` is split into `PortfolioData` + `Portfolio` analytics facade (PR #280), `exceptions.py` is consolidated from 25 to 18 concrete types (PR #284), the 83 KB `optimizer.py` God Object is decomposed into four focused sub-modules (PR #287), and inline HTML string generation is migrated to Jinja2 templates (PR #288). Test suite grows to 612 tests across 1,616 statements at 99.88% coverage. The entry also records that the two remaining uncovered statements are artefacts of the God Object refactor's type-checker fix rather than genuinely untestable branches.
+
+### Strengths
+
+- **God Object decomposition is architecturally sound** (PR #287): `optimizer.py` drops from ~5,000 to 1,033 lines by extracting `BasanosConfig` and covariance sub-configs into `_config.py` (557 lines), matrix diagnostics into `_engine_diagnostics.py` (213 lines), and IC signal evaluation into `_engine_ic.py` (191 lines). Each module has a clear single responsibility. Public API is unchanged — `BasanosEngine` still inherits both mixins and re-exports everything from `basanos.math`. The decomposition is exactly right: `optimizer.py` now contains only the core solve loop, `_iter_matrices`, and position/leverage properties.
+- **`PortfolioData` / `Portfolio` split follows the same mixin discipline** (PR #280): `PortfolioData` (frozen dataclass, 332 lines) holds all fields, validation, and factory methods (`from_risk_position`, `from_cash_position`). `Portfolio(PortfolioData)` adds only analytics, plots, and report generation. `PortfolioData` is exported from the public API. 27 new tests in `test_portfolio_data.py` cover the new class in isolation. The pattern is consistent with `_DiagnosticsMixin` / `_SignalEvaluatorMixin` extracted the same day — a coherent session-wide refactoring philosophy.
+- **Exception consolidation reduces surface area** (PR #284): `NullsAfterCleaningError` and `NonFiniteAfterCleaningError` (and 5 other types) are merged into `CleaningInvariantError` and a smaller set of cohesive types. Exception hierarchies are a public API; 18 types are markedly easier to document, import, and `except`-catch than 25. The consolidation is non-breaking for any code that only caught the base `BasanosError`.
+- **Jinja2 templates separate presentation from logic** (PR #288): `_report.py` and `_config_report.py` previously built HTML via inline string concatenation. Both now render via `jinja2.Environment(FileSystemLoader(...))` with templates in `src/basanos/templates/`. The `_base.html` parent template handles head/CSS; `portfolio_report.html` and `config_report.html` extend it. This is the correct design for report generation code that will evolve: template changes require no Python edits and are diffable as HTML.
+- **All entry #6 coverage gaps closed before the refactor commits**: Commits `36b1373`, `f539e56`, `4aaec94`, and `8706d4b` closed the three remaining uncovered paths and removed skip-based consistency tests prior to the structural changes. The refactor work therefore started from a clean coverage baseline.
+- **Templates packaged correctly**: `src/basanos/templates/` is inside the package root and `hatchling` includes all non-Python files by default — templates are present in the installed distribution without manual `package_data` configuration.
+
+### Weaknesses
+
+- **`_DiagnosticsMixin._iter_matrices` stub is an uncovered dead-code artefact** (`_engine_diagnostics.py:40`): The `raise NotImplementedError` body was added as a type-checker workaround during PR #287's typecheck fix (the refactored code had 18 `ty` errors). This is 1 of 2 uncovered statements. The stub is never executed — `BasanosEngine._iter_matrices` always overrides it. A `# pragma: no cover` annotation would be honest; a `Protocol`-based contract would be architecturally cleaner and eliminate the stub entirely.
+- **`isinstance(data, dict)` guard re-introduced as dead code** (`_config.py:412`): Commit `8706d4b` explicitly removed this guard from `optimizer.py` on the grounds that Pydantic always passes a dict to `mode="before"` validators. The God Object refactor moved the validator to `_config.py` and the typecheck fix re-introduced the guard to satisfy `ty` (since `data` is annotated `object`). This is the second uncovered statement. The correct fix is to annotate `data` as `dict[str, object]` rather than guard with `isinstance`.
+- **Jinja2 upper bound is a new tight ceiling**: `jinja2>=3.1,<4` follows the same pattern as the Polars ceiling that was just removed in entry #6. Jinja2 is stable and version 4.0 has no imminent release, but the `<4` upper bound will require a manual bump and sets a precedent that was just corrected for Polars.
+- **`PortfolioData`/`Portfolio` inheritance couples the two in the MRO**: `Portfolio(PortfolioData)` means `isinstance(p, PortfolioData)` is true for `Portfolio` instances — potentially surprising to callers expecting a pure data container. If `Portfolio` ever needs a mutable computed field (e.g., a cached result), the frozen dataclass inheritance must be broken. An ADR documenting the intentional IS-A choice vs. composition would be worthwhile.
+- **Mixin attribute contract is annotation-only, not enforced**: `_DiagnosticsMixin` and `_SignalEvaluatorMixin` declare `assets: list[str]`, `prices: pl.DataFrame`, and `mu: pl.DataFrame` as class-level annotations. These satisfy `ty` but provide no runtime enforcement — a subclass that forgets to provide these attributes would fail only at the first attribute access, not at instantiation. `Protocol` or `ABC` would make the contract formally verifiable.
+
+### Risks / Technical Debt
+
+- **No streaming / incremental API**: Unchanged from prior entries.
+- **`_iter_matrices` stub creates an inconsistency in the class hierarchy**: `_DiagnosticsMixin._iter_matrices` raises `NotImplementedError` but is not decorated `@abstractmethod`, so `_DiagnosticsMixin` is not formally abstract. This means `isinstance(x, _DiagnosticsMixin)` is true for any `BasanosEngine`, but also any accidental direct instantiation of `_DiagnosticsMixin` would pass instantiation only to fail at method call time — the standard Python pitfall for non-ABC mixins.
+
+### Score
+
+**9/10** — Unchanged
+
+**Rationale**: The session delivers four coherent structural improvements in a single day: God Object decomposition, `Portfolio` split, exception consolidation, and Jinja2 template migration. Each is technically correct and follows the established quality bar. The score does not increase because the two uncovered statements are direct artefacts of the typecheck fix strategy chosen during PR #287 (annotation-only mixin contract + `isinstance` guard), both of which would be addressed more cleanly with `Protocol`-based typing. The Jinja2 ceiling and `Portfolio` inheritance coupling are minor but repeat patterns that have required prior cleanup work. The codebase architecture is materially better today than at entry #6.
+
+---
