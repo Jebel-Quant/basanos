@@ -164,3 +164,39 @@ Three PRs merged since entry #2 close two of the three issues filed in that sess
 **Rationale**:
 The discriminated union refactor is the right long-term design and was delivered quickly. The codebase is now in a cleaner state than it was after the initial sliding-window merge. The one remaining open item (#224) is low-severity. No regressions introduced.
 
+---
+
+## 2026-03-20 — Analysis Entry #4
+
+### Summary
+
+Seven PRs merged since entry #3 systematically close six of the eight weaknesses and risks catalogued in that session. The most significant addition is `position_status` (PR #236): a new `BasanosEngine` property that labels every `cash_position` row as `warmup`, `zero_signal`, `degenerate`, or `valid`, directly resolving the long-standing "indistinguishable output rows" weakness. The Woodbury `np.linalg.inv` issue is fixed, the dead-code `pragma: no cover` branches are removed from `cash_position`, the singular-matrix edge case is pinned as a deterministic test, and the breaking API change is softened with an explicit `TypeError` carrying a migration guide. Coverage dips slightly to 99.27% (570 tests, 1,640 statements). One prior weakness (#224, warm-up gap undocumented at field level) remains open.
+
+### Strengths
+
+- **`position_status` closes the observability gap** (`optimizer.py:1124`): The four-value status enum (`warmup` / `zero_signal` / `degenerate` / `valid`) gives downstream consumers (backtests, risk monitors) a first-class reason code for every row without requiring re-inspection of `mu` or engine config. The docstring is thorough, the return type (`pl.DataFrame` with `date` + `status`) is consistent with the rest of the engine API, and 88 lines of new tests cover all four states.
+- **Woodbury path is now numerically consistent** (`_factor_model.py`): PR #235 replaces `np.linalg.inv(self.factor_covariance) + ...` with `_cholesky_solve`, aligning the factor model with the Cholesky-first discipline applied everywhere else in `_linalg.py`. The fix is 7 lines; the quality improvement is structural.
+- **Dead-code branches removed from `cash_position`** (PR #239): The two `k_eff < 1` blocks annotated `# pragma: no cover` in `_iter_matrices` and the sliding-window `cash_position` loop are gone. Coverage reporting is now honest.
+- **Singular-matrix edge case promoted to deterministic test** (PR #243): The Hypothesis-discovered `SingularMatrixError` falsifying example is now a standalone test in `test_optimizer.py` (+91 lines). It no longer depends on Hypothesis replay state and will reliably catch regressions on fresh CI runners.
+- **Migration ergonomics addressed** (PR #246): `BasanosConfig._reject_legacy_flat_kwargs` catches calls using the pre-v0.4 flat kwargs (`covariance_mode`, `window`, `n_factors`) and raises a `TypeError` with an explicit before/after migration example. This is significantly better than the generic Pydantic `extra_forbidden` error users would otherwise encounter. The message includes import instructions and covers both modes.
+- **All three prior export/doc weaknesses closed**: `CovarianceConfig` is now exported from `basanos.math.__init__` (PR #254); `EwmaShrinkConfig` has a docstring explicitly stating intentional minimalism (PR #255); `BENCHMARKS.md` environment table updated to v0.4.2 (PR #247).
+
+### Weaknesses
+
+- **`position_status` duplicates `cash_position` loop logic** (`optimizer.py:1124–1221`): The ~95-line implementation re-implements the core optimizer loop — mask computation, ewma/sliding dispatch, `FactorModel.from_returns`, `inv_a_norm` / `fm.solve`, denom comparison — producing status codes instead of positions. Any future change to the core loop (new edge case, new covariance mode, denom logic change) must be applied in two places. This is the most significant new technical debt introduced in this sprint. The correct long-term fix is to produce status codes as a side-channel of `cash_position` rather than recomputing from scratch.
+- **`k_eff < 1` dead-code re-introduced in `position_status`** (`optimizer.py:1198`): PR #239 removed this pattern from `cash_position` but `position_status` reintroduces the identical `if k_eff < 1: # pragma: no cover` branch. The fix was incomplete — the same unreachable branch now exists again one method later.
+- **Warm-up gap still undocumented at field level** (`optimizer.py:296–303`): `SlidingWindowConfig.window`'s `Field(description=...)` still reads only "Rule of thumb: W >= 2 * n_assets". The W-1 row warm-up period is documented in the `__post_init__` warning (line 782), in the `_iter_matrices` docstring (line 895), and now in `position_status`'s docstring (line 1129) — but not where a user first reads it: the field description on the config class. Issue #224 remains open.
+- **Coverage regression**: 99.27% (12 uncovered statements) vs. 100% in the prior two entries. The regression is attributable to the re-introduced `pragma: no cover` branch in `position_status`. Not critical given the 90% minimum gate, but the 100% invariant was previously treated as a hard bar.
+
+### Risks / Technical Debt
+
+- **`position_status` consistency risk**: Because `position_status` replicates the optimizer loop rather than sharing it, the two can silently diverge. If `cash_position` is updated to handle a new numerical case and `position_status` is not, the status property will misclassify rows. There are no cross-property consistency tests (e.g., asserting that rows labelled `valid` have non-zero positions, or `warmup` rows have NaN positions) that would catch this drift.
+- **No streaming / incremental API**: Unchanged from prior entries. `cash_position` and `position_status` both materialise full `(T, N)` results. Live systems appending one row at a time must re-run the full computation.
+- **Polars upper bound maintenance burden**: Unchanged. `polars>=1.37.1,<2` requires manual bumps; no compatibility shim.
+
+### Score
+
+**9/10** — Unchanged from prior entries
+
+**Rationale**: The sprint closed six of eight prior items with focused, minimal PRs. The Woodbury fix and singular-matrix promotion are correctness improvements; the migration `TypeError` and `position_status` are meaningful user-experience improvements. The score does not increase because `position_status` introduces a new and significant DRY violation that re-creates the core loop outside the optimizer's natural abstraction boundary — a design debt that will compound as the covariance mode set grows. The `k_eff < 1` dead-code re-appearance and coverage regression are minor but indicate the fix in PR #239 was not applied holistically.
+

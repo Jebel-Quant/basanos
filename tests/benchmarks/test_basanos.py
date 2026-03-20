@@ -14,6 +14,7 @@ import pytest
 
 from basanos.analytics import Portfolio
 from basanos.analytics._stats import Stats
+from basanos.math import SlidingWindowConfig
 from basanos.math.optimizer import BasanosConfig, BasanosEngine
 
 # ─── Data factories ──────────────────────────────────────────────────────────
@@ -101,9 +102,7 @@ def _make_sw_engine(n: int, n_assets: int, window: int, n_factors: int, seed: in
         clip=3.0,
         shrink=0.5,
         aum=1e8,
-        covariance_mode="sliding_window",
-        window=window,
-        n_factors=n_factors,
+        covariance_config=SlidingWindowConfig(window=window, n_factors=n_factors),
     )
     return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
