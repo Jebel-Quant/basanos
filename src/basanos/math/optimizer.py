@@ -950,6 +950,122 @@ class BasanosEngine:
                     _logger.warning("Factor model fit failed at t=%s: %s", t, exc)
                     yield i, t, mask, None
 
+    def _iter_solve(self):
+        r"""Yield ``(i, t, mask, pos_or_none, status)`` for every timestamp.
+
+        This is the single authoritative implementation of the per-timestamp
+        position-determination logic shared by :attr:`cash_position` and
+        :attr:`position_status`.  Extracting it here eliminates the DRY
+        violation where both properties previously duplicated the mask
+        computation, covariance dispatch, :math:`\mu` handling, denominator
+        check, and linear-solve logic.
+
+        Yields:
+            tuple: ``(i, t, mask, pos_or_none, status)`` where
+
+            * ``i`` (*int*): Row index into ``self.prices``.
+            * ``t``: Timestamp value from ``self.prices["date"]``.
+            * ``mask`` (*np.ndarray[bool]*): Shape ``(n_assets,)``; ``True``
+              for assets with finite prices at row *i*.
+            * ``pos_or_none`` (*np.ndarray | None*): Per-active-asset position
+              vector **before** ``profit_variance`` scaling, or ``None`` when
+              positions should remain ``NaN`` (warmup period or no-price row).
+              Zero vectors are yielded for ``'zero_signal'`` and
+              ``'degenerate'`` rows.
+            * ``status`` (*str*): One of ``'warmup'``, ``'zero_signal'``,
+              ``'degenerate'``, or ``'valid'``.
+        """
+        assets = self.assets
+        prices_num = self.prices.select(assets).to_numpy()
+        mu_np = self.mu.select(assets).to_numpy()
+        dates = self.prices["date"].to_list()
+
+        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
+            cor = self.cor
+            for i, t in enumerate(dates):
+                mask = np.isfinite(prices_num[i])
+                if not mask.any():
+                    yield i, t, mask, None, "degenerate"
+                    continue
+                corr_n = cor[t]
+                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+                expected_mu = np.nan_to_num(mu_np[i][mask])
+                if np.allclose(expected_mu, 0.0):
+                    yield i, t, mask, np.zeros_like(expected_mu), "zero_signal"
+                    continue
+                try:
+                    denom = inv_a_norm(expected_mu, matrix)
+                except SingularMatrixError:
+                    denom = float("nan")
+                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                    _logger.warning(
+                        "Positions zeroed at t=%s: normalisation denominator is degenerate "
+                        "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
+                        t,
+                        denom,
+                        self.cfg.denom_tol,
+                        extra={
+                            "context": {
+                                "t": str(t),
+                                "denom": denom,
+                                "denom_tol": self.cfg.denom_tol,
+                            }
+                        },
+                    )
+                    yield i, t, mask, np.zeros_like(expected_mu), "degenerate"
+                    continue
+                try:
+                    pos = solve(matrix, expected_mu) / denom
+                except SingularMatrixError:  # pragma: no cover
+                    yield i, t, mask, np.zeros_like(expected_mu), "degenerate"
+                    continue
+                yield i, t, mask, pos, "valid"
+        else:
+            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
+            win_w: int = sw_config.window
+            win_k: int = sw_config.n_factors
+            ret_adj_np = self.ret_adj.select(assets).to_numpy()
+            for i, t in enumerate(dates):
+                mask = np.isfinite(prices_num[i])
+                if not mask.any():
+                    yield i, t, mask, None, "degenerate"
+                    continue
+                if i + 1 < win_w:
+                    yield i, t, mask, None, "warmup"
+                    continue
+                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
+                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
+                n_sub = int(mask.sum())
+                k_eff = min(win_k, win_w, n_sub)
+                try:
+                    fm = FactorModel.from_returns(window_ret, k=k_eff)
+                except (np.linalg.LinAlgError, ValueError) as exc:
+                    _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
+                    yield i, t, mask, None, "degenerate"
+                    continue
+                expected_mu = np.nan_to_num(mu_np[i][mask])
+                if np.allclose(expected_mu, 0.0):
+                    yield i, t, mask, np.zeros(n_sub), "zero_signal"
+                    continue
+                try:
+                    x = fm.solve(expected_mu)
+                    denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
+                except (np.linalg.LinAlgError, ValueError) as exc:
+                    _logger.warning("Woodbury solve failed at t=%s: %s", t, exc)
+                    yield i, t, mask, np.zeros(n_sub), "degenerate"
+                    continue
+                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                    _logger.warning(
+                        "Positions zeroed at t=%s (sliding_window): normalisation "
+                        "denominator is degenerate (denom=%s, denom_tol=%s).",
+                        t,
+                        denom,
+                        self.cfg.denom_tol,
+                    )
+                    yield i, t, mask, np.zeros(n_sub), "degenerate"
+                    continue
+                yield i, t, mask, x / denom, "valid"
+
     @property
     def cash_position(self) -> pl.DataFrame:
         r"""Optimize correlation-aware risk positions for each timestamp.
@@ -983,37 +1099,22 @@ class BasanosEngine:
         """
         assets = self.assets
 
-        # Compute risk positions row-by-row using correlation shrinkage (NumPy)
+        # Compute risk positions row-by-row using _iter_solve for the solve logic.
         prices_num = self.prices.select(assets).to_numpy()
         returns_num = np.zeros_like(prices_num, dtype=float)
         returns_num[1:] = prices_num[1:] / prices_num[:-1] - 1.0
 
-        mu = self.mu.select(assets).to_numpy()
-        risk_pos_np = np.full_like(mu, fill_value=np.nan, dtype=float)
-        cash_pos_np = np.full_like(mu, fill_value=np.nan, dtype=float)
+        risk_pos_np = np.full_like(prices_num, fill_value=np.nan, dtype=float)
+        cash_pos_np = np.full_like(prices_num, fill_value=np.nan, dtype=float)
         vola_np = self.vola.select(assets).to_numpy()
 
         profit_variance = self.cfg.profit_variance_init
         lamb = self.cfg.profit_variance_decay
 
-        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
-            # ── EWMA / shrinkage path ───────────────────────────────────────
-            cor = self.cor
-            index_iter = list(cor.keys())
-        else:
-            # ── Sliding window path ─────────────────────────────────────────
-            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
-            cor = None
-            index_iter = self.prices["date"].to_list()
-            ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            win_w: int = sw_config.window
-            win_k: int = sw_config.n_factors
-
-        for i, t in enumerate(index_iter):
-            # get the mask of finite prices for this timestamp
-            mask = np.isfinite(prices_num[i])
-
-            # Compute profit contribution using only finite returns and available positions
+        for i, _t, mask, pos, _status in self._iter_solve():
+            # Compute profit contribution using only finite returns and available positions.
+            # This must happen for every row (including warmup / degenerate) so that the
+            # profit_variance EMA is updated from the correct previous-step cash positions.
             if i > 0:
                 ret_mask = np.isfinite(returns_num[i]) & mask
                 # Profit at time i comes from yesterday's cash position applied to today's returns
@@ -1024,96 +1125,13 @@ class BasanosEngine:
                     rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
                     profit = lhs @ rhs
                     profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
-            # we have no price data at all for this timestamp
-            if not mask.any():
-                continue
 
-            if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
-                # get the correlation matrix for this timestamp and shrink it
-                corr_n = cor[t]  # type: ignore[index]
-                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            if pos is not None:
+                risk_pos_np[i, mask] = pos / profit_variance
+                with np.errstate(invalid="ignore"):
+                    cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
 
-                # get the expected-return vector for this timestamp
-                expected_mu = np.nan_to_num(mu[i][mask])
-
-                # Short-circuit when signal is zero
-                if np.allclose(expected_mu, 0.0):
-                    pos = np.zeros_like(expected_mu)
-                else:
-                    try:
-                        denom = inv_a_norm(expected_mu, matrix)
-                    except SingularMatrixError:
-                        denom = float("nan")
-                    if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                        _logger.warning(
-                            "Positions zeroed at t=%s: normalisation denominator is degenerate "
-                            "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
-                            t,
-                            denom,
-                            self.cfg.denom_tol,
-                            extra={
-                                "context": {
-                                    "t": str(t),
-                                    "denom": denom,
-                                    "denom_tol": self.cfg.denom_tol,
-                                }
-                            },
-                        )
-                        pos = np.zeros_like(expected_mu)
-                    else:
-                        try:
-                            pos = solve(matrix, expected_mu) / denom
-                        except SingularMatrixError:  # pragma: no cover
-                            pos = np.zeros_like(expected_mu)
-            else:
-                # ── Sliding window: fit factor model on the last W rows ─────
-                if i + 1 < win_w:
-                    continue  # not enough history yet
-
-                # Extract the (W, n_sub) window of vol-adjusted returns
-                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
-                # Replace NaN with 0 (neutral: no systematic contribution)
-                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
-
-                n_sub = int(mask.sum())
-                k_eff = min(win_k, win_w, n_sub)
-                try:
-                    fm = FactorModel.from_returns(window_ret, k=k_eff)
-                except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
-                    continue
-
-                expected_mu = np.nan_to_num(mu[i][mask])
-
-                if np.allclose(expected_mu, 0.0):
-                    pos = np.zeros(n_sub)
-                else:
-                    try:
-                        # Solve Ĉ x = μ via Woodbury identity: x = fm.solve(μ)
-                        x = fm.solve(expected_mu)
-                        # Normalisation denominator sqrt(μᵀ C⁻¹ μ) = sqrt(μᵀ x)
-                        denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
-                    except (np.linalg.LinAlgError, ValueError) as exc:
-                        _logger.warning("Woodbury solve failed at t=%s: %s", t, exc)
-                        pos = np.zeros(n_sub)
-                    else:
-                        if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                            _logger.warning(
-                                "Positions zeroed at t=%s (sliding_window): normalisation "
-                                "denominator is degenerate (denom=%s, denom_tol=%s).",
-                                t,
-                                denom,
-                                self.cfg.denom_tol,
-                            )
-                            pos = np.zeros(n_sub)
-                        else:
-                            pos = x / denom
-
-            risk_pos_np[i, mask] = pos / profit_variance
-            with np.errstate(invalid="ignore"):
-                cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
-
-        # Build Polars DataFrame for risk positions (numeric columns only)
+        # Build Polars DataFrame for cash positions (numeric columns only)
         cash_position = self.prices.with_columns(
             [(pl.lit(cash_pos_np[:, i]).alias(asset)) for i, asset in enumerate(assets)]
         )
@@ -1150,74 +1168,7 @@ class BasanosEngine:
             with one row per timestamp.  The ``status`` column has
             ``Polars`` dtype ``String``.
         """
-        assets = self.assets
-        prices_num = self.prices.select(assets).to_numpy()
-        mu_np = self.mu.select(assets).to_numpy()
-
-        statuses: list[str] = []
-        dates = self.prices["date"].to_list()
-
-        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
-            cor = self.cor
-            for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
-                if not mask.any():
-                    statuses.append("degenerate")
-                    continue
-                corr_n = cor[t]  # type: ignore[index]
-                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-                expected_mu = np.nan_to_num(mu_np[i][mask])
-                if np.allclose(expected_mu, 0.0):
-                    statuses.append("zero_signal")
-                else:
-                    try:
-                        denom = inv_a_norm(expected_mu, matrix)
-                    except SingularMatrixError:
-                        denom = float("nan")
-                    if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                        statuses.append("degenerate")
-                    else:
-                        statuses.append("valid")
-        else:
-            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
-            win_w: int = sw_config.window
-            win_k: int = sw_config.n_factors
-            ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            for i, _t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
-                if not mask.any():
-                    statuses.append("degenerate")
-                    continue
-                if i + 1 < win_w:
-                    statuses.append("warmup")
-                    continue
-                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
-                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
-                n_sub = int(mask.sum())
-                k_eff = min(win_k, win_w, n_sub)
-                if k_eff < 1:  # pragma: no cover
-                    statuses.append("degenerate")
-                    continue
-                try:
-                    fm = FactorModel.from_returns(window_ret, k=k_eff)
-                except (np.linalg.LinAlgError, ValueError):
-                    statuses.append("degenerate")
-                    continue
-                expected_mu = np.nan_to_num(mu_np[i][mask])
-                if np.allclose(expected_mu, 0.0):
-                    statuses.append("zero_signal")
-                else:
-                    try:
-                        x = fm.solve(expected_mu)
-                        denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
-                    except (np.linalg.LinAlgError, ValueError):
-                        statuses.append("degenerate")
-                        continue
-                    if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                        statuses.append("degenerate")
-                    else:
-                        statuses.append("valid")
-
+        statuses = [status for _i, _t, _mask, _pos, status in self._iter_solve()]
         return pl.DataFrame({"date": self.prices["date"], "status": pl.Series(statuses, dtype=pl.String)})
 
     @property
