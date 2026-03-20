@@ -58,18 +58,29 @@ working sizes on a 16 GB machine:
 
 See ``BENCHMARKS.md`` for measured wall-clock timings across representative
 dataset sizes.
+
+Internal structure
+------------------
+The implementation is split across focused private modules to reduce
+God-Object complexity:
+
+* :mod:`basanos.math._config` — :class:`BasanosConfig` and all
+  covariance-mode configuration classes.
+* :mod:`basanos.math._engine_diagnostics` — :class:`_DiagnosticsMixin`
+  (condition number, effective rank, solver residual, signal utilisation).
+* :mod:`basanos.math._engine_ic` — :class:`_SignalEvaluatorMixin`
+  (IC, Rank IC, ICIR, and summary statistics).
+* This module — ``_ewm_corr_numpy``, core solve/position logic, and the
+  :class:`BasanosEngine` facade that wires everything together.
 """
 
 import dataclasses
-import enum
 import logging
-from typing import TYPE_CHECKING, Annotated, Literal, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import polars as pl
-from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from scipy.signal import lfilter
-from scipy.stats import spearmanr
 
 from ..analytics import Portfolio
 from ..exceptions import (
@@ -81,14 +92,36 @@ from ..exceptions import (
     ShapeMismatchError,
     SingularMatrixError,
 )
+from ._config import (
+    BasanosConfig,
+    CovarianceConfig,
+    CovarianceMode,
+    EwmaShrinkConfig,
+    SlidingWindowConfig,
+)
+from ._engine_diagnostics import _DiagnosticsMixin
+from ._engine_ic import _SignalEvaluatorMixin
 from ._factor_model import FactorModel
-from ._linalg import inv_a_norm, solve, valid
+from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id, vol_adj
 
 if TYPE_CHECKING:
     from ._config_report import ConfigReport
 
 _logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Re-export config symbols so ``from basanos.math.optimizer import …`` keeps
+# working for existing callers.
+# ---------------------------------------------------------------------------
+__all__ = [
+    "BasanosConfig",
+    "BasanosEngine",
+    "CovarianceConfig",
+    "CovarianceMode",
+    "EwmaShrinkConfig",
+    "SlidingWindowConfig",
+]
 
 
 def _ewm_corr_numpy(
@@ -206,550 +239,32 @@ def _ewm_corr_numpy(
     return result
 
 
-class CovarianceMode(enum.StrEnum):
-    r"""Covariance estimation mode for the Basanos optimizer.
-
-    Attributes:
-        ewma_shrink: EWMA correlation matrix with linear shrinkage toward the
-            identity.  Controlled by :attr:`BasanosConfig.shrink`.
-            This is the default mode.
-        sliding_window: Rolling-window factor model.  A fixed block of the
-            ``W`` most recent volatility-adjusted returns is decomposed via
-            truncated SVD into ``k`` latent factors, giving the estimator
-
-            .. math::
-
-                \\hat{C}_t^{(W,k)} = \\frac{1}{W}
-                    \\mathbf{V}_{k,t}\\mathbf{\\Sigma}_{k,t}^2\\mathbf{V}_{k,t}^\\top
-                    + \\hat{D}_t
-
-            where :math:`\\hat{D}_t` is chosen to enforce unit diagonal.
-            The system is solved efficiently via the Woodbury identity
-            (Section 4.3 of basanos.pdf) at :math:`O(k^3 + kn)` per step
-            rather than :math:`O(n^3)`.
-            Configured via :class:`SlidingWindowConfig`.
-
-    Examples:
-        >>> CovarianceMode.ewma_shrink
-        <CovarianceMode.ewma_shrink: 'ewma_shrink'>
-        >>> CovarianceMode.sliding_window
-        <CovarianceMode.sliding_window: 'sliding_window'>
-        >>> CovarianceMode("sliding_window")
-        <CovarianceMode.sliding_window: 'sliding_window'>
-    """
-
-    ewma_shrink = "ewma_shrink"
-    sliding_window = "sliding_window"
-
-
-class EwmaShrinkConfig(BaseModel):
-    """Covariance configuration for the ``ewma_shrink`` mode.
-
-    This is the default covariance mode. No additional parameters are required
-    beyond those already present on :class:`BasanosConfig` (``shrink``, ``corr``).
-
-    .. note::
-        This class is **intentionally minimal**. The only field is the
-        ``covariance_mode`` discriminator, which is required to make Pydantic's
-        discriminated-union dispatch work correctly (see :data:`CovarianceConfig`).
-        Before adding new EWMA-specific fields here, consider whether the field
-        name clashes with existing :class:`BasanosConfig` top-level fields and
-        whether it would constitute a breaking change to the public API.
-
-    Examples:
-        >>> cfg = EwmaShrinkConfig()
-        >>> cfg.covariance_mode
-        <CovarianceMode.ewma_shrink: 'ewma_shrink'>
-    """
-
-    covariance_mode: Literal[CovarianceMode.ewma_shrink] = CovarianceMode.ewma_shrink
-
-    model_config = {"frozen": True}
-
-
-class SlidingWindowConfig(BaseModel):
-    r"""Covariance configuration for the ``sliding_window`` mode.
-
-    Requires both ``window`` (rolling window length) and ``n_factors`` (number
-    of latent factors for the truncated SVD factor model).
-
-    Args:
-        window: Rolling window length :math:`W \\geq 1`.
-            Rule of thumb: :math:`W \\geq 2n` keeps the sample covariance
-            well-posed before truncation.
-        n_factors: Number of latent factors :math:`k \\geq 1`.
-            :math:`k = 1` recovers the single market-factor model; larger
-            :math:`k` captures finer correlation structure at the cost of
-            higher estimation noise.
-
-    Examples:
-        >>> cfg = SlidingWindowConfig(window=60, n_factors=3)
-        >>> cfg.covariance_mode
-        <CovarianceMode.sliding_window: 'sliding_window'>
-        >>> cfg.window
-        60
-        >>> cfg.n_factors
-        3
-    """
-
-    covariance_mode: Literal[CovarianceMode.sliding_window] = CovarianceMode.sliding_window
-    window: int = Field(
-        ...,
-        gt=0,
-        description=(
-            "Sliding window length W (number of most recent observations). "
-            "Rule of thumb: W >= 2 * n_assets to keep the sample covariance well-posed. "
-            "Note: the first W-1 rows of output will have zero/empty positions while the "
-            "sliding window fills up (warm-up period). Account for this when interpreting "
-            "results or sizing positions."
-        ),
-    )
-    n_factors: int = Field(
-        ...,
-        gt=0,
-        description=(
-            "Number of latent factors k for the sliding window factor model. "
-            "k=1 recovers the single market-factor model; larger k captures finer correlation "
-            "structure at the cost of higher estimation noise."
-        ),
-    )
-
-    model_config = {"frozen": True}
-
-
-CovarianceConfig = Annotated[
-    EwmaShrinkConfig | SlidingWindowConfig,
-    Field(discriminator="covariance_mode"),
-]
-"""Discriminated union of covariance-mode configurations.
-
-Pydantic selects the correct sub-config based on the ``covariance_mode``
-discriminator field:
-
-* :class:`EwmaShrinkConfig` when ``covariance_mode="ewma_shrink"``
-* :class:`SlidingWindowConfig` when ``covariance_mode="sliding_window"``
-"""
-
-
-class BasanosConfig(BaseModel):
-    r"""Configuration for correlation-aware position optimization.
-
-    The required parameters (``vola``, ``corr``, ``clip``, ``shrink``, ``aum``)
-    must be supplied by the caller.  The optional parameters carry
-    carefully chosen defaults whose rationale is described below.
-
-    Shrinkage methodology
-    ---------------------
-    ``shrink`` controls linear shrinkage of the EWMA correlation matrix toward
-    the identity:
-
-    .. math::
-
-        C_{\\text{shrunk}} = \\lambda \\cdot C_{\\text{EWMA}} + (1 - \\lambda) \\cdot I_n
-
-    where :math:`\\lambda` = ``shrink`` and :math:`I_n` is the identity.
-    Shrinkage regularises the matrix when assets are few relative to the
-    lookback (high concentration ratio :math:`n / T`), reducing the impact of
-    extreme sample eigenvalues and improving the condition number of the matrix
-    passed to the linear solver.
-
-    **When to prefer strong shrinkage (low** ``shrink`` **/ high** ``1-shrink``\\ **):**
-
-    * Fewer than ~30 assets with a ``corr`` lookback shorter than 100 days.
-    * High-volatility or crisis regimes where correlations spike and the sample
-      matrix is less representative of the true structure.
-    * Portfolios where estimation noise is more costly than correlation bias
-      (e.g., when the signal-to-noise ratio of ``mu`` is low).
-
-    **When to prefer light shrinkage (high** ``shrink``\\ **):**
-
-    * Many assets with a long lookback (low concentration ratio).
-    * The EWMA correlation structure carries genuine diversification information
-      that you want the solver to exploit.
-    * Out-of-sample testing shows that position stability is not a concern.
-
-    **Practical starting points (daily return data):**
-
-    Here *n* = number of assets and *T* = ``cfg.corr`` (EWMA lookback).
-
-    +-----------------------+-------------------+--------------------------------+
-    | n (assets) / T (corr) | Suggested shrink  | Notes                          |
-    +=======================+===================+================================+
-    | n > 20, T < 40        | 0.3 - 0.5         | Near-singular matrix likely;   |
-    |                       |                   | strong regularisation needed.  |
-    +-----------------------+-------------------+--------------------------------+
-    | n ~ 10, T ~ 60        | 0.5 - 0.7         | Balanced regime.               |
-    +-----------------------+-------------------+--------------------------------+
-    | n < 10, T > 100       | 0.7 - 0.9         | Well-conditioned sample;       |
-    |                       |                   | light shrinkage for stability. |
-    +-----------------------+-------------------+--------------------------------+
-
-    See :func:`~basanos.math._signal.shrink2id` for the full theoretical
-    background and academic references (Ledoit & Wolf, 2004; Chen et al., 2010).
-
-    Default rationale
-    -----------------
-    ``profit_variance_init = 1.0``
-        Unit variance is a neutral, uninformative starting point for the
-        exponential moving average of realized P&L variance.  Because the
-        normalised risk positions are divided by the square root of this
-        quantity, initialising at 1.0 leaves the first few positions
-        unaffected until the EMA accumulates real data.  Larger values
-        would shrink initial positions; smaller values would inflate them.
-
-    ``profit_variance_decay = 0.99``
-        An EMA decay factor of λ = 0.99 corresponds to a half-life of
-        ``log(0.5) / log(0.99) ≈ 69`` periods and an effective centre-of-
-        mass of ``1 / (1 - 0.99) = 100`` periods.  For daily data this
-        represents approximately 100 trading days (~5 months), a
-        commonly used horizon for medium-frequency regime adaptation in
-        systematic strategies.
-
-    ``denom_tol = 1e-12``
-        Positions are zeroed when the normalisation denominator
-        ``inv_a_norm(μ, Σ)`` falls at or below this threshold.  The
-        value 1e-12 provides ample headroom above float64 machine
-        epsilon (~2.2e-16) while remaining negligible relative to any
-        economically meaningful signal magnitude.
-
-    ``position_scale = 1e6``
-        The dimensionless risk position is multiplied by this factor
-        before being passed to :class:`~basanos.analytics.Portfolio`.
-        A value of 1e6 means positions are expressed in units of one
-        million of the base currency, a conventional denomination for
-        institutional-scale portfolios where AUM is measured in hundreds
-        of millions.
-
-    ``min_corr_denom = 1e-14``
-        The EWMA correlation denominator ``sqrt(var_x * var_y)`` is
-        compared against this threshold; when at or below it the
-        correlation is set to NaN rather than dividing by a near-zero
-        value.  The default 1e-14 is safely above float64 underflow
-        while remaining negligible for any realistic return series.
-        Advanced users may tighten this guard (larger value) when
-        working with very-low-variance synthetic data.
-
-    ``max_nan_fraction = 0.9``
-        :class:`~basanos.exceptions.ExcessiveNullsError` is raised
-        during construction when the null fraction in any asset price
-        column **strictly exceeds** this threshold.  The default 0.9
-        permits up to 90 % missing prices (e.g., illiquid or recently
-        listed assets in a long history) while rejecting columns that
-        are almost entirely null and would contribute no useful
-        information.  Callers who want a stricter gate can lower this
-        value; callers running on sparse data can raise it toward 1.0.
-
-    Sliding-window mode
-    -------------------
-    When ``covariance_config`` is a :class:`SlidingWindowConfig`, the EWMA
-    correlation estimator is replaced by a rolling-window factor model
-    (Section 4.4 of basanos.pdf).  At each timestamp *t* the
-    :math:`W \\times n` submatrix of the :math:`W` most recent
-    volatility-adjusted returns is decomposed via truncated SVD to extract
-    :math:`k` latent factors.  The resulting correlation estimate is
-
-    .. math::
-
-        \\hat{C}_t^{(W,k)}
-        = \\frac{1}{W}\\mathbf{V}_{k,t}\\mathbf{\\Sigma}_{k,t}^2
-          \\mathbf{V}_{k,t}^\\top + \\hat{D}_t
-
-    where :math:`\\hat{D}_t` enforces unit diagonal.  The linear system
-    :math:`\\hat{C}_t^{(W,k)}\\mathbf{x}_t = \\boldsymbol{\\mu}_t` is solved
-    via the Woodbury identity (:func:`~basanos.math._factor_model.FactorModel.solve`)
-    at cost :math:`O(k^3 + kn)` per step rather than :math:`O(n^3)`.
-
-    ``covariance_config``
-        Pass a :class:`SlidingWindowConfig` instance to enable this mode.
-        The required sub-parameters are:
-
-        ``window``
-            Rolling window length :math:`W \\geq 1`.  Rule of thumb: :math:`W
-            \\geq 2n` keeps the sample covariance well-posed before truncation.
-
-        ``n_factors``
-            Number of latent factors :math:`k \\geq 1`.  :math:`k = 1`
-            recovers the single market-factor model; larger :math:`k` captures
-            finer correlation structure at the cost of higher estimation noise.
-
-    Examples:
-        >>> cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
-        >>> cfg.vola
-        32
-        >>> cfg.corr
-        64
-        >>> sw_cfg = BasanosConfig(
-        ...     vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6,
-        ...     covariance_config=SlidingWindowConfig(window=60, n_factors=3),
-        ... )
-        >>> sw_cfg.covariance_mode
-        <CovarianceMode.sliding_window: 'sliding_window'>
-    """
-
-    vola: int = Field(..., gt=0, description="EWMA lookback for volatility normalization.")
-    corr: int = Field(..., gt=0, description="EWMA lookback for correlation estimation.")
-    clip: float = Field(..., gt=0.0, description="Clipping threshold for volatility adjustment.")
-    shrink: float = Field(
-        ...,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Retention weight λ for linear shrinkage of the EWMA correlation matrix toward "
-            "the identity: C_shrunk = λ·C_ewma + (1-λ)·I. "
-            "λ=1.0 uses the raw EWMA matrix (no shrinkage); λ=0.0 replaces it entirely "
-            "with the identity (maximum shrinkage, positions are treated as uncorrelated). "
-            "Values in [0.3, 0.8] are typical for daily financial return data. "
-            "Lower values improve numerical stability when assets are many relative to the "
-            "lookback (high concentration ratio n/T). See shrink2id() for full guidance. "
-            "Only used when covariance_mode='ewma_shrink'."
-        ),
-    )
-    aum: float = Field(..., gt=0.0, description="Assets under management for portfolio scaling.")
-    profit_variance_init: float = Field(
-        default=1.0,
-        gt=0.0,
-        description=(
-            "Initial value for the profit variance EMA used in position sizing. "
-            "Defaults to 1.0 (unit variance) so that the first positions are unscaled "
-            "until real P&L data accumulates."
-        ),
-    )
-    profit_variance_decay: float = Field(
-        default=0.99,
-        gt=0.0,
-        lt=1.0,
-        description=(
-            "EMA decay factor λ for the realized P&L variance (higher = slower adaptation). "
-            "The default 0.99 gives a half-life of ~69 periods and an effective window of "
-            "100 periods, suitable for daily data."
-        ),
-    )
-    denom_tol: float = Field(
-        default=1e-12,
-        gt=0.0,
-        description=(
-            "Minimum normalisation denominator; positions are zeroed at or below this value. "
-            "The default 1e-12 is well above float64 machine epsilon (~2.2e-16) while "
-            "remaining negligible for any economically meaningful signal."
-        ),
-    )
-    position_scale: float = Field(
-        default=1e6,
-        gt=0.0,
-        description=(
-            "Multiplicative scaling factor applied to dimensionless risk positions to obtain "
-            "cash positions in base-currency units. Defaults to 1e6 (one million), a "
-            "conventional denomination for institutional portfolios."
-        ),
-    )
-    min_corr_denom: float = Field(
-        default=1e-14,
-        gt=0.0,
-        description=(
-            "Guard threshold for the EWMA correlation denominator sqrt(var_x * var_y). "
-            "When the denominator is at or below this value the correlation is set to NaN "
-            "instead of dividing by a near-zero number. "
-            "The default 1e-14 is safely above float64 underflow while being negligible for "
-            "any realistic return variance."
-        ),
-    )
-    max_nan_fraction: float = Field(
-        default=0.9,
-        gt=0.0,
-        lt=1.0,
-        description=(
-            "Maximum tolerated fraction of null values in any asset price column. "
-            "ExcessiveNullsError is raised during construction when the null fraction "
-            "strictly exceeds this threshold. "
-            "The default 0.9 allows up to 90 % missing prices while rejecting columns "
-            "that are almost entirely null."
-        ),
-    )
-    covariance_config: CovarianceConfig = Field(
-        default_factory=EwmaShrinkConfig,
-        description=(
-            "Covariance estimation configuration. "
-            "Pass EwmaShrinkConfig() (default) for EWMA correlation with linear shrinkage "
-            "toward the identity, or SlidingWindowConfig(window=W, n_factors=k) for a "
-            "rolling-window factor model. See Section 4.4 of basanos.pdf."
-        ),
-    )
-
-    model_config = {"frozen": True, "extra": "forbid"}
-
-    @model_validator(mode="before")
-    @classmethod
-    def _reject_legacy_flat_kwargs(cls, data: object) -> object:
-        """Raise an informative TypeError when the pre-v0.4 flat kwargs are used.
-
-        Before v0.4 callers passed ``covariance_mode``, ``n_factors``, and
-        ``window`` as top-level keyword arguments to :class:`BasanosConfig`.
-        Those fields were replaced by the nested discriminated union
-        ``covariance_config``.  Without this validator Pydantic raises a
-        generic ``extra_forbidden`` error that gives no migration guidance.
-
-        Examples:
-            >>> BasanosConfig(
-            ...     vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6,
-            ...     covariance_mode="sliding_window", window=30, n_factors=2,
-            ... )  # doctest: +IGNORE_EXCEPTION_DETAIL
-            Traceback (most recent call last):
-                ...
-            TypeError: ...
-        """
-        legacy_keys = {"covariance_mode", "n_factors", "window"}
-        found = legacy_keys & data.keys()
-        if found:
-            found_str = ", ".join(f"'{k}'" for k in sorted(found))
-            msg = (
-                f"BasanosConfig received legacy keyword argument(s): {found_str}. "
-                "These flat fields were removed in v0.4. "
-                "Migrate to the nested covariance_config API:\n\n"
-                "  # Before (v0.3 and earlier):\n"
-                "  BasanosConfig(..., covariance_mode='sliding_window', window=30, n_factors=2)\n\n"
-                "  # After (v0.4+):\n"
-                "  from basanos.math import SlidingWindowConfig\n"
-                "  BasanosConfig(..., covariance_config=SlidingWindowConfig(window=30, n_factors=2))\n\n"
-                "For the default EWMA-shrink mode no covariance_config argument is needed."
-            )
-            raise TypeError(msg)
-        return data
-
-    def replace(
-        self,
-        *,
-        vola: int | None = None,
-        corr: int | None = None,
-        clip: float | None = None,
-        shrink: float | None = None,
-        aum: float | None = None,
-        profit_variance_init: float | None = None,
-        profit_variance_decay: float | None = None,
-        denom_tol: float | None = None,
-        position_scale: float | None = None,
-        min_corr_denom: float | None = None,
-        max_nan_fraction: float | None = None,
-        covariance_config: "CovarianceConfig | None" = None,
-    ) -> "BasanosConfig":
-        """Return a new :class:`BasanosConfig` with selected fields replaced.
-
-        Unlike :meth:`model_copy`, this method uses explicit constructor kwarg
-        forwarding so that any new required field added to
-        :class:`BasanosConfig` surfaces immediately as a type or lint error at
-        the call site, rather than silently failing at runtime.
-
-        All parameters default to ``None``, meaning *keep the existing value*.
-        Pass a non-``None`` value for every field you want to change.
-
-        Args:
-            vola: EWMA lookback for volatility normalisation.
-            corr: EWMA lookback for correlation estimation.
-            clip: Clipping threshold for volatility adjustment.
-            shrink: Retention weight λ ∈ [0, 1] for linear shrinkage.
-            aum: Assets under management for portfolio scaling.
-            profit_variance_init: Initial value for the profit-variance EMA.
-            profit_variance_decay: EMA decay factor for realized P&L variance.
-            denom_tol: Minimum normalisation denominator.
-            position_scale: Multiplicative scaling factor for cash positions.
-            min_corr_denom: Guard threshold for the EWMA correlation denominator.
-            max_nan_fraction: Maximum tolerated null fraction per price column.
-            covariance_config: Covariance estimation configuration.
-
-        Returns:
-            A new :class:`BasanosConfig` with the specified fields replaced and
-            all other fields copied from ``self``.
-
-        Examples:
-            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
-            >>> cfg2 = cfg.replace(shrink=0.8)
-            >>> cfg2.shrink
-            0.8
-            >>> cfg2.vola == cfg.vola
-            True
-        """
-        return BasanosConfig(
-            vola=self.vola if vola is None else vola,
-            corr=self.corr if corr is None else corr,
-            clip=self.clip if clip is None else clip,
-            shrink=self.shrink if shrink is None else shrink,
-            aum=self.aum if aum is None else aum,
-            profit_variance_init=self.profit_variance_init if profit_variance_init is None else profit_variance_init,
-            profit_variance_decay=self.profit_variance_decay
-            if profit_variance_decay is None
-            else profit_variance_decay,
-            denom_tol=self.denom_tol if denom_tol is None else denom_tol,
-            position_scale=self.position_scale if position_scale is None else position_scale,
-            min_corr_denom=self.min_corr_denom if min_corr_denom is None else min_corr_denom,
-            max_nan_fraction=self.max_nan_fraction if max_nan_fraction is None else max_nan_fraction,
-            covariance_config=self.covariance_config if covariance_config is None else covariance_config,
-        )
-
-    @property
-    def covariance_mode(self) -> CovarianceMode:
-        """Covariance mode derived from :attr:`covariance_config`."""
-        return self.covariance_config.covariance_mode
-
-    @property
-    def window(self) -> int | None:
-        """Sliding window length, or ``None`` when not in ``sliding_window`` mode."""
-        if isinstance(self.covariance_config, SlidingWindowConfig):
-            return self.covariance_config.window
-        return None
-
-    @property
-    def n_factors(self) -> int | None:
-        """Number of latent factors, or ``None`` when not in ``sliding_window`` mode."""
-        if isinstance(self.covariance_config, SlidingWindowConfig):
-            return self.covariance_config.n_factors
-        return None
-
-    @property
-    def report(self) -> "ConfigReport":
-        """Return a :class:`~basanos.math._config_report.ConfigReport` facade for this config.
-
-        Generates a self-contained HTML report summarising all configuration
-        parameters, a shrinkage-guidance table, and a theory section on
-        Ledoit-Wolf shrinkage.
-
-        To also include a lambda-sweep chart (Sharpe vs λ), use
-        :attr:`BasanosEngine.config_report` instead, which requires price and
-        signal data.
-
-        Returns:
-            basanos.math._config_report.ConfigReport: Report facade with
-            ``to_html()`` and ``save()`` methods.
-
-        Examples:
-            >>> from basanos.math.optimizer import BasanosConfig
-            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
-            >>> report = cfg.report
-            >>> html = report.to_html()
-            >>> "Parameters" in html
-            True
-        """
-        from ._config_report import ConfigReport
-
-        return ConfigReport(config=self)
-
-    @field_validator("corr")
-    @classmethod
-    def corr_greater_than_vola(cls, v: int, info: ValidationInfo) -> int:
-        """Optionally enforce corr ≥ vola for stability.
-
-        Pydantic v2 passes ValidationInfo; use info.data to access other fields.
-        """
-        vola = info.data.get("vola") if hasattr(info, "data") else None
-        if vola is not None and v < vola:
-            raise ValueError
-        return v
-
-
 @dataclasses.dataclass(frozen=True)
-class BasanosEngine:
+class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin):
     """Engine to compute correlation matrices and optimize risk positions.
 
     Encapsulates price data and configuration to build EWM-based
     correlations, apply shrinkage, and solve for normalized positions.
+
+    The engine is organized into focused concerns, each handled by a
+    dedicated sub-module:
+
+    * **Core data access** — :attr:`assets`, :attr:`ret_adj`, :attr:`vola`,
+      :attr:`cor`, :attr:`cor_tensor`
+    * **Solve / position logic** — :attr:`cash_position`,
+      :attr:`position_status`, :attr:`risk_position`,
+      :attr:`position_leverage` (this module)
+    * **Portfolio and performance** — :attr:`portfolio`,
+      :attr:`naive_sharpe`, :meth:`sharpe_at_shrink`,
+      :meth:`sharpe_at_window_factors` (this module)
+    * **Matrix diagnostics** — :attr:`condition_number`,
+      :attr:`effective_rank`, :attr:`solver_residual`,
+      :attr:`signal_utilisation`
+      (:mod:`basanos.math._engine_diagnostics`)
+    * **Signal evaluation** — :attr:`ic`, :attr:`rank_ic`, :attr:`ic_mean`,
+      :attr:`ic_std`, :attr:`icir`, :attr:`rank_ic_mean`,
+      :attr:`rank_ic_std`
+      (:mod:`basanos.math._engine_ic`)
 
     Attributes:
         prices: Polars DataFrame of price levels per asset over time.  Must
@@ -856,6 +371,10 @@ class BasanosEngine:
                     w - 1,
                 )
 
+    # ------------------------------------------------------------------
+    # Core data-access properties
+    # ------------------------------------------------------------------
+
     @property
     def assets(self) -> list[str]:
         """List asset column names (numeric columns excluding 'date')."""
@@ -956,10 +475,14 @@ class BasanosEngine:
         """
         return np.stack(list(self.cor.values()), axis=0)
 
+    # ------------------------------------------------------------------
+    # Internal solve helpers
+    # ------------------------------------------------------------------
+
     def _iter_matrices(self):
         r"""Yield ``(i, t, mask, matrix)`` for every timestamp.
 
-        ``matrix`` is the effective :math:`(n_{\\text{sub}},\\ n_{\\text{sub}})`
+        ``matrix`` is the effective :math:`(n_{\text{sub}},\ n_{\text{sub}})`
         correlation matrix for the active assets (those with finite prices at
         timestamp *t*).  Yields ``None`` when no valid matrix is available
         (e.g., before the warm-up period has elapsed or when no assets have
@@ -1162,6 +685,10 @@ class BasanosEngine:
                     continue
                 yield i, t, mask, x / denom, "valid"
 
+    # ------------------------------------------------------------------
+    # Position properties
+    # ------------------------------------------------------------------
+
     @property
     def cash_position(self) -> pl.DataFrame:
         r"""Optimize correlation-aware risk positions for each timestamp.
@@ -1170,7 +697,7 @@ class BasanosEngine:
 
         * :class:`EwmaShrinkConfig` (default): Computes EWMA correlations, applies
           linear shrinkage toward the identity, and solves a normalised linear
-          system :math:`C\\,x = \\mu` per timestamp via Cholesky / LU.
+          system :math:`C\,x = \mu` per timestamp via Cholesky / LU.
 
         * :class:`SlidingWindowConfig`: At each timestamp uses the
           ``cfg.covariance_config.window`` most recent vol-adjusted returns to fit a
@@ -1309,178 +836,9 @@ class BasanosEngine:
         leverage = np.nansum(np.abs(cp_np), axis=1)
         return pl.DataFrame({"date": self.prices["date"], "leverage": pl.Series(leverage, dtype=pl.Float64)})
 
-    @property
-    def condition_number(self) -> pl.DataFrame:
-        """Condition number κ of the effective correlation matrix at each timestamp.
-
-        Uses the same covariance mode as :attr:`cash_position`: for
-        ``ewma_shrink`` this is the shrunk EWMA matrix; for ``sliding_window``
-        it is the factor-model covariance.  Only the sub-matrix corresponding
-        to assets with finite prices at that timestamp is used; rows with no
-        finite prices yield ``NaN``.
-
-        Returns:
-            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'condition_number': ...}``.
-        """
-        kappas: list[float] = []
-        for _i, _t, _mask, matrix in self._iter_matrices():
-            if matrix is None:
-                kappas.append(float(np.nan))
-                continue
-            _v, mat = valid(matrix)
-            if not _v.any():
-                kappas.append(float(np.nan))
-                continue
-            kappas.append(float(np.linalg.cond(mat)))
-
-        return pl.DataFrame({"date": self.prices["date"], "condition_number": pl.Series(kappas, dtype=pl.Float64)})
-
-    @property
-    def effective_rank(self) -> pl.DataFrame:
-        r"""Effective rank of the effective correlation matrix at each timestamp.
-
-        Measures the true dimensionality of the portfolio by computing the
-        entropy-based effective rank:
-
-        .. math::
-
-            \\text{eff\\_rank} = \\exp\\!\\left(-\\sum_i p_i \\ln p_i\\right),
-            \\quad p_i = \\frac{\\lambda_i}{\\sum_j \\lambda_j}
-
-        where :math:`\\lambda_i` are the eigenvalues of the effective
-        correlation matrix (restricted to assets with finite prices at that
-        timestamp).  Uses the same covariance mode as :attr:`cash_position`.
-        A value equal to the number of assets indicates a perfectly uniform
-        spectrum; a value of 1 indicates a rank-1 matrix.
-
-        Returns:
-            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'effective_rank': ...}``.
-        """
-        ranks: list[float] = []
-        for _i, _t, _mask, matrix in self._iter_matrices():
-            if matrix is None:
-                ranks.append(float(np.nan))
-                continue
-            _v, mat = valid(matrix)
-            if not _v.any():
-                ranks.append(float(np.nan))
-                continue
-            eigvals = np.linalg.eigvalsh(mat)
-            eigvals = np.clip(eigvals, 0.0, None)
-            total = eigvals.sum()
-            if total <= 0.0:
-                ranks.append(float(np.nan))
-                continue
-            p = eigvals / total
-            p_pos = p[p > 0.0]
-            entropy = float(-np.sum(p_pos * np.log(p_pos)))
-            ranks.append(float(np.exp(entropy)))
-
-        return pl.DataFrame({"date": self.prices["date"], "effective_rank": pl.Series(ranks, dtype=pl.Float64)})
-
-    @property
-    def solver_residual(self) -> pl.DataFrame:
-        r"""Per-timestamp solver residual ``‖C·x - μ‖₂``.
-
-        After solving the normalised linear system ``C · x = μ`` at
-        each timestamp, this property reports the Euclidean residual norm.
-        For a well-posed, well-conditioned system the residual is near machine
-        epsilon; large values flag numerical difficulties (near-singular
-        matrices, extreme condition numbers, or solver fall-back to LU).
-        Uses the same covariance mode as :attr:`cash_position`.
-
-        Returns:
-            pl.DataFrame: Two-column DataFrame ``{'date': ..., 'residual': ...}``.
-            Zero is returned when ``μ`` is the zero vector (no solve is
-            performed).  ``NaN`` is returned when no asset has finite prices.
-        """
-        assets = self.assets
-        mu_np = self.mu.select(assets).to_numpy()
-
-        residuals: list[float] = []
-        for i, t, mask, matrix in self._iter_matrices():
-            if matrix is None:
-                residuals.append(float(np.nan))
-                continue
-            expected_mu = np.nan_to_num(mu_np[i][mask])
-            if np.allclose(expected_mu, 0.0):
-                residuals.append(0.0)
-                continue
-            try:
-                x = solve(matrix, expected_mu)
-            except SingularMatrixError:
-                # The covariance matrix is degenerate — residual is undefined.
-                _logger.warning(
-                    "solver_residual: SingularMatrixError at t=%s - covariance matrix is "
-                    "degenerate; residual set to NaN.",
-                    t,
-                )
-                residuals.append(float(np.nan))
-                continue
-            finite_x = np.isfinite(x)
-            if not finite_x.any():
-                residuals.append(float(np.nan))
-                continue
-            residuals.append(
-                float(np.linalg.norm(matrix[np.ix_(finite_x, finite_x)] @ x[finite_x] - expected_mu[finite_x]))
-            )
-
-        return pl.DataFrame({"date": self.prices["date"], "residual": pl.Series(residuals, dtype=pl.Float64)})
-
-    @property
-    def signal_utilisation(self) -> pl.DataFrame:
-        r"""Per-asset signal utilisation: fraction of μ_i surviving the correlation filter.
-
-        For each asset *i* and timestamp *t*, computes
-
-        .. math::
-
-            u_i = \\frac{(C^{-1}\\,\\mu)_i}{\\mu_i}
-
-        where :math:`C^{-1}\\,\\mu` is the unnormalised solve result using
-        the effective correlation matrix for the current
-        :attr:`~BasanosConfig.covariance_mode`.  When :math:`C = I`
-        (identity) all assets have utilisation 1.  Off-diagonal correlations
-        attenuate some assets (:math:`u_i < 1`) and may amplify negatively
-        correlated ones (:math:`u_i > 1`).
-
-        A value of ``0.0`` is returned when the entire signal vector
-        :math:`\\mu` is near zero at that timestamp (no solve is performed).
-        ``NaN`` is returned for individual assets where :math:`|\\mu_i|` is
-        below machine-epsilon precision or where prices are unavailable.
-
-        Returns:
-            pl.DataFrame: DataFrame with columns ``['date'] + assets``.
-        """
-        assets = self.assets
-        mu_np = self.mu.select(assets).to_numpy()
-
-        _mu_tol = 1e-14  # treat |μ_i| below this as zero to avoid spurious large ratios
-        n_assets = len(assets)
-        util_np = np.full((self.prices.height, n_assets), np.nan)
-
-        for i, t, mask, matrix in self._iter_matrices():
-            if matrix is None:
-                continue
-            expected_mu = np.nan_to_num(mu_np[i][mask])
-            if np.allclose(expected_mu, 0.0):
-                util_np[i, mask] = 0.0
-                continue
-            try:
-                x = solve(matrix, expected_mu)
-            except SingularMatrixError:
-                # The covariance matrix is degenerate — utilisation is undefined.
-                _logger.warning(
-                    "signal_utilisation: SingularMatrixError at t=%s - covariance matrix is "
-                    "degenerate; utilisation set to NaN.",
-                    t,
-                )
-                continue
-            with np.errstate(divide="ignore", invalid="ignore"):
-                ratio = np.where(np.abs(expected_mu) > _mu_tol, x / expected_mu, np.nan)
-            util_np[i, mask] = ratio
-
-        return self.prices.with_columns([pl.lit(util_np[:, j]).alias(asset) for j, asset in enumerate(assets)])
+    # ------------------------------------------------------------------
+    # Portfolio and performance
+    # ------------------------------------------------------------------
 
     @property
     def portfolio(self) -> Portfolio:
@@ -1558,9 +916,9 @@ class BasanosEngine:
         estimator against the EWMA baseline (via :meth:`sharpe_at_shrink`).
 
         Args:
-            window: Rolling window length :math:`W \\geq 1`.
-                Rule of thumb: :math:`W \\geq 2 \\cdot n_{\\text{assets}}`.
-            n_factors: Number of latent factors :math:`k \\geq 1`.
+            window: Rolling window length :math:`W \geq 1`.
+                Rule of thumb: :math:`W \geq 2 \cdot n_{\text{assets}}`.
+            n_factors: Number of latent factors :math:`k \geq 1`.
 
         Returns:
             Annualised Sharpe ratio of the portfolio returns as a ``float``.
@@ -1636,166 +994,9 @@ class BasanosEngine:
         engine = BasanosEngine(prices=self.prices, mu=naive_mu, cfg=self.cfg)
         return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
 
-    def _ic_series(self, use_rank: bool) -> pl.DataFrame:
-        """Compute the cross-sectional IC time series.
-
-        For each timestamp *t* (from 0 to T-2), correlates the signal vector
-        ``mu[t, :]`` with the one-period forward return vector
-        ``prices[t+1, :] / prices[t, :] - 1`` across all assets where both
-        quantities are finite.  When fewer than two valid asset pairs are
-        available, the IC value is set to ``NaN``.
-
-        Args:
-            use_rank: When ``True`` the Spearman rank correlation is used
-                (Rank IC); when ``False`` the Pearson correlation is used (IC).
-
-        Returns:
-            pl.DataFrame: Two-column frame with ``date`` (signal date) and
-            either ``ic`` or ``rank_ic``.
-        """
-        assets = self.assets
-        prices_np = self.prices.select(assets).to_numpy().astype(float)
-        mu_np = self.mu.select(assets).to_numpy().astype(float)
-        dates = self.prices["date"].to_list()
-
-        col_name = "rank_ic" if use_rank else "ic"
-        ic_values: list[float] = []
-        ic_dates = []
-
-        for t in range(len(dates) - 1):
-            fwd_ret = prices_np[t + 1] / prices_np[t] - 1.0
-            signal = mu_np[t]
-
-            # Both signal and forward return must be finite
-            mask = np.isfinite(signal) & np.isfinite(fwd_ret)
-            n_valid = int(mask.sum())
-
-            if n_valid < 2:
-                ic_values.append(float("nan"))
-            elif use_rank:
-                corr, _ = spearmanr(signal[mask], fwd_ret[mask])
-                ic_values.append(float(corr))
-            else:
-                ic_values.append(float(np.corrcoef(signal[mask], fwd_ret[mask])[0, 1]))
-
-            ic_dates.append(dates[t])
-
-        return pl.DataFrame({"date": ic_dates, col_name: pl.Series(ic_values, dtype=pl.Float64)})
-
-    @property
-    def ic(self) -> pl.DataFrame:
-        """Cross-sectional Pearson Information Coefficient (IC) time series.
-
-        For each timestamp *t* (excluding the last), computes the Pearson
-        correlation between the signal ``mu[t, :]`` and the one-period forward
-        return ``prices[t+1, :] / prices[t, :] - 1`` across all assets where
-        both quantities are finite.
-
-        An IC value close to +1 means the signal ranked assets in the same
-        order as forward returns; close to -1 means the opposite; near 0 means
-        no predictive relationship.
-
-        Returns:
-            pl.DataFrame: Frame with columns ``['date', 'ic']``.  ``date`` is
-            the timestamp at which the signal was observed.  ``ic`` is a
-            ``Float64`` series (``NaN`` when fewer than 2 valid asset pairs
-            are available for a given timestamp).
-
-        See Also:
-            :py:attr:`rank_ic` — Spearman variant, more robust to outliers.
-            :py:attr:`ic_mean`, :py:attr:`ic_std`, :py:attr:`icir` — summary
-            statistics.
-        """
-        return self._ic_series(use_rank=False)
-
-    @property
-    def rank_ic(self) -> pl.DataFrame:
-        """Cross-sectional Spearman Rank Information Coefficient time series.
-
-        Identical to :py:attr:`ic` but uses the Spearman rank correlation
-        instead of the Pearson correlation, making it more robust to fat-tailed
-        return distributions and outliers.
-
-        Returns:
-            pl.DataFrame: Frame with columns ``['date', 'rank_ic']``.
-            ``rank_ic`` is a ``Float64`` series.
-
-        See Also:
-            :py:attr:`ic` — Pearson variant.
-            :py:attr:`rank_ic_mean`, :py:attr:`rank_ic_std` — summary
-            statistics.
-        """
-        return self._ic_series(use_rank=True)
-
-    @property
-    def ic_mean(self) -> float:
-        """Mean of the IC time series, ignoring NaN values.
-
-        Returns:
-            float: Arithmetic mean of all finite IC values, or ``NaN`` if
-            no finite values exist.
-        """
-        arr = self.ic["ic"].drop_nulls().to_numpy()
-        finite = arr[np.isfinite(arr)]
-        return float(np.mean(finite)) if len(finite) > 0 else float("nan")
-
-    @property
-    def ic_std(self) -> float:
-        """Standard deviation of the IC time series, ignoring NaN values.
-
-        Uses ``ddof=1`` (sample standard deviation).
-
-        Returns:
-            float: Sample standard deviation of all finite IC values, or
-            ``NaN`` if fewer than 2 finite values exist.
-        """
-        arr = self.ic["ic"].drop_nulls().to_numpy()
-        finite = arr[np.isfinite(arr)]
-        return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
-
-    @property
-    def icir(self) -> float:
-        """Information Coefficient Information Ratio (ICIR).
-
-        Defined as ``IC mean / IC std``.  A higher absolute ICIR indicates a
-        more consistent signal: the mean IC is large relative to its
-        variability.
-
-        Returns:
-            float: ``ic_mean / ic_std``, or ``NaN`` when ``ic_std`` is zero
-            or non-finite.
-        """
-        mean = self.ic_mean
-        std = self.ic_std
-        if not np.isfinite(std) or std == 0.0:
-            return float("nan")
-        return float(mean / std)
-
-    @property
-    def rank_ic_mean(self) -> float:
-        """Mean of the Rank IC time series, ignoring NaN values.
-
-        Returns:
-            float: Arithmetic mean of all finite Rank IC values, or ``NaN``
-            if no finite values exist.
-        """
-        arr = self.rank_ic["rank_ic"].drop_nulls().to_numpy()
-        finite = arr[np.isfinite(arr)]
-        return float(np.mean(finite)) if len(finite) > 0 else float("nan")
-
-    @property
-    def rank_ic_std(self) -> float:
-        """Standard deviation of the Rank IC time series, ignoring NaN values.
-
-        Uses ``ddof=1`` (sample standard deviation).
-
-        Returns:
-            float: Sample standard deviation of all finite Rank IC values, or
-            ``NaN`` if fewer than 2 finite values exist.
-        """
-        arr = self.rank_ic["rank_ic"].drop_nulls().to_numpy()
-        finite = arr[np.isfinite(arr)]
-        return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
+    # ------------------------------------------------------------------
+    # Reporting
+    # ------------------------------------------------------------------
 
     @property
     def config_report(self) -> "ConfigReport":
