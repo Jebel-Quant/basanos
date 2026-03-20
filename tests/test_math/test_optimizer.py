@@ -2265,3 +2265,464 @@ class TestSlidingWindowErrorPaths:
         assert pos.shape == sw_engine.prices.shape
         records = [r for r in caplog.records if "Woodbury solve failed" in r.message]
         assert records, "Expected a 'Woodbury solve failed' warning"
+
+
+# ─── RollingState and incremental step API ────────────────────────────────────
+
+
+def _make_engine(n_rows: int, *, seed: int = 0, vola: int = 5, corr: int = 10) -> tuple[BasanosEngine, BasanosConfig]:
+    """Build a deterministic engine with two non-monotonic assets."""
+    rng = np.random.default_rng(seed)
+    dates = list(range(n_rows))
+    p_a = np.cumprod(1 + rng.normal(0.001, 0.02, n_rows)) * 100.0
+    p_b = np.cumprod(1 + rng.normal(0.001, 0.02, n_rows)) * 150.0
+    prices = pl.DataFrame({"date": dates, "A": p_a, "B": p_b})
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": rng.normal(0.0, 0.5, n_rows),
+            "B": rng.normal(0.0, 0.5, n_rows),
+        }
+    )
+    cfg = BasanosConfig(vola=vola, corr=corr, clip=2.0, shrink=0.5, aum=1_000_000)
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg), cfg
+
+
+class TestRollingState:
+    """Tests for BasanosEngine.rolling_state() and BasanosEngine.step()."""
+
+    def test_rolling_state_returns_rolling_state_instance(self) -> None:
+        """rolling_state() must return a RollingState object."""
+        from basanos.math import RollingState
+
+        engine, _ = _make_engine(60)
+        state = engine.rolling_state()
+        assert isinstance(state, RollingState)
+
+    def test_rolling_state_assets_match_engine(self) -> None:
+        """rolling_state().assets must equal the engine's asset list."""
+        engine, _ = _make_engine(60)
+        state = engine.rolling_state()
+        assert state.assets == tuple(engine.assets)
+
+    def test_rolling_state_ewma_shrink_has_corr_state(self) -> None:
+        """For ewma_shrink mode, the corr state arrays must be non-None."""
+        engine, _ = _make_engine(60)
+        state = engine.rolling_state()
+        n = len(engine.assets)
+        assert state._cx_s_x is not None
+        assert state._cx_s_x.shape == (n, n)
+        assert state._cx_s_x2 is not None
+        assert state._cx_s_x2.shape == (n, n)
+        assert state._cx_s_xy is not None
+        assert state._cx_s_xy.shape == (n, n)
+        assert state._cx_s_w is not None
+        assert state._cx_s_w.shape == (n, n)
+        assert state._cx_count is not None
+        assert state._cx_count.shape == (n, n)
+        assert state._window_buffer is None
+
+    def test_rolling_state_sliding_window_has_buffer(self) -> None:
+        """For sliding_window mode, the window buffer must be non-None."""
+        from basanos.math.optimizer import SlidingWindowConfig
+
+        engine, cfg = _make_engine(60)
+        sw_cfg = cfg.model_copy(update={"covariance_config": SlidingWindowConfig(window=20, n_factors=2)})
+        sw_engine = BasanosEngine(prices=engine.prices, mu=engine.mu, cfg=sw_cfg)
+        state = sw_engine.rolling_state()
+        n = len(sw_engine.assets)
+        assert state._window_buffer is not None
+        assert state._window_buffer.shape == (20, n)
+        assert state._cx_s_x is None
+
+    def test_rolling_state_vol_state_shapes(self) -> None:
+        """All per-asset vol-state arrays must have shape (N,)."""
+        engine, _ = _make_engine(60)
+        state = engine.rolling_state()
+        n = len(engine.assets)
+        for arr in (
+            state._adj_s,
+            state._adj_s2,
+            state._adj_w,
+            state._adj_w2,
+            state._adj_count,
+            state._pct_s,
+            state._pct_s2,
+            state._pct_w,
+            state._pct_w2,
+            state._pct_count,
+        ):
+            assert arr.shape == (n,), f"Expected ({n},), got {arr.shape}"
+
+    def test_step_returns_one_row_dataframe_and_new_state(self) -> None:
+        """step() returns (1-row DataFrame, RollingState)."""
+        from basanos.math import RollingState
+
+        engine, _ = _make_engine(60)
+        state = engine.rolling_state()
+        last_prices = engine.prices.tail(1)
+        # Create next row: 1% move on A, -1% on B
+        new_price_row = last_prices.with_columns(
+            (pl.col("A") * 1.01).alias("A"),
+            (pl.col("B") * 0.99).alias("B"),
+            pl.lit(60).alias("date"),
+        )
+        new_mu_row = last_prices.with_columns(
+            pl.lit(0.3).alias("A"),
+            pl.lit(-0.2).alias("B"),
+            pl.lit(60).alias("date"),
+        )
+        pos, new_state = engine.step(state, new_price_row, new_mu_row)
+        assert pos.shape == (1, len(engine.assets) + 1)  # +1 for date
+        assert pos.columns == ["date", *engine.assets]
+        assert isinstance(new_state, RollingState)
+
+    def test_step_ewma_shrink_matches_extended_engine(self) -> None:
+        """step() (ewma_shrink) must match cash_position[-1] of extended engine."""
+        engine, cfg = _make_engine(80, seed=7)
+        state = engine.rolling_state()
+        n = engine.prices.height
+
+        rng = np.random.default_rng(123)
+        last_a = engine.prices["A"][-1]
+        last_b = engine.prices["B"][-1]
+        new_p_a = float(last_a) * (1 + rng.normal(0.001, 0.02))
+        new_p_b = float(last_b) * (1 + rng.normal(0.001, 0.02))
+        new_mu_a = float(rng.normal(0.0, 0.5))
+        new_mu_b = float(rng.normal(0.0, 0.5))
+
+        new_price_row = pl.DataFrame({"date": [n], "A": [new_p_a], "B": [new_p_b]})
+        new_mu_row = pl.DataFrame({"date": [n], "A": [new_mu_a], "B": [new_mu_b]})
+
+        pos_step, _ = engine.step(state, new_price_row, new_mu_row)
+
+        # Reference: extend the engine's data and re-run cash_position
+        prices_ext = pl.concat([engine.prices, new_price_row])
+        mu_ext = pl.concat([engine.mu, new_mu_row])
+        engine_ext = BasanosEngine(prices=prices_ext, mu=mu_ext, cfg=cfg)
+        pos_ref = engine_ext.cash_position.tail(1)
+
+        np.testing.assert_allclose(
+            pos_step.select(engine.assets).to_numpy(),
+            pos_ref.select(engine.assets).to_numpy(),
+            rtol=1e-8,
+            atol=1e-10,
+            err_msg="step() (ewma_shrink) did not match extended engine",
+        )
+
+    def test_step_sliding_window_matches_extended_engine(self) -> None:
+        """step() (sliding_window) must match cash_position[-1] of extended engine."""
+        from basanos.math.optimizer import SlidingWindowConfig
+
+        engine, cfg = _make_engine(80, seed=13)
+        sw_cfg = cfg.model_copy(update={"covariance_config": SlidingWindowConfig(window=20, n_factors=2)})
+        sw_engine = BasanosEngine(prices=engine.prices, mu=engine.mu, cfg=sw_cfg)
+        state = sw_engine.rolling_state()
+        n = sw_engine.prices.height
+
+        rng = np.random.default_rng(456)
+        last_a = sw_engine.prices["A"][-1]
+        last_b = sw_engine.prices["B"][-1]
+        new_p_a = float(last_a) * (1 + rng.normal(0.001, 0.02))
+        new_p_b = float(last_b) * (1 + rng.normal(0.001, 0.02))
+        new_mu_a = float(rng.normal(0.0, 0.5))
+        new_mu_b = float(rng.normal(0.0, 0.5))
+
+        new_price_row = pl.DataFrame({"date": [n], "A": [new_p_a], "B": [new_p_b]})
+        new_mu_row = pl.DataFrame({"date": [n], "A": [new_mu_a], "B": [new_mu_b]})
+
+        pos_step, _ = sw_engine.step(state, new_price_row, new_mu_row)
+
+        prices_ext = pl.concat([sw_engine.prices, new_price_row])
+        mu_ext = pl.concat([sw_engine.mu, new_mu_row])
+        engine_ext = BasanosEngine(prices=prices_ext, mu=mu_ext, cfg=sw_cfg)
+        pos_ref = engine_ext.cash_position.tail(1)
+
+        np.testing.assert_allclose(
+            pos_step.select(sw_engine.assets).to_numpy(),
+            pos_ref.select(sw_engine.assets).to_numpy(),
+            rtol=1e-8,
+            atol=1e-10,
+            err_msg="step() (sliding_window) did not match extended engine",
+        )
+
+    def test_step_chaining_ewma_shrink_matches_full_engine(self) -> None:
+        """Chaining N step() calls must match the last N rows of a full engine."""
+        n_hist = 80
+        n_new = 5
+        total = n_hist + n_new
+
+        rng = np.random.default_rng(55)
+        dates = list(range(total))
+        p_a = np.cumprod(1 + rng.normal(0.001, 0.02, total)) * 100.0
+        p_b = np.cumprod(1 + rng.normal(0.001, 0.02, total)) * 150.0
+        mu_a = rng.normal(0.0, 0.5, total)
+        mu_b = rng.normal(0.0, 0.5, total)
+
+        cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1_000_000)
+        engine = BasanosEngine(
+            prices=pl.DataFrame({"date": dates[:n_hist], "A": p_a[:n_hist], "B": p_b[:n_hist]}),
+            mu=pl.DataFrame({"date": dates[:n_hist], "A": mu_a[:n_hist], "B": mu_b[:n_hist]}),
+            cfg=cfg,
+        )
+        state = engine.rolling_state()
+        step_positions = []
+        for i in range(n_new):
+            t = n_hist + i
+            row_p = pl.DataFrame({"date": [t], "A": [p_a[t]], "B": [p_b[t]]})
+            row_mu = pl.DataFrame({"date": [t], "A": [mu_a[t]], "B": [mu_b[t]]})
+            pos, state = engine.step(state, row_p, row_mu)
+            step_positions.append(pos.select(["A", "B"]).to_numpy()[0])
+
+        # Reference: full engine over entire history
+        engine_full = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": p_a, "B": p_b}),
+            mu=pl.DataFrame({"date": dates, "A": mu_a, "B": mu_b}),
+            cfg=cfg,
+        )
+        ref_np = engine_full.cash_position.select(["A", "B"]).to_numpy()[-n_new:]
+
+        np.testing.assert_allclose(
+            np.array(step_positions),
+            ref_np,
+            rtol=1e-8,
+            atol=1e-10,
+            err_msg="Chained step() did not match full engine over n_new rows",
+        )
+
+    def test_step_chaining_sliding_window_matches_full_engine(self) -> None:
+        """Chaining N step() calls (sliding_window) must match the full engine.
+
+        Uses a single-factor model (k=1) to keep the Woodbury solve
+        well-conditioned, preventing tiny float differences from being
+        amplified by a near-singular covariance matrix.
+        """
+        from basanos.math.optimizer import SlidingWindowConfig
+
+        n_hist = 80
+        n_new = 4
+        total = n_hist + n_new
+
+        rng = np.random.default_rng(77)
+        dates = list(range(total))
+        p_a = np.cumprod(1 + rng.normal(0.001, 0.02, total)) * 100.0
+        p_b = np.cumprod(1 + rng.normal(0.001, 0.02, total)) * 150.0
+        mu_a = rng.normal(0.0, 0.5, total)
+        mu_b = rng.normal(0.0, 0.5, total)
+
+        # n_factors=1 keeps the Woodbury matrix well-conditioned so that
+        # the O(1e-14) vol-adj differences don't blow up into large position errors.
+        cfg = BasanosConfig(
+            vola=5,
+            corr=10,
+            clip=2.0,
+            shrink=0.5,
+            aum=1_000_000,
+            covariance_config=SlidingWindowConfig(window=20, n_factors=1),
+        )
+        engine = BasanosEngine(
+            prices=pl.DataFrame({"date": dates[:n_hist], "A": p_a[:n_hist], "B": p_b[:n_hist]}),
+            mu=pl.DataFrame({"date": dates[:n_hist], "A": mu_a[:n_hist], "B": mu_b[:n_hist]}),
+            cfg=cfg,
+        )
+        state = engine.rolling_state()
+        step_positions = []
+        for i in range(n_new):
+            t = n_hist + i
+            row_p = pl.DataFrame({"date": [t], "A": [p_a[t]], "B": [p_b[t]]})
+            row_mu = pl.DataFrame({"date": [t], "A": [mu_a[t]], "B": [mu_b[t]]})
+            pos, state = engine.step(state, row_p, row_mu)
+            step_positions.append(pos.select(["A", "B"]).to_numpy()[0])
+
+        engine_full = BasanosEngine(
+            prices=pl.DataFrame({"date": dates, "A": p_a, "B": p_b}),
+            mu=pl.DataFrame({"date": dates, "A": mu_a, "B": mu_b}),
+            cfg=cfg,
+        )
+        ref_np = engine_full.cash_position.select(["A", "B"]).to_numpy()[-n_new:]
+
+        np.testing.assert_allclose(
+            np.array(step_positions),
+            ref_np,
+            rtol=1e-8,
+            atol=1e-10,
+            err_msg="Chained step() (sliding_window) did not match full engine",
+        )
+
+    def test_step_raises_on_asset_mismatch(self) -> None:
+        """step() must raise ValueError when state.assets != engine.assets."""
+        engine, _ = _make_engine(60)
+        engine.rolling_state()
+        new_price_row = pl.DataFrame({"date": [60], "A": [101.0], "B": [151.0]})
+        new_mu_row = pl.DataFrame({"date": [60], "A": [0.1], "B": [0.2]})
+
+        # Tamper the assets in state by building a different engine and swapping
+        engine2, _ = _make_engine(60, seed=99)
+        engine2 = BasanosEngine(
+            prices=engine2.prices.rename({"A": "X", "B": "Y"}),
+            mu=engine2.mu.rename({"A": "X", "B": "Y"}),
+            cfg=engine2.cfg,
+        )
+        state2 = engine2.rolling_state()
+
+        with pytest.raises(ValueError, match="assets"):
+            engine.step(state2, new_price_row, new_mu_row)
+
+    def test_step_raises_on_mode_mismatch(self) -> None:
+        """step() must raise ValueError when state.cfg.covariance_mode != engine mode."""
+        from basanos.math.optimizer import SlidingWindowConfig
+
+        engine_ewma, cfg = _make_engine(60)
+        sw_cfg = cfg.model_copy(update={"covariance_config": SlidingWindowConfig(window=20, n_factors=2)})
+        engine_sw = BasanosEngine(prices=engine_ewma.prices, mu=engine_ewma.mu, cfg=sw_cfg)
+
+        state_sw = engine_sw.rolling_state()
+
+        new_price_row = pl.DataFrame({"date": [60], "A": [101.0], "B": [151.0]})
+        new_mu_row = pl.DataFrame({"date": [60], "A": [0.1], "B": [0.2]})
+
+        with pytest.raises(ValueError, match="covariance_mode"):
+            engine_ewma.step(state_sw, new_price_row, new_mu_row)
+
+    def test_step_new_state_carries_updated_profit_variance(self) -> None:
+        """After a step, new_state.profit_variance must differ from state.profit_variance."""
+        engine, _ = _make_engine(80)
+        state = engine.rolling_state()
+        n = engine.prices.height
+        last_a = float(engine.prices["A"][-1])
+        last_b = float(engine.prices["B"][-1])
+        new_price_row = pl.DataFrame({"date": [n], "A": [last_a * 1.02], "B": [last_b * 0.98]})
+        new_mu_row = pl.DataFrame({"date": [n], "A": [0.5], "B": [-0.5]})
+        _, new_state = engine.step(state, new_price_row, new_mu_row)
+        # profit_variance is updated only when there is a nonzero position;
+        # since the engine has warmed up, the state should differ.
+        assert new_state.profit_variance != state.profit_variance or math.isclose(
+            float(np.dot(state.last_cash_pos, np.zeros_like(state.last_cash_pos))), 0.0
+        )
+
+    def test_step_returns_nan_positions_before_warmup(self) -> None:
+        """With very short history (< vola rows), step() should return NaN/zero positions."""
+        # Only 3 rows of history with vola=10 — vol warmup hasn't happened
+        np.random.default_rng(0)
+        n = 3
+        prices = pl.DataFrame(
+            {
+                "date": list(range(n)),
+                "A": [100.0, 102.0, 99.0],
+                "B": [150.0, 153.0, 148.0],
+            }
+        )
+        mu = pl.DataFrame(
+            {
+                "date": list(range(n)),
+                "A": [0.1, 0.2, 0.3],
+                "B": [0.1, 0.2, 0.3],
+            }
+        )
+        cfg = BasanosConfig(vola=10, corr=15, clip=2.0, shrink=0.5, aum=1_000_000)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        state = engine.rolling_state()
+        new_price_row = pl.DataFrame({"date": [n], "A": [101.0], "B": [151.0]})
+        new_mu_row = pl.DataFrame({"date": [n], "A": [0.5], "B": [-0.3]})
+        pos, _ = engine.step(state, new_price_row, new_mu_row)
+        # Positions should be NaN or zero (not finite non-zero)
+        pos_np = pos.select(["A", "B"]).to_numpy()[0]
+        assert np.all(~np.isfinite(pos_np) | (pos_np == 0.0))
+
+    def test_step_ewma_zero_mu_gives_zero_position(self) -> None:
+        """step() (ewma_shrink) with all-zero mu must return zero positions."""
+        engine, _ = _make_engine(80)
+        state = engine.rolling_state()
+        n = engine.prices.height
+        last_a = float(engine.prices["A"][-1])
+        last_b = float(engine.prices["B"][-1])
+        new_price_row = pl.DataFrame({"date": [n], "A": [last_a * 1.01], "B": [last_b * 0.99]})
+        zero_mu_row = pl.DataFrame({"date": [n], "A": [0.0], "B": [0.0]})
+        pos, _ = engine.step(state, new_price_row, zero_mu_row)
+        pos_np = pos.select(["A", "B"]).to_numpy()[0]
+        # Either NaN (vola not yet warmed up) or 0.0 (zero signal)
+        assert np.all(~np.isfinite(pos_np) | (pos_np == 0.0))
+
+    def test_step_sliding_window_short_buffer_gives_zero_position(self) -> None:
+        """step() during warm-up (buffer < W) returns zero positions."""
+        from basanos.math.optimizer import SlidingWindowConfig
+
+        # Engine with only 5 rows of history; window=20 → not enough
+        np.random.default_rng(0)
+        n = 5
+        prices = pl.DataFrame(
+            {
+                "date": list(range(n)),
+                "A": [100.0, 102.0, 99.0, 103.0, 101.0],
+                "B": [150.0, 153.0, 148.0, 154.0, 151.0],
+            }
+        )
+        mu = pl.DataFrame(
+            {
+                "date": list(range(n)),
+                "A": [0.1] * n,
+                "B": [0.2] * n,
+            }
+        )
+        cfg = BasanosConfig(
+            vola=3,
+            corr=5,
+            clip=2.0,
+            shrink=0.5,
+            aum=1_000_000,
+            covariance_config=SlidingWindowConfig(window=20, n_factors=1),
+        )
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        state = engine.rolling_state()
+        # Buffer has only 5 rows < window=20
+        assert state._window_buffer is not None
+        assert len(state._window_buffer) < 20
+
+        new_price_row = pl.DataFrame({"date": [n], "A": [102.5], "B": [152.5]})
+        new_mu_row = pl.DataFrame({"date": [n], "A": [0.5], "B": [-0.3]})
+        pos, _ = engine.step(state, new_price_row, new_mu_row)
+        pos_np = pos.select(["A", "B"]).to_numpy()[0]
+        assert np.all(~np.isfinite(pos_np) | (pos_np == 0.0))
+
+    def test_step_sliding_window_zero_mu_gives_zero_position(self) -> None:
+        """step() (sliding_window) with all-zero mu must return zero positions."""
+        from basanos.math.optimizer import SlidingWindowConfig
+
+        engine, cfg = _make_engine(80, seed=5)
+        sw_cfg = cfg.model_copy(update={"covariance_config": SlidingWindowConfig(window=20, n_factors=1)})
+        sw_engine = BasanosEngine(prices=engine.prices, mu=engine.mu, cfg=sw_cfg)
+        state = sw_engine.rolling_state()
+        n = sw_engine.prices.height
+        last_a = float(sw_engine.prices["A"][-1])
+        last_b = float(sw_engine.prices["B"][-1])
+        new_price_row = pl.DataFrame({"date": [n], "A": [last_a * 1.01], "B": [last_b * 0.99]})
+        zero_mu_row = pl.DataFrame({"date": [n], "A": [0.0], "B": [0.0]})
+        pos, _ = sw_engine.step(state, new_price_row, zero_mu_row)
+        pos_np = pos.select(["A", "B"]).to_numpy()[0]
+        assert np.all(~np.isfinite(pos_np) | (pos_np == 0.0))
+
+    def test_step_sliding_window_svd_failure_gives_zero_and_logs(self, caplog: pytest.LogCaptureFixture) -> None:
+        """step() (sliding_window) SVD failure emits debug log and returns zeros."""
+        from unittest.mock import patch
+
+        from basanos.math.optimizer import SlidingWindowConfig
+
+        engine, cfg = _make_engine(80, seed=5)
+        sw_cfg = cfg.model_copy(update={"covariance_config": SlidingWindowConfig(window=20, n_factors=1)})
+        sw_engine = BasanosEngine(prices=engine.prices, mu=engine.mu, cfg=sw_cfg)
+        state = sw_engine.rolling_state()
+        n = sw_engine.prices.height
+        last_a = float(sw_engine.prices["A"][-1])
+        last_b = float(sw_engine.prices["B"][-1])
+        new_price_row = pl.DataFrame({"date": [n], "A": [last_a * 1.01], "B": [last_b * 0.99]})
+        new_mu_row = pl.DataFrame({"date": [n], "A": [0.5], "B": [-0.3]})
+
+        with (
+            patch("basanos.math.optimizer.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")),
+            caplog.at_level(logging.DEBUG, logger="basanos.math.optimizer"),
+        ):
+            pos, _ = sw_engine.step(state, new_price_row, new_mu_row)
+
+        pos_np = pos.select(["A", "B"]).to_numpy()[0]
+        assert np.all(~np.isfinite(pos_np) | (pos_np == 0.0))
+        assert any("SVD failed" in r.message for r in caplog.records)

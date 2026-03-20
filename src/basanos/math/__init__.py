@@ -31,4 +31,5 @@ from .optimizer import BasanosConfig as BasanosConfig
 from .optimizer import BasanosEngine as BasanosEngine
 from .optimizer import CovarianceMode as CovarianceMode
 from .optimizer import EwmaShrinkConfig as EwmaShrinkConfig
+from .optimizer import RollingState as RollingState
 from .optimizer import SlidingWindowConfig as SlidingWindowConfig

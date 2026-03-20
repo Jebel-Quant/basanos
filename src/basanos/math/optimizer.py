@@ -206,6 +206,125 @@ def _ewm_corr_numpy(
     return result
 
 
+def _ewm_std_state(
+    returns: np.ndarray,
+    com: int,
+    min_samples: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Extract the final EWMA-std IIR filter state after processing all rows.
+
+    Implements the same recurrence as
+    ``polars.Expr.ewm_std(com=com, adjust=True, min_samples=min_samples,
+    ignore_na=False)`` but operates in NumPy and returns the accumulated
+    filter state rather than the full history.
+
+    The IIR recurrences are
+
+    .. code-block:: none
+
+        s[t]  = β · s[t-1]  + x[t]  · 1(finite)      # weighted sum of x
+        s2[t] = β · s2[t-1] + x[t]² · 1(finite)      # weighted sum of x²
+        w[t]  = β · w[t-1]  + 1(finite)               # weight sum
+        w2[t] = β²· w2[t-1] + 1(finite)               # sum of squared weights
+
+    where ``β = com / (1 + com)``.  ``scipy.signal.lfilter`` is used to process
+    all *N* assets simultaneously along axis 0.
+
+    Args:
+        returns: ``(T, N)`` float array of return observations (may contain NaN).
+        com: EWM centre-of-mass (``alpha = 1 / (1 + com)``).
+        min_samples: Not used in the computation here; kept for signature
+            symmetry with :func:`_ewm_std_step`.
+
+    Returns:
+        Tuple ``(s, s2, w, w2, count)`` — each a ``(N,)`` array:
+
+        * ``s`` — EWM weighted sum of returns.
+        * ``s2`` — EWM weighted sum of squared returns.
+        * ``w`` — EWM weight sum (weighted count of finite observations).
+        * ``w2`` — EWM sum of squared weights (used for Bessel correction).
+        * ``count`` — integer count of finite observations.
+    """
+    beta = com / (1.0 + com)
+    beta2 = beta * beta
+
+    fin = np.isfinite(returns)  # (T, N)
+    xt_f = np.where(fin, returns, 0.0)  # (T, N)
+    fin_f = fin.astype(np.float64)  # (T, N)
+
+    # IIR denominator coefficients: [1, -decay] implements s[t] = decay*s[t-1] + x[t]
+    iir_beta = np.array([1.0, -beta])  # decay = β for s, s2, w
+    iir_beta2 = np.array([1.0, -beta2])  # decay = β² for w2 (sum of squared weights)
+
+    # lfilter processes all N assets simultaneously along axis 0; keep only last row
+    s = lfilter([1.0], iir_beta, xt_f, axis=0)[-1]  # (N,)
+    s2 = lfilter([1.0], iir_beta, xt_f**2, axis=0)[-1]  # (N,)
+    w = lfilter([1.0], iir_beta, fin_f, axis=0)[-1]  # (N,)
+    w2 = lfilter([1.0], iir_beta2, fin_f, axis=0)[-1]  # (N,) — β² recurrence
+    count = fin.sum(axis=0).astype(np.int64)  # (N,)
+
+    return s, s2, w, w2, count
+
+
+def _ewm_std_step(
+    ret: np.ndarray,
+    s: np.ndarray,
+    s2: np.ndarray,
+    w: np.ndarray,
+    w2: np.ndarray,
+    count: np.ndarray,
+    com: int,
+    min_samples: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Update the EWMA-std filter state for one new row and compute the current std.
+
+    Advances the four IIR accumulators by one step and derives the
+    unbiased (Bessel-corrected) exponentially-weighted standard deviation.
+
+    Matches ``polars.Expr.ewm_std(com=com, adjust=True,
+    min_samples=min_samples, ignore_na=False)`` for a single new observation.
+
+    Args:
+        ret: ``(N,)`` new return row — NaN entries cause weight decay without
+            contributing a new observation (``ignore_na=False`` behaviour).
+        s: Current EWM weighted sum, shape ``(N,)``.
+        s2: Current EWM weighted sum of squares, shape ``(N,)``.
+        w: Current EWM weight sum, shape ``(N,)``.
+        w2: Current EWM sum of squared weights, shape ``(N,)``.
+        count: Current integer count of finite observations, shape ``(N,)``.
+        com: EWM centre-of-mass.
+        min_samples: Minimum finite observations required before the std is
+            returned as non-NaN.
+
+    Returns:
+        ``(ewm_std, new_s, new_s2, new_w, new_w2, new_count)`` where
+        ``ewm_std`` is ``(N,)`` (NaN before warm-up or degenerate Bessel
+        denominator) and the remaining items are the updated state arrays.
+    """
+    beta = com / (1.0 + com)
+    beta2 = beta * beta
+    fin = np.isfinite(ret)
+    fin_f = fin.astype(np.float64)
+
+    new_s = beta * s + np.where(fin, ret, 0.0)
+    new_s2 = beta * s2 + np.where(fin, ret * ret, 0.0)
+    new_w = beta * w + fin_f
+    new_w2 = beta2 * w2 + fin_f
+    new_count = count + fin.astype(np.int64)
+
+    valid_mask = (new_count >= min_samples) & (new_w > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        safe_w = np.where(valid_mask, new_w, 1.0)  # avoid divide-by-zero
+        ewm_mean = new_s / safe_w
+        biased_var = np.maximum(new_s2 / safe_w - ewm_mean**2, 0.0)
+        bessel_denom = new_w - new_w2 / safe_w
+        safe_bd = np.where(bessel_denom > 0, bessel_denom, 1.0)
+        ewm_std_val = np.sqrt(np.maximum(biased_var * new_w / safe_bd, 0.0))
+        ewm_std = np.where(valid_mask & (bessel_denom > 0), ewm_std_val, np.nan)
+
+    return ewm_std, new_s, new_s2, new_w, new_w2, new_count
+
+
 class CovarianceMode(enum.StrEnum):
     r"""Covariance estimation mode for the Basanos optimizer.
 
@@ -624,6 +743,106 @@ class BasanosConfig(BaseModel):
         if vola is not None and v < vola:
             raise ValueError
         return v
+
+
+@dataclasses.dataclass(frozen=True)
+class RollingState:
+    """Incremental computation state captured at the end of a :class:`BasanosEngine` history.
+
+    Returned by :meth:`BasanosEngine.rolling_state` and consumed by
+    :meth:`BasanosEngine.step` to advance the position series one row at a
+    time without reprocessing the full history.
+
+    Pass this object as an opaque token to :meth:`BasanosEngine.step`.  You
+    do not need to inspect individual fields for normal use.
+
+    The state captures:
+
+    * The realized P&L variance EMA scalar.
+    * The last price row, cash-position row, and EWMA-volatility row (used to
+      compute the return contribution and position scaling at the next step).
+    * EWMA-volatility IIR filter state for **log returns** (feeds the
+      ``ret_adj`` / ``vol_adj`` calculation) and for **percentage returns**
+      (feeds the ``vola`` property that converts risk positions to cash
+      positions).
+    * For ``ewma_shrink`` mode: the four ``(N, N)`` IIR accumulators for the
+      EWMA correlation estimator.
+    * For ``sliding_window`` mode: the circular buffer of the last ``window``
+      vol-adjusted return rows.
+    """
+
+    # ── Configuration ─────────────────────────────────────────────────────────
+    cfg: BasanosConfig
+    """Configuration used to build this state."""
+
+    assets: tuple[str, ...]
+    """Asset names in the same order as in the engine."""
+
+    # ── P&L variance EMA ──────────────────────────────────────────────────────
+    profit_variance: float
+    """Realized P&L variance EMA value at the end of the history."""
+
+    # ── Last-row snapshots ────────────────────────────────────────────────────
+    last_prices: np.ndarray
+    """``(N,)`` last known price row — used to derive returns at the next step."""
+
+    last_cash_pos: np.ndarray
+    """``(N,)`` last cash-position row — used for the profit contribution."""
+
+    last_vola: np.ndarray
+    """``(N,)`` last EWMA-volatility row — used to scale the risk position."""
+
+    # ── EWMA-vol IIR state for log-return series (for ret_adj) ───────────────
+    _adj_s: np.ndarray
+    """``(N,)`` EWM weighted sum of log returns."""
+
+    _adj_s2: np.ndarray
+    """``(N,)`` EWM weighted sum of squared log returns."""
+
+    _adj_w: np.ndarray
+    """``(N,)`` EWM weight sum for log-return observations."""
+
+    _adj_w2: np.ndarray
+    """``(N,)`` EWM sum of squared weights (Bessel correction for log rets)."""
+
+    _adj_count: np.ndarray
+    """``(N,)`` integer count of finite log-return observations."""
+
+    # ── EWMA-vol IIR state for pct-return series (for vola) ──────────────────
+    _pct_s: np.ndarray
+    """``(N,)`` EWM weighted sum of percentage returns."""
+
+    _pct_s2: np.ndarray
+    """``(N,)`` EWM weighted sum of squared percentage returns."""
+
+    _pct_w: np.ndarray
+    """``(N,)`` EWM weight sum for percentage-return observations."""
+
+    _pct_w2: np.ndarray
+    """``(N,)`` EWM sum of squared weights (Bessel correction for pct rets)."""
+
+    _pct_count: np.ndarray
+    """``(N,)`` integer count of finite percentage-return observations."""
+
+    # ── EWMA corr IIR state (ewma_shrink mode only; None for sliding_window) ──
+    _cx_s_x: np.ndarray | None
+    """``(N, N)`` EWM weighted sum of ``x_i`` for each asset pair ``(i, j)``."""
+
+    _cx_s_x2: np.ndarray | None
+    """``(N, N)`` EWM weighted sum of ``x_i²`` for each asset pair."""
+
+    _cx_s_xy: np.ndarray | None
+    """``(N, N)`` EWM weighted sum of ``x_i · x_j`` for each asset pair."""
+
+    _cx_s_w: np.ndarray | None
+    """``(N, N)`` EWM weight sum for each asset pair."""
+
+    _cx_count: np.ndarray | None
+    """``(N, N)`` integer count of jointly-finite observations per pair."""
+
+    # ── Sliding-window return buffer (sliding_window mode only; None otherwise)
+    _window_buffer: np.ndarray | None
+    """``(W, N)`` most recent *W* rows of vol-adjusted returns."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1637,3 +1856,482 @@ class BasanosEngine:
         from ._config_report import ConfigReport
 
         return ConfigReport(config=self.cfg, engine=self)
+
+    def rolling_state(self) -> RollingState:
+        r"""Capture the incremental computation state at the end of the price history.
+
+        Runs the full position computation once and extracts all state required
+        to advance the result one row at a time via :meth:`step`, without
+        reprocessing historical data.
+
+        The returned :class:`RollingState` is an opaque token that should be
+        passed to :meth:`step` unchanged.  It carries:
+
+        * The ``profit_variance`` EMA scalar from the last timestamp.
+        * The last price row, cash-position row, and EWMA-volatility row.
+        * EWMA-vol IIR state for both log-return and pct-return series.
+        * For ``ewma_shrink``: the ``(N, N)`` EWMA correlation IIR state.
+        * For ``sliding_window``: the ``(W, N)`` return buffer.
+
+        Complexity
+        ----------
+        * ``ewma_shrink``: O(T·N²) time (correlation state extraction via an
+          explicit loop over T rows using O(N²) working memory), plus
+          O(T·N) for the two vol-state passes.
+        * ``sliding_window``: O(T·N) time.
+
+        Returns:
+        -------
+        RollingState
+            State snapshot to be passed to :meth:`step`.
+
+        Examples:
+        --------
+        >>> import numpy as np
+        >>> import polars as pl
+        >>> from basanos.math import BasanosConfig, BasanosEngine
+        >>> dates = list(range(40))
+        >>> rng = np.random.default_rng(0)
+        >>> prices = pl.DataFrame({
+        ...     "date": dates,
+        ...     "A": np.cumprod(1 + rng.normal(0.001, 0.02, 40)) * 100.0,
+        ...     "B": np.cumprod(1 + rng.normal(0.001, 0.02, 40)) * 150.0,
+        ... })
+        >>> mu = pl.DataFrame({
+        ...     "date": dates,
+        ...     "A": rng.normal(0.0, 0.5, 40),
+        ...     "B": rng.normal(0.0, 0.5, 40),
+        ... })
+        >>> cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1_000_000)
+        >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        >>> state = engine.rolling_state()
+        >>> isinstance(state, RollingState)
+        True
+        >>> state.assets
+        ('A', 'B')
+        """
+        assets = self.assets
+        n_assets = len(assets)
+        n_rows = self.prices.height
+
+        prices_np = self.prices.select(assets).to_numpy().astype(float)  # (T, N)
+
+        # Log returns and pct returns (first row is NaN by construction)
+        log_ret_np = np.full_like(prices_np, np.nan)
+        pct_ret_np = np.full_like(prices_np, np.nan)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log_ret_np[1:] = np.log(prices_np[1:] / prices_np[:-1])
+            pct_ret_np[1:] = prices_np[1:] / prices_np[:-1] - 1.0
+
+        com_vol = self.cfg.vola - 1
+        min_samp = self.cfg.vola
+
+        # EWMA-vol IIR state for log returns (feeds vol_adj / ret_adj)
+        adj_s, adj_s2, adj_w, adj_w2, adj_count = _ewm_std_state(log_ret_np, com_vol, min_samp)
+        # EWMA-vol IIR state for pct returns (feeds vola property)
+        pct_s, pct_s2, pct_w, pct_w2, pct_count = _ewm_std_state(pct_ret_np, com_vol, min_samp)
+
+        # Polars-computed ret_adj and vola (last row used as baseline for step())
+        ret_adj_np = self.ret_adj.select(assets).to_numpy().astype(float)  # (T, N)
+        vola_np = self.vola.select(assets).to_numpy().astype(float)  # (T, N)
+
+        # Full cash_position — needed for profit_variance replay and last_cash_pos
+        cash_pos_np = self.cash_position.select(assets).to_numpy().astype(float)  # (T, N)
+
+        # Replay the profit_variance EMA loop from cash_position to get its
+        # final value (it depends on the complete position history).
+        returns_num = np.zeros_like(prices_np)
+        returns_num[1:] = prices_np[1:] / prices_np[:-1] - 1.0
+        profit_variance: float = self.cfg.profit_variance_init
+        lamb = self.cfg.profit_variance_decay
+        for i in range(1, n_rows):
+            price_mask = np.isfinite(prices_np[i])
+            ret_mask = np.isfinite(returns_num[i]) & price_mask
+            if ret_mask.any():
+                lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
+                rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
+                profit = float(lhs @ rhs)
+                profit_variance = lamb * profit_variance + (1.0 - lamb) * profit**2
+
+        # Mode-specific state extraction
+        cx_s_x = cx_s_x2 = cx_s_xy = cx_s_w = cx_count = window_buffer = None
+
+        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
+            # Build the EWMA corr IIR state with a memory-efficient O(T) loop
+            # (avoids allocating the full (T, N, N) tensor used by _ewm_corr_numpy).
+            com_corr = self.cfg.corr
+            beta_corr = com_corr / (1.0 + com_corr)
+
+            cx_s_x = np.zeros((n_assets, n_assets), dtype=float)
+            cx_s_x2 = np.zeros((n_assets, n_assets), dtype=float)
+            cx_s_xy = np.zeros((n_assets, n_assets), dtype=float)
+            cx_s_w = np.zeros((n_assets, n_assets), dtype=float)
+            cx_count = np.zeros((n_assets, n_assets), dtype=np.int64)
+
+            for t in range(n_rows):
+                xt = ret_adj_np[t]  # (N,)
+                fin_t = np.isfinite(xt)
+                xt_f = np.where(fin_t, xt, 0.0)
+                joint_fin_t = fin_t[:, np.newaxis] & fin_t[np.newaxis, :]  # (N, N)
+
+                v_x = xt_f[:, np.newaxis] * joint_fin_t
+                v_x2 = (xt_f * xt_f)[:, np.newaxis] * joint_fin_t
+                v_xy = xt_f[:, np.newaxis] * xt_f[np.newaxis, :]
+                v_w = joint_fin_t.astype(float)
+
+                cx_s_x = beta_corr * cx_s_x + v_x
+                cx_s_x2 = beta_corr * cx_s_x2 + v_x2
+                cx_s_xy = beta_corr * cx_s_xy + v_xy
+                cx_s_w = beta_corr * cx_s_w + v_w
+                cx_count = cx_count + joint_fin_t.astype(np.int64)
+        else:
+            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
+            win_w = sw_config.window
+            # Keep the last W rows of vol-adjusted returns as the sliding buffer
+            start = max(0, n_rows - win_w)
+            window_buffer = ret_adj_np[start:].copy()  # (min(T, W), N)
+
+        return RollingState(
+            cfg=self.cfg,
+            assets=tuple(assets),
+            profit_variance=profit_variance,
+            last_prices=prices_np[-1].copy(),
+            last_cash_pos=cash_pos_np[-1].copy(),
+            last_vola=vola_np[-1].copy(),
+            _adj_s=adj_s.copy(),
+            _adj_s2=adj_s2.copy(),
+            _adj_w=adj_w.copy(),
+            _adj_w2=adj_w2.copy(),
+            _adj_count=adj_count.copy(),
+            _pct_s=pct_s.copy(),
+            _pct_s2=pct_s2.copy(),
+            _pct_w=pct_w.copy(),
+            _pct_w2=pct_w2.copy(),
+            _pct_count=pct_count.copy(),
+            _cx_s_x=cx_s_x,
+            _cx_s_x2=cx_s_x2,
+            _cx_s_xy=cx_s_xy,
+            _cx_s_w=cx_s_w,
+            _cx_count=cx_count,
+            _window_buffer=window_buffer,
+        )
+
+    def step(
+        self,
+        state: RollingState,
+        new_prices: pl.DataFrame,
+        new_mu: pl.DataFrame,
+    ) -> tuple[pl.DataFrame, RollingState]:
+        r"""Advance the position series by one row using pre-computed state.
+
+        Computes the cash position for a single new timestamp in
+
+        * **O(N²)** time for ``ewma_shrink`` — one EWMA correlation update
+          plus an NxN linear solve; and
+        * **O(W·N·k)** time for ``sliding_window`` — one truncated SVD on the
+          latest ``window`` rows followed by a Woodbury solve.
+
+        Both modes use O(N²) or O(W·N) working memory, independent of the
+        length *T* of the historical series.
+
+        Args:
+            state: :class:`RollingState` returned by :meth:`rolling_state` or
+                a previous call to :meth:`step`.  Must have been built with
+                the same ``cfg`` and ``assets`` as this engine.
+            new_prices: 1-row :class:`polars.DataFrame` with a ``'date'``
+                column and one column per asset (same names as
+                :attr:`assets`).  Prices must be strictly positive where
+                finite.
+            new_mu: 1-row :class:`polars.DataFrame` with the expected-return
+                signals for the new timestamp.  Same column names as
+                ``new_prices``.
+
+        Returns:
+            ``(position, new_state)`` where:
+
+            * ``position`` — 1-row :class:`polars.DataFrame` with columns
+              ``['date'] + assets`` containing the computed cash positions.
+            * ``new_state`` — updated :class:`RollingState` for the next
+              call to :meth:`step`.
+
+        Raises:
+            ValueError: When ``state.assets`` does not match
+                :attr:`assets`, or when the covariance mode of ``state.cfg``
+                differs from ``self.cfg``.
+
+        Examples:
+        --------
+        >>> import numpy as np
+        >>> import polars as pl
+        >>> from basanos.math import BasanosConfig, BasanosEngine
+        >>> rng = np.random.default_rng(1)
+        >>> n_hist = 40
+        >>> prices_hist = pl.DataFrame({
+        ...     "date": list(range(n_hist)),
+        ...     "A": np.cumprod(1 + rng.normal(0.001, 0.02, n_hist)) * 100.0,
+        ...     "B": np.cumprod(1 + rng.normal(0.001, 0.02, n_hist)) * 150.0,
+        ... })
+        >>> mu_hist = pl.DataFrame({
+        ...     "date": list(range(n_hist)),
+        ...     "A": rng.normal(0.0, 0.5, n_hist),
+        ...     "B": rng.normal(0.0, 0.5, n_hist),
+        ... })
+        >>> cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1_000_000)
+        >>> engine = BasanosEngine(prices=prices_hist, mu=mu_hist, cfg=cfg)
+        >>> state = engine.rolling_state()
+        >>> new_price_row = pl.DataFrame({"date": [n_hist], "A": [102.0], "B": [152.5]})
+        >>> new_mu_row = pl.DataFrame({"date": [n_hist], "A": [0.3], "B": [-0.2]})
+        >>> position, new_state = engine.step(state, new_price_row, new_mu_row)
+        >>> position.columns
+        ['date', 'A', 'B']
+        >>> position.shape
+        (1, 3)
+        >>> isinstance(new_state, RollingState)
+        True
+        """
+        assets = self.assets
+        n_assets = len(assets)
+
+        # ── Input validation ──────────────────────────────────────────────────
+        if tuple(assets) != state.assets:
+            raise ValueError(  # noqa: TRY003
+                f"State assets {state.assets!r} do not match engine assets {tuple(assets)!r}."
+            )
+        if state.cfg.covariance_mode != self.cfg.covariance_mode:
+            raise ValueError(  # noqa: TRY003
+                f"State covariance_mode {state.cfg.covariance_mode!r} does not "
+                f"match engine covariance_mode {self.cfg.covariance_mode!r}."
+            )
+
+        # ── Extract row vectors ───────────────────────────────────────────────
+        new_prices_np = new_prices.select(assets).to_numpy().astype(float)[0]  # (N,)
+        new_mu_np = new_mu.select(assets).to_numpy().astype(float)[0]  # (N,)
+        new_date = new_prices["date"][0]
+
+        old_prices = state.last_prices  # (N,)
+        com_vol = self.cfg.vola - 1
+        min_samp = self.cfg.vola
+
+        # ── (1) New log returns and pct returns ───────────────────────────────
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log_ret = np.log(new_prices_np / old_prices)  # (N,)
+            pct_ret = new_prices_np / old_prices - 1.0  # (N,)
+
+        # ── (2) Update EWMA-vol states ────────────────────────────────────────
+        new_adj_ewm_std, new_adj_s, new_adj_s2, new_adj_w, new_adj_w2, new_adj_count = _ewm_std_step(
+            log_ret,
+            state._adj_s,
+            state._adj_s2,
+            state._adj_w,
+            state._adj_w2,
+            state._adj_count,
+            com_vol,
+            min_samp,
+        )
+        new_pct_ewm_std, new_pct_s, new_pct_s2, new_pct_w, new_pct_w2, new_pct_count = _ewm_std_step(
+            pct_ret,
+            state._pct_s,
+            state._pct_s2,
+            state._pct_w,
+            state._pct_w2,
+            state._pct_count,
+            com_vol,
+            min_samp,
+        )
+
+        # ── (3) Vol-adjusted return x_t for corr update ───────────────────────
+        with np.errstate(divide="ignore", invalid="ignore"):
+            vol_adj_new = np.where(
+                np.isfinite(new_adj_ewm_std) & (new_adj_ewm_std > 0),
+                log_ret / new_adj_ewm_std,
+                np.nan,
+            )
+        vol_adj_new = np.clip(vol_adj_new, -self.cfg.clip, self.cfg.clip)
+
+        new_vola = new_pct_ewm_std  # (N,) — EWMA vol for position scaling
+
+        # ── (4) Price mask (which assets have finite prices at this step) ──────
+        mask = np.isfinite(new_prices_np)  # (N,)
+
+        # ── (5) Update profit_variance using last cash pos and new return ──────
+        profit_variance = state.profit_variance
+        lamb = self.cfg.profit_variance_decay
+        ret_mask = np.isfinite(pct_ret) & mask
+        if ret_mask.any():
+            lhs = np.nan_to_num(state.last_cash_pos[ret_mask], nan=0.0)
+            rhs = np.nan_to_num(pct_ret[ret_mask], nan=0.0)
+            profit = float(lhs @ rhs)
+            profit_variance = lamb * profit_variance + (1.0 - lamb) * profit**2
+
+        # ── (6) Compute position ──────────────────────────────────────────────
+        risk_pos = np.full(n_assets, np.nan)
+        cash_pos = np.full(n_assets, np.nan)
+
+        # State placeholders — overwritten by one of the two branches below
+        new_cx_s_x = new_cx_s_x2 = new_cx_s_xy = new_cx_s_w = new_cx_count = None
+        new_window_buffer: np.ndarray | None = state._window_buffer
+
+        if mask.any():
+            n_sub = int(mask.sum())
+
+            if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
+                # ── EWMA / shrinkage path ─────────────────────────────────
+                xt = vol_adj_new  # (N,)
+                fin_t = np.isfinite(xt)
+                xt_f = np.where(fin_t, xt, 0.0)
+                joint_fin_t = fin_t[:, np.newaxis] & fin_t[np.newaxis, :]  # (N, N)
+
+                beta_corr = self.cfg.corr / (1.0 + self.cfg.corr)
+                v_x = xt_f[:, np.newaxis] * joint_fin_t
+                v_x2 = (xt_f * xt_f)[:, np.newaxis] * joint_fin_t
+                v_xy = xt_f[:, np.newaxis] * xt_f[np.newaxis, :]
+                v_w = joint_fin_t.astype(float)
+
+                assert state._cx_s_x is not None, "ewma_shrink state must have _cx_s_x"  # noqa: S101
+                new_cx_s_x = beta_corr * state._cx_s_x + v_x
+                new_cx_s_x2 = beta_corr * state._cx_s_x2 + v_x2  # type: ignore[operator]
+                new_cx_s_xy = beta_corr * state._cx_s_xy + v_xy  # type: ignore[operator]
+                new_cx_s_w = beta_corr * state._cx_s_w + v_w  # type: ignore[operator]
+                new_cx_count = state._cx_count + joint_fin_t.astype(np.int64)  # type: ignore[operator]
+
+                # Derive the (N, N) correlation matrix from the updated state
+                min_periods = self.cfg.corr
+                min_cd = self.cfg.min_corr_denom
+                pos_w = new_cx_s_w > 0
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    safe_sw = np.where(pos_w, new_cx_s_w, 1.0)
+                    ewm_x = np.where(pos_w, new_cx_s_x / safe_sw, np.nan)
+                    ewm_y = np.where(pos_w, new_cx_s_x.T / safe_sw, np.nan)
+                    ewm_x2 = np.where(pos_w, new_cx_s_x2 / safe_sw, np.nan)
+                    ewm_y2 = np.where(pos_w, new_cx_s_x2.T / safe_sw, np.nan)
+                    ewm_xy = np.where(pos_w, new_cx_s_xy / safe_sw, np.nan)
+                var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
+                var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
+                denom_corr = np.sqrt(var_x * var_y)
+                cov = ewm_xy - ewm_x * ewm_y
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    corr_n = np.where(denom_corr > min_cd, cov / denom_corr, np.nan)
+                corr_n = np.clip(corr_n, -1.0, 1.0)
+                corr_n[new_cx_count < min_periods] = np.nan
+                diag_idx = np.arange(n_assets)
+                corr_n[diag_idx, diag_idx] = np.where(new_cx_count[diag_idx, diag_idx] >= min_periods, 1.0, np.nan)
+
+                # Apply shrinkage and restrict to active assets
+                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+                expected_mu = np.nan_to_num(new_mu_np[mask])
+
+                if np.allclose(expected_mu, 0.0):
+                    pos = np.zeros(n_sub)
+                else:
+                    try:
+                        denom_pos = inv_a_norm(expected_mu, matrix)
+                    except SingularMatrixError:
+                        denom_pos = float("nan")
+                    if not np.isfinite(denom_pos) or denom_pos <= self.cfg.denom_tol:
+                        _logger.warning(
+                            "step(): positions zeroed at t=%s: normalisation "
+                            "denominator degenerate (denom=%s, denom_tol=%s).",
+                            new_date,
+                            denom_pos,
+                            self.cfg.denom_tol,
+                        )
+                        pos = np.zeros(n_sub)
+                    else:
+                        try:
+                            pos = solve(matrix, expected_mu) / denom_pos
+                        except SingularMatrixError:  # pragma: no cover
+                            pos = np.zeros(n_sub)
+
+            else:
+                # ── Sliding-window path ───────────────────────────────────
+                sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
+                win_w: int = sw_config.window
+                win_k: int = sw_config.n_factors
+
+                assert state._window_buffer is not None, "sliding_window state must have _window_buffer"  # noqa: S101
+                new_row = vol_adj_new[np.newaxis, :]  # (1, N)
+                buf_extended = np.concatenate([state._window_buffer, new_row], axis=0)
+                new_window_buffer = buf_extended[-win_w:]  # (min(len+1, W), N)
+
+                if len(new_window_buffer) < win_w:
+                    # Not enough history yet — warm-up period
+                    pos = np.zeros(n_sub)
+                else:
+                    sub_ret = new_window_buffer[:, mask]
+                    sub_ret = np.where(np.isfinite(sub_ret), sub_ret, 0.0)
+                    k_eff = min(win_k, win_w, n_sub)
+                    try:
+                        fm = FactorModel.from_returns(sub_ret, k=k_eff)
+                    except (np.linalg.LinAlgError, ValueError) as exc:
+                        _logger.debug("step(): sliding window SVD failed at t=%s: %s", new_date, exc)
+                        pos = np.zeros(n_sub)
+                    else:
+                        expected_mu = np.nan_to_num(new_mu_np[mask])
+                        if np.allclose(expected_mu, 0.0):
+                            pos = np.zeros(n_sub)
+                        else:
+                            try:
+                                x_sol = fm.solve(expected_mu)
+                                denom_pos = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x_sol)))))
+                            except (np.linalg.LinAlgError, ValueError) as exc:
+                                _logger.warning(
+                                    "step(): Woodbury solve failed at t=%s: %s",
+                                    new_date,
+                                    exc,
+                                )
+                                pos = np.zeros(n_sub)
+                            else:
+                                if not np.isfinite(denom_pos) or denom_pos <= self.cfg.denom_tol:
+                                    _logger.warning(
+                                        "step(): positions zeroed at t=%s (sliding_window): "
+                                        "normalisation denominator degenerate "
+                                        "(denom=%s, denom_tol=%s).",
+                                        new_date,
+                                        denom_pos,
+                                        self.cfg.denom_tol,
+                                    )
+                                    pos = np.zeros(n_sub)
+                                else:
+                                    pos = x_sol / denom_pos
+
+            # risk_pos = normalized_pos / profit_variance:
+            # pos is the unit-A-norm direction; dividing by sqrt(profit_variance)
+            # scales the position so that the expected P&L variance matches the
+            # running realized variance EMA, keeping position sizes stable over time.
+            risk_pos[mask] = pos / profit_variance
+            with np.errstate(invalid="ignore"):
+                cash_pos[mask] = risk_pos[mask] / new_vola[mask]
+
+        # ── (7) Build output position DataFrame ───────────────────────────────
+        pos_data: dict[str, object] = {"date": [new_date]}
+        for idx, asset in enumerate(assets):
+            pos_data[asset] = [float(cash_pos[idx])]
+        position_df = pl.DataFrame(pos_data).select(["date", *assets])
+
+        # ── (8) Build updated state ───────────────────────────────────────────
+        new_state = RollingState(
+            cfg=self.cfg,
+            assets=state.assets,
+            profit_variance=float(profit_variance),
+            last_prices=new_prices_np.copy(),
+            last_cash_pos=cash_pos.copy(),
+            last_vola=new_vola.copy(),
+            _adj_s=new_adj_s,
+            _adj_s2=new_adj_s2,
+            _adj_w=new_adj_w,
+            _adj_w2=new_adj_w2,
+            _adj_count=new_adj_count,
+            _pct_s=new_pct_s,
+            _pct_s2=new_pct_s2,
+            _pct_w=new_pct_w,
+            _pct_w2=new_pct_w2,
+            _pct_count=new_pct_count,
+            _cx_s_x=new_cx_s_x,
+            _cx_s_x2=new_cx_s_x2,
+            _cx_s_xy=new_cx_s_xy,
+            _cx_s_w=new_cx_s_w,
+            _cx_count=new_cx_count,
+            _window_buffer=new_window_buffer,
+        )
+
+        return position_df, new_state
