@@ -202,14 +202,15 @@ class FactorModel:
         d_inv_rhs = d_inv * rhs  # D^{-1} b, shape (n,)
         d_inv_b_mat = d_inv[:, None] * self.factor_loadings  # D^{-1} B, shape (n, k)
 
-        # Inner k x k matrix: F^{-1} + B^T D^{-1} B
-        mid = np.linalg.inv(self.factor_covariance) + self.factor_loadings.T @ d_inv_b_mat  # (k, k)
-
-        _check_and_warn_condition(mid, cond_threshold)
-
-        # Solve mid * w = B^T D^{-1} b
+        # Solve mid * w = B^T D^{-1} b, where mid = F^{-1} + B^T D^{-1} B.
+        # F^{-1} is obtained via a Cholesky solve rather than an explicit
+        # inversion, consistent with the Cholesky-first discipline in _linalg.py.
         rhs_k = self.factor_loadings.T @ d_inv_rhs  # (k,)
         try:
+            mid = (
+                _cholesky_solve(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
+            )  # (k, k)
+            _check_and_warn_condition(mid, cond_threshold)
             w = _cholesky_solve(mid, rhs_k)  # (k,)
         except np.linalg.LinAlgError as exc:
             raise SingularMatrixError(str(exc)) from exc
