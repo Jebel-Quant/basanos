@@ -16,6 +16,7 @@ is :class:`~basanos.math.optimizer.BasanosEngine`.
 
 from __future__ import annotations
 
+import datetime
 from collections.abc import Generator
 from typing import Any, Protocol
 
@@ -40,7 +41,7 @@ class _EngineProtocol(Protocol):
     prices: pl.DataFrame
     mu: pl.DataFrame
     cfg: BasanosConfig
-    cor: dict[object, np.ndarray]
+    cor: dict[datetime.date, np.ndarray]
     ret_adj: pl.DataFrame
 
     def _iter_matrices(self) -> Generator[_MatrixRow, None, None]:
