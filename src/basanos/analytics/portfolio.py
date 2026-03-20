@@ -1,7 +1,8 @@
-"""Portfolio analytics facade built on top of PortfolioData.
+"""Portfolio analytics facade composed with PortfolioData.
 
-This module provides :class:`Portfolio`, which extends :class:`PortfolioData`
-with analytics, transforms, and attribution tools:
+This module provides :class:`Portfolio`, which holds a
+:class:`~basanos.analytics._portfolio_data.PortfolioData` instance and adds
+analytics, transforms, and attribution tools:
 
 - Lazy composition accessors — :attr:`stats`, :attr:`plots`, :attr:`report`
 - Portfolio transforms — :meth:`truncate`, :meth:`lag`, :meth:`smoothed_holding`
@@ -10,12 +11,14 @@ with analytics, transforms, and attribution tools:
 - Cost analysis — :meth:`cost_adjusted_returns`, :meth:`trading_cost_impact`
 - Utility — :meth:`correlation`
 
-The raw data layer (inputs, derived P&L series) lives in
-:class:`~basanos.analytics._portfolio_data.PortfolioData` and is fully
-accessible through the same instance.
+The raw data layer (inputs, derived P&L series) is held in a
+:class:`~basanos.analytics._portfolio_data.PortfolioData` instance, accessible
+via the :attr:`data` property.  All :class:`PortfolioData` properties are
+delegated transparently so that the public API remains unchanged.
 """
 
 import dataclasses
+from typing import Self
 
 import polars as pl
 import polars.selectors as cs
@@ -30,11 +33,11 @@ from ._stats import Stats
 
 
 @dataclasses.dataclass(frozen=True)
-class Portfolio(PortfolioData):
-    """Analytics facade extending PortfolioData with transforms and analytics.
+class Portfolio:
+    """Analytics facade composed with PortfolioData for transforms and analytics.
 
-    Inherits all data properties from :class:`PortfolioData` (profits, NAV,
-    returns, drawdown) and adds:
+    Holds a :class:`~basanos.analytics._portfolio_data.PortfolioData` instance
+    internally and delegates all raw data properties to it.  Adds:
 
     - Lazy composition accessors: :attr:`stats`, :attr:`plots`, :attr:`report`
     - Portfolio transforms: :meth:`truncate`, :meth:`lag`,
@@ -45,6 +48,9 @@ class Portfolio(PortfolioData):
     - Cost analysis: :meth:`cost_adjusted_returns`,
       :meth:`trading_cost_impact`
     - Utility: :meth:`correlation`
+
+    The underlying :class:`PortfolioData` instance is available via the
+    :attr:`data` property.
 
     Attributes:
         cashposition: Polars DataFrame of positions per asset over time
@@ -62,6 +68,117 @@ class Portfolio(PortfolioData):
         >>> pf.assets
         ['A']
     """
+
+    cashposition: pl.DataFrame
+    prices: pl.DataFrame
+    aum: float = 1e8
+
+    def __post_init__(self) -> None:
+        """Create and cache the internal PortfolioData instance.
+
+        Input validation is delegated to :class:`PortfolioData`, which raises
+        appropriate exceptions for invalid types, mismatched shapes, or
+        non-positive AUM.
+        """
+        pd = PortfolioData(prices=self.prices, cashposition=self.cashposition, aum=self.aum)
+        object.__setattr__(self, "_data", pd)
+
+    # ── Internal PortfolioData access ─────────────────────────────────────────
+
+    @property
+    def data(self) -> PortfolioData:
+        """The underlying :class:`PortfolioData` instance used for data delegation."""
+        return self._data  # type: ignore[attr-defined]
+
+    # ── Factory classmethods ──────────────────────────────────────────────────
+
+    @classmethod
+    def from_risk_position(
+        cls, prices: pl.DataFrame, risk_position: pl.DataFrame, vola: int = 32, aum: float = 1e8
+    ) -> Self:
+        """Create a Portfolio from per-asset risk positions.
+
+        De-volatizes each risk position using an EWMA volatility estimate
+        derived from the corresponding price series.
+
+        Args:
+            prices: Price levels per asset over time (may include a date column).
+            risk_position: Risk units per asset aligned with prices.
+            vola: EWMA lookback (span-equivalent) used to estimate volatility.
+            aum: Assets under management used as the base NAV offset.
+
+        Returns:
+            A Portfolio instance whose cash positions are risk_position
+            divided by EWMA volatility.
+        """
+        pd = PortfolioData.from_risk_position(prices=prices, risk_position=risk_position, vola=vola, aum=aum)
+        return cls(prices=pd.prices, cashposition=pd.cashposition, aum=pd.aum)
+
+    @classmethod
+    def from_cash_position(cls, prices: pl.DataFrame, cash_position: pl.DataFrame, aum: float = 1e8) -> Self:
+        """Create a Portfolio directly from cash positions aligned with prices.
+
+        Args:
+            prices: Price levels per asset over time (may include a date column).
+            cash_position: Cash exposure per asset over time.
+            aum: Assets under management used as the base NAV offset.
+
+        Returns:
+            A Portfolio instance with the provided cash positions.
+        """
+        return cls(prices=prices, cashposition=cash_position, aum=aum)
+
+    # ── PortfolioData proxy properties ────────────────────────────────────────
+
+    @property
+    def assets(self) -> list[str]:
+        """List the asset column names from prices (numeric columns)."""
+        return self.data.assets
+
+    @property
+    def profits(self) -> pl.DataFrame:
+        """Per-asset daily cash profits, preserving non-numeric columns."""
+        return self.data.profits
+
+    @property
+    def profit(self) -> pl.DataFrame:
+        """Total daily portfolio profit including the ``'date'`` column."""
+        return self.data.profit
+
+    @property
+    def nav_accumulated(self) -> pl.DataFrame:
+        """Cumulative additive NAV of the portfolio, preserving ``'date'``."""
+        return self.data.nav_accumulated
+
+    @property
+    def returns(self) -> pl.DataFrame:
+        """Daily returns as profit scaled by AUM, preserving ``'date'``."""
+        return self.data.returns
+
+    @property
+    def monthly(self) -> pl.DataFrame:
+        """Monthly compounded returns and calendar columns."""
+        return self.data.monthly
+
+    @property
+    def nav_compounded(self) -> pl.DataFrame:
+        """Compounded NAV from returns (profit/AUM), preserving ``'date'``."""
+        return self.data.nav_compounded
+
+    @property
+    def highwater(self) -> pl.DataFrame:
+        """Cumulative maximum of NAV as the high-water mark series."""
+        return self.data.highwater
+
+    @property
+    def drawdown(self) -> pl.DataFrame:
+        """Drawdown as the distance from high-water mark to current NAV."""
+        return self.data.drawdown
+
+    @property
+    def all(self) -> pl.DataFrame:
+        """Merged view of drawdown and compounded NAV."""
+        return self.data.all
 
     # ── Lazy composition accessors ─────────────────────────────────────────────
 

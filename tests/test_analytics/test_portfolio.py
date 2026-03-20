@@ -20,7 +20,7 @@ import polars as pl
 import polars.testing as pt
 import pytest
 
-from basanos.analytics import Portfolio
+from basanos.analytics import Portfolio, PortfolioData
 from basanos.exceptions import (
     CleaningInvariantError,
     IntegerIndexBoundError,
@@ -356,14 +356,14 @@ def test_assert_clean_series_raises_on_null():
     """_assert_clean_series should raise ValueError when series contains null values."""
     s = pl.Series([1.0, None, 3.0])
     with pytest.raises(ValueError, match=r".*"):
-        Portfolio._assert_clean_series(s)
+        PortfolioData._assert_clean_series(s)
 
 
 def test_assert_clean_series_raises_on_nonfinite():
     """_assert_clean_series should raise ValueError when series contains non-finite values."""
     s = pl.Series([1.0, float("inf"), 3.0])
     with pytest.raises(ValueError, match=r".*"):
-        Portfolio._assert_clean_series(s)
+        PortfolioData._assert_clean_series(s)
 
 
 def test_portfolio_all_merges_drawdown_and_nav_compounded(portfolio):
