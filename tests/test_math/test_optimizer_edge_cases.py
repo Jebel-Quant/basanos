@@ -409,7 +409,7 @@ def test_iter_solve_singular_matrix_yields_degenerate_and_zero_positions(
       2. the subsequent ``solve(matrix, expected_mu)`` call raises ``SingularMatrixError``.
 
     ``inv_a_norm`` calls ``_cholesky_solve`` directly and is therefore unaffected
-    by patching ``basanos.math.optimizer.solve``, so the norm check succeeds while
+    by patching ``basanos.math._engine_solve.solve``, so the norm check succeeds while
     the position solve raises — exercising the previously uncovered branch.
     """
     cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6)
@@ -417,7 +417,7 @@ def test_iter_solve_singular_matrix_yields_degenerate_and_zero_positions(
     mu = _sinusoidal_mu(prices)
     engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
-    with patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError("singular")):
+    with patch("basanos.math._engine_solve.solve", side_effect=SingularMatrixError("singular")):
         statuses = engine.position_status
         cp = engine.cash_position
 

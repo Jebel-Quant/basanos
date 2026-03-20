@@ -66,21 +66,24 @@ God-Object complexity:
 
 * :mod:`basanos.math._config` — :class:`BasanosConfig` and all
   covariance-mode configuration classes.
+* :mod:`basanos.math._ewm_corr` — :func:`_ewm_corr_numpy`, the vectorised
+  IIR-filter implementation of per-row EWM correlation matrices.
+* :mod:`basanos.math._engine_solve` — :class:`_SolveMixin` with
+  ``_iter_matrices`` and ``_iter_solve`` generators (per-timestamp solve
+  logic).
 * :mod:`basanos.math._engine_diagnostics` — :class:`_DiagnosticsMixin`
   (condition number, effective rank, solver residual, signal utilisation).
 * :mod:`basanos.math._engine_ic` — :class:`_SignalEvaluatorMixin`
   (IC, Rank IC, ICIR, and summary statistics).
-* This module — ``_ewm_corr_numpy``, core solve/position logic, and the
-  :class:`BasanosEngine` facade that wires everything together.
+* This module — :class:`BasanosEngine` facade that wires everything together.
 """
 
 import dataclasses
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-from scipy.signal import lfilter
 
 from ..analytics import Portfolio
 from ..exceptions import (
@@ -90,7 +93,6 @@ from ..exceptions import (
     MonotonicPricesError,
     NonPositivePricesError,
     ShapeMismatchError,
-    SingularMatrixError,
 )
 from ._config import (
     BasanosConfig,
@@ -101,9 +103,9 @@ from ._config import (
 )
 from ._engine_diagnostics import _DiagnosticsMixin
 from ._engine_ic import _SignalEvaluatorMixin
-from ._factor_model import FactorModel
-from ._linalg import inv_a_norm, solve
-from ._signal import shrink2id, vol_adj
+from ._engine_solve import _SolveMixin
+from ._ewm_corr import _ewm_corr_numpy
+from ._signal import vol_adj
 
 if TYPE_CHECKING:
     from ._config_report import ConfigReport
@@ -124,123 +126,8 @@ __all__ = [
 ]
 
 
-def _ewm_corr_numpy(
-    data: np.ndarray,
-    com: int,
-    min_periods: int,
-    min_corr_denom: float = 1e-14,
-) -> np.ndarray:
-    """Compute per-row EWM correlation matrices without pandas.
-
-    Matches ``pandas.DataFrame.ewm(com=com, min_periods=min_periods).corr()``
-    with the default ``adjust=True, ignore_na=False`` settings to within
-    floating-point rounding error.
-
-    All five EWM components used to compute ``corr(i, j)`` — namely
-    ``ewm(x_i)``, ``ewm(x_j)``, ``ewm(x_i²)``, ``ewm(x_j²)``, and
-    ``ewm(x_i·x_j)`` — share the **same joint weight structure**: weights
-    decay at every timestep (``ignore_na=False``) but a new observation is
-    only added at timesteps where *both* ``x_i`` and ``x_j`` are finite.  As
-    a result the correlation for a pair is frozen once either asset goes
-    missing, exactly mirroring pandas behaviour.
-
-    The EWM recurrence ``s[t] = β·s[t-1] + v[t]`` is an IIR filter and is
-    solved for **all N² pairs simultaneously** via ``scipy.signal.lfilter``
-    — no Python loop over the T timesteps.
-
-    Args:
-        data: Float array of shape ``(T, N)`` - typically volatility-adjusted
-            log returns.
-        com: EWM centre-of-mass (``alpha = 1 / (1 + com)``).
-        min_periods: Minimum number of joint finite observations required
-            before a correlation value is reported; earlier rows are NaN.
-        min_corr_denom: Guard threshold below which the correlation denominator
-            is treated as zero and the result is set to NaN.  Defaults to
-            ``1e-14``.
-
-    Returns:
-        np.ndarray of shape ``(T, N, N)`` containing the per-row correlation
-        matrices.  Each matrix is symmetric with diagonal 1.0 (or NaN during
-        warm-up).
-
-    Performance:
-        **Time** — O(T·N²): ``lfilter`` processes all N² pairs simultaneously,
-        so wall-clock time scales linearly with both T and N².
-
-        **Memory** — approximately 14 float64 arrays of shape ``(T, N, N)``
-        exist at peak, giving roughly ``112 * T * N²`` bytes.  For 100 assets
-        over 2 520 trading days (~10 years) that is ≈ 2.8 GB; for 500 assets
-        the same period requires ≈ 70 GB, which exceeds typical workstation
-        RAM.  Reduce T or N before calling this function when working with
-        large universes.
-    """
-    _t_len, n_assets = data.shape
-    beta = com / (1.0 + com)
-
-    fin = np.isfinite(data)  # (T, N) bool
-    xt_f = np.where(fin, data, 0.0)  # (T, N) float - zeroed where not finite
-
-    # joint_fin[t, i, j] = True iff assets i and j are both finite at t
-    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
-
-    # Build per-pair input sequences for the recurrence s[t] = beta*s[t-1] + v[t].
-    #
-    # v_x[t, i, j]  = x_i[t]    where pair (i,j) jointly finite, else 0
-    # v_x2[t, i, j] = x_i[t]^2  where jointly finite, else 0
-    # v_xy[t, i, j] = x_i[t]*x_j[t]  (xt_f is 0 for non-finite, so implicit mask)
-    # v_w[t, i, j]  = 1          where jointly finite, else 0  (weight indicator)
-    #
-    # By symmetry v_x[t,j,i] carries x_j[t] for pair (i,j), so s_x.swapaxes(1,2)
-    # gives the EWM numerator of x_j without a separate v_y array.
-    v_x = xt_f[:, :, np.newaxis] * joint_fin  # (T, N, N)
-    v_x2 = (xt_f * xt_f)[:, :, np.newaxis] * joint_fin  # (T, N, N)
-    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]  # (T, N, N)
-    v_w = joint_fin.astype(np.float64)  # (T, N, N)
-
-    # Solve the IIR recurrence for every (i, j) pair in parallel.
-    # lfilter([1], [1, -beta], v, axis=0) computes s[t] = beta*s[t-1] + v[t].
-    filt_a = np.array([1.0, -beta])
-    s_x = lfilter([1.0], filt_a, v_x, axis=0)  # (T, N, N)
-    s_x2 = lfilter([1.0], filt_a, v_x2, axis=0)  # (T, N, N)
-    s_xy = lfilter([1.0], filt_a, v_xy, axis=0)  # (T, N, N)
-    s_w = lfilter([1.0], filt_a, v_w, axis=0)  # (T, N, N)
-
-    # Joint finite observation count per pair at each timestep (for min_periods)
-    count = np.cumsum(joint_fin, axis=0)  # (T, N, N) int64
-
-    # EWM means: running numerator / running weight denominator.
-    # s_x.swapaxes(1,2)[t,i,j] = s_x[t,j,i] = EWM numerator of x_j for pair (i,j).
-    with np.errstate(divide="ignore", invalid="ignore"):
-        pos_w = s_w > 0
-        ewm_x = np.where(pos_w, s_x / s_w, np.nan)  # EWM(x_i)
-        ewm_y = np.where(pos_w, s_x.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j)
-        ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)  # EWM(x_i^2)
-        ewm_y2 = np.where(pos_w, s_x2.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j^2)
-        ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)  # EWM(x_i*x_j)
-
-    var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
-    var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
-    denom = np.sqrt(var_x * var_y)
-    cov = ewm_xy - ewm_x * ewm_y
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        result = np.where(denom > min_corr_denom, cov / denom, np.nan)
-
-    result = np.clip(result, -1.0, 1.0)
-
-    # Apply min_periods mask for all pairs
-    result[count < min_periods] = np.nan
-
-    # Diagonal is exactly 1.0 where the asset has sufficient observations
-    diag_idx = np.arange(n_assets)
-    diag_count = count[:, diag_idx, diag_idx]  # (T, N)
-    result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
-
-    return result
-
-
 @dataclasses.dataclass(frozen=True)
-class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin):
+class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     """Engine to compute correlation matrices and optimize risk positions.
 
     Encapsulates price data and configuration to build EWM-based
@@ -476,214 +363,10 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin):
         return np.stack(list(self.cor.values()), axis=0)
 
     # ------------------------------------------------------------------
-    # Internal solve helpers
+    # Internal solve helpers — provided by _SolveMixin
     # ------------------------------------------------------------------
-
-    def _iter_matrices(self):
-        r"""Yield ``(i, t, mask, matrix)`` for every timestamp.
-
-        ``matrix`` is the effective :math:`(n_{\text{sub}},\ n_{\text{sub}})`
-        correlation matrix for the active assets (those with finite prices at
-        timestamp *t*).  Yields ``None`` when no valid matrix is available
-        (e.g., before the warm-up period has elapsed or when no assets have
-        finite prices).
-
-        The behaviour depends on :attr:`BasanosConfig.covariance_config`:
-
-        * :class:`EwmaShrinkConfig`:  Applies :func:`~basanos.math._signal.shrink2id` to
-          the EWMA correlation matrix (same computation as
-          :attr:`cash_position`).
-        * :class:`SlidingWindowConfig`: Builds a
-          :class:`~basanos.math._factor_model.FactorModel` from the last
-          ``cfg.covariance_config.window`` rows of vol-adjusted returns and returns its
-          :attr:`~basanos.math._factor_model.FactorModel.covariance`.
-
-        Yields:
-            tuple: ``(i, t, mask, matrix)`` where
-
-            * ``i`` (*int*): Row index into ``self.prices``.
-            * ``t``: Timestamp value from ``self.prices["date"]``.
-            * ``mask`` (*np.ndarray[bool]*): Shape ``(n_assets,)``; ``True``
-              for assets with finite prices at row *i*.
-            * ``matrix`` (*np.ndarray | None*): Shape
-              ``(mask.sum(), mask.sum())`` or ``None``.
-        """
-        assets = self.assets
-        prices_num = self.prices.select(assets).to_numpy()
-        dates = self.prices["date"].to_list()
-
-        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
-            cor = self.cor
-            for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
-                if not mask.any():
-                    yield i, t, mask, None
-                    continue
-                corr_n = cor[t]
-                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-                yield i, t, mask, matrix
-        else:
-            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
-            win_w: int = sw_config.window
-            win_k: int = sw_config.n_factors
-            ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
-                if not mask.any() or i + 1 < win_w:
-                    yield i, t, mask, None
-                    continue
-                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
-                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
-                n_sub = int(mask.sum())
-                k_eff = min(win_k, win_w, n_sub)
-                try:
-                    fm = FactorModel.from_returns(window_ret, k=k_eff)
-                    yield i, t, mask, fm.covariance
-                except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.warning("Factor model fit failed at t=%s: %s", t, exc)
-                    yield i, t, mask, None
-
-    def _iter_solve(self):
-        r"""Yield ``(i, t, mask, pos_or_none, status)`` for every timestamp.
-
-        This is the single authoritative implementation of the per-timestamp
-        position-determination logic shared by :attr:`cash_position` and
-        :attr:`position_status`.  Extracting it here eliminates the DRY
-        violation where both properties previously duplicated the mask
-        computation, covariance dispatch, :math:`\mu` handling, denominator
-        check, and linear-solve logic.
-
-        Yields:
-            tuple: ``(i, t, mask, pos_or_none, status)`` where
-
-            * ``i`` (*int*): Row index into ``self.prices``.
-            * ``t``: Timestamp value from ``self.prices["date"]``.
-            * ``mask`` (*np.ndarray[bool]*): Shape ``(n_assets,)``; ``True``
-              for assets with finite prices at row *i*.
-            * ``pos_or_none`` (*np.ndarray | None*): Per-active-asset position
-              vector **before** ``profit_variance`` scaling.  The value and its
-              downstream effect depend on ``status`` as follows:
-
-              .. list-table::
-                 :header-rows: 1
-
-                 * - ``status``
-                   - ``pos_or_none``
-                   - Downstream effect in :attr:`cash_position`
-                 * - ``'warmup'``
-                   - ``None``
-                   - Positions stay ``NaN`` — insufficient history.
-                 * - ``'zero_signal'``
-                   - ``np.zeros(n_active)``
-                   - Positions written as ``0`` for all active assets.
-                 * - ``'degenerate'``
-                   - ``np.zeros(n_active)`` (empty when no prices)
-                   - Positions written as ``0`` for active assets; rows with
-                     no finite prices have an empty mask so all positions
-                     remain ``NaN`` as a natural consequence.
-                 * - ``'valid'``
-                   - ``np.ndarray`` of shape ``(n_active,)``
-                   - Solved positions written for all active assets.
-
-              ``None`` is yielded **only** for ``'warmup'`` rows.  All other
-              statuses yield an ``np.ndarray`` (possibly zero-length when
-              ``mask`` is all-``False``), so consumers can branch solely on
-              ``pos_or_none is None`` to detect the warmup case without
-              inspecting ``status``.
-
-            * ``status`` (*str*): One of ``'warmup'``, ``'zero_signal'``,
-              ``'degenerate'``, or ``'valid'``.
-        """
-        assets = self.assets
-        prices_num = self.prices.select(assets).to_numpy()
-        mu_np = self.mu.select(assets).to_numpy()
-        dates = self.prices["date"].to_list()
-
-        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
-            cor = self.cor
-            for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
-                if not mask.any():
-                    yield i, t, mask, np.zeros(0), "degenerate"
-                    continue
-                corr_n = cor[t]
-                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-                expected_mu = np.nan_to_num(mu_np[i][mask])
-                if np.allclose(expected_mu, 0.0):
-                    yield i, t, mask, np.zeros_like(expected_mu), "zero_signal"
-                    continue
-                try:
-                    denom = inv_a_norm(expected_mu, matrix)
-                except SingularMatrixError:
-                    denom = float("nan")
-                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                    _logger.warning(
-                        "Positions zeroed at t=%s: normalisation denominator is degenerate "
-                        "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
-                        t,
-                        denom,
-                        self.cfg.denom_tol,
-                        extra={
-                            "context": {
-                                "t": str(t),
-                                "denom": denom,
-                                "denom_tol": self.cfg.denom_tol,
-                            }
-                        },
-                    )
-                    yield i, t, mask, np.zeros_like(expected_mu), "degenerate"
-                    continue
-                try:
-                    pos = solve(matrix, expected_mu) / denom
-                except SingularMatrixError:
-                    yield i, t, mask, np.zeros_like(expected_mu), "degenerate"
-                    continue
-                yield i, t, mask, pos, "valid"
-        else:
-            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
-            win_w: int = sw_config.window
-            win_k: int = sw_config.n_factors
-            ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
-                if not mask.any():
-                    yield i, t, mask, np.zeros(0), "degenerate"
-                    continue
-                if i + 1 < win_w:
-                    yield i, t, mask, None, "warmup"
-                    continue
-                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
-                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
-                n_sub = int(mask.sum())
-                k_eff = min(win_k, win_w, n_sub)
-                try:
-                    fm = FactorModel.from_returns(window_ret, k=k_eff)
-                except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
-                    yield i, t, mask, np.zeros(n_sub), "degenerate"
-                    continue
-                expected_mu = np.nan_to_num(mu_np[i][mask])
-                if np.allclose(expected_mu, 0.0):
-                    yield i, t, mask, np.zeros(n_sub), "zero_signal"
-                    continue
-                try:
-                    x = fm.solve(expected_mu)
-                    denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
-                except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.warning("Woodbury solve failed at t=%s: %s", t, exc)
-                    yield i, t, mask, np.zeros(n_sub), "degenerate"
-                    continue
-                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                    _logger.warning(
-                        "Positions zeroed at t=%s (sliding_window): normalisation "
-                        "denominator is degenerate (denom=%s, denom_tol=%s).",
-                        t,
-                        denom,
-                        self.cfg.denom_tol,
-                    )
-                    yield i, t, mask, np.zeros(n_sub), "degenerate"
-                    continue
-                yield i, t, mask, x / denom, "valid"
+    # _iter_matrices and _iter_solve are defined in
+    # basanos.math._engine_solve._SolveMixin; they are inherited here.
 
     # ------------------------------------------------------------------
     # Position properties
