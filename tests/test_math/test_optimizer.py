@@ -264,6 +264,13 @@ def test_basanos_config_rejects_legacy_kwargs():
         BasanosConfig(**base, covariance_mode="ewma_shrink")
 
 
+def test_reject_legacy_flat_kwargs_passes_through_model_instance():
+    """model_validate on an existing instance hits the non-dict early-exit."""
+    cfg = BasanosConfig(vola=16, corr=32, clip=3.0, shrink=0.5, aum=1e6)
+    result = BasanosConfig.model_validate(cfg)
+    assert result == cfg
+
+
 def test_basanos_config_error_lists_legacy_keys():
     """The TypeError message lists all legacy keys the caller actually passed."""
     base = {"vola": 16, "corr": 32, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
