@@ -749,8 +749,8 @@ def test_cash_position_zeros_when_inv_a_norm_raises_singular(
     cfg = BasanosConfig(corr=5, vola=5, clip=4.0, shrink=0.5, aum=1e6)
     engine = BasanosEngine(prices=small_prices, mu=small_mu, cfg=cfg)
     with (
-        patch("basanos.math.optimizer.inv_a_norm", side_effect=SingularMatrixError("singular")),
-        caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        patch("basanos.math._engine_solve.inv_a_norm", side_effect=SingularMatrixError("singular")),
+        caplog.at_level(logging.WARNING, logger="basanos.math._engine_solve"),
     ):
         cp = engine.cash_position
     for col in engine.assets:
@@ -1754,7 +1754,7 @@ class TestDiagnostics:
         prices, mu = _make_prices_mu(40)
         cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
         engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-        with patch("basanos.math.optimizer.inv_a_norm", side_effect=SingularMatrixError()):
+        with patch("basanos.math._engine_solve.inv_a_norm", side_effect=SingularMatrixError()):
             ps = engine.position_status
         statuses = ps["status"].to_list()
         assert "degenerate" in statuses, "Expected 'degenerate' when inv_a_norm raises SingularMatrixError"
@@ -2521,7 +2521,7 @@ class TestSlidingWindowErrorPaths:
 
     def test_factor_model_svd_failure_in_cash_position_continues(self, sw_engine: BasanosEngine) -> None:
         """When FactorModel.from_returns raises LinAlgError, cash_position skips that row."""
-        with patch("basanos.math.optimizer.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")):
+        with patch("basanos.math._engine_solve.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")):
             pos = sw_engine.cash_position
         assert pos.shape == sw_engine.prices.shape
 
@@ -2530,8 +2530,8 @@ class TestSlidingWindowErrorPaths:
     ) -> None:
         """When FactorModel.from_returns raises in _iter_matrices, a warning is emitted."""
         with (
-            patch("basanos.math.optimizer.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")),
-            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+            patch("basanos.math._engine_solve.FactorModel.from_returns", side_effect=np.linalg.LinAlgError("svd")),
+            caplog.at_level(logging.WARNING, logger="basanos.math._engine_solve"),
         ):
             _ = sw_engine.condition_number
         records = [r for r in caplog.records if "Factor model fit failed" in r.message]
@@ -2546,8 +2546,8 @@ class TestSlidingWindowErrorPaths:
         mock_fm = MagicMock()
         mock_fm.solve.side_effect = np.linalg.LinAlgError("singular")
         with (
-            patch("basanos.math.optimizer.FactorModel.from_returns", return_value=mock_fm),
-            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+            patch("basanos.math._engine_solve.FactorModel.from_returns", return_value=mock_fm),
+            caplog.at_level(logging.WARNING, logger="basanos.math._engine_solve"),
         ):
             pos = sw_engine.cash_position
         assert pos.shape == sw_engine.prices.shape

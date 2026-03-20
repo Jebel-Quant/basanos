@@ -247,7 +247,7 @@ class TestOptimizerStructuredContext:
             data = json.loads(raw)
             assert "timestamp" in data
             assert data["level"] == "WARNING"
-            assert data["logger"] == "basanos.math.optimizer"
+            assert data["logger"] == "basanos.math._engine_solve"
             assert "normalisation denominator is degenerate" in data["event"]
             assert "context" in data
             assert "denom" in data["context"]
