@@ -597,8 +597,6 @@ class BasanosConfig(BaseModel):
                 ...
             TypeError: ...
         """
-        if not isinstance(data, dict):
-            return data
         legacy_keys = {"covariance_mode", "n_factors", "window"}
         found = legacy_keys & data.keys()
         if found:
