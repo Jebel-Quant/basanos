@@ -2078,6 +2078,42 @@ class TestBasanosConfigSlidingWindow:
         assert sw_cfg.window == 30
         assert sw_cfg.n_factors == 2
 
+    def test_replace_updates_shrink(self):
+        """replace(shrink=...) should return a new config with only shrink changed."""
+        base_cfg = BasanosConfig(**self._base)
+        new_cfg = base_cfg.replace(shrink=0.9)
+        assert new_cfg.shrink == 0.9
+        assert new_cfg.vola == base_cfg.vola
+        assert new_cfg.corr == base_cfg.corr
+        assert new_cfg.clip == base_cfg.clip
+        assert new_cfg.aum == base_cfg.aum
+        assert new_cfg.covariance_config == base_cfg.covariance_config
+
+    def test_replace_updates_covariance_config(self):
+        """replace(covariance_config=...) should switch from ewma_shrink to sliding_window."""
+        from basanos.math import CovarianceMode
+
+        base_cfg = BasanosConfig(**self._base)
+        sw_cfg = base_cfg.replace(covariance_config=SlidingWindowConfig(window=30, n_factors=2))
+        assert sw_cfg.covariance_mode is CovarianceMode.sliding_window
+        assert sw_cfg.window == 30
+        assert sw_cfg.n_factors == 2
+        assert sw_cfg.vola == base_cfg.vola
+        assert sw_cfg.corr == base_cfg.corr
+        assert sw_cfg.shrink == base_cfg.shrink
+
+    def test_replace_with_no_args_returns_equivalent_config(self):
+        """replace() with no overrides should return a config equal to the original."""
+        base_cfg = BasanosConfig(**self._base)
+        copied = base_cfg.replace()
+        assert copied == base_cfg
+
+    def test_replace_validates_fields(self):
+        """replace() should validate field constraints just like the constructor."""
+        base_cfg = BasanosConfig(**self._base)
+        with pytest.raises(ValueError, match=r"less than or equal to 1"):
+            base_cfg.replace(shrink=2.0)  # shrink must be in [0, 1]
+
 
 # ─── Sliding window warm-up warning ──────────────────────────────────────────
 
