@@ -16,12 +16,7 @@ import pytest
 
 from basanos.exceptions import (
     DimensionMismatchError,
-    FactorCountError,
-    FactorCovarianceShapeError,
-    FactorLoadingsDimensionError,
-    IdiosyncraticVarShapeError,
-    NonPositiveIdiosyncraticVarError,
-    ReturnMatrixDimensionError,
+    FactorModelError,
     SingularMatrixError,
 )
 from basanos.math._factor_model import FactorModel
@@ -63,8 +58,8 @@ def test_frozen_raises_on_attribute_assignment():
 
 
 def test_post_init_rejects_1d_factor_loadings():
-    """factor_loadings must be 2-D; a 1-D array must raise FactorLoadingsDimensionError."""
-    with pytest.raises(FactorLoadingsDimensionError, match="factor_loadings must be 2-D"):
+    """factor_loadings must be 2-D; a 1-D array must raise FactorModelError."""
+    with pytest.raises(FactorModelError, match="factor_loadings must be 2-D"):
         FactorModel(
             factor_loadings=np.ones(4),
             factor_covariance=np.eye(1),
@@ -74,7 +69,7 @@ def test_post_init_rejects_1d_factor_loadings():
 
 def test_post_init_rejects_wrong_factor_covariance_shape():
     """factor_covariance shape must match k from factor_loadings."""
-    with pytest.raises(FactorCovarianceShapeError, match="factor_covariance must have shape"):
+    with pytest.raises(FactorModelError, match="factor_covariance must have shape"):
         FactorModel(
             factor_loadings=np.eye(4, 2),
             factor_covariance=np.eye(3),  # wrong: should be (2, 2)
@@ -84,7 +79,7 @@ def test_post_init_rejects_wrong_factor_covariance_shape():
 
 def test_post_init_rejects_wrong_idiosyncratic_var_shape():
     """idiosyncratic_var length must match n from factor_loadings."""
-    with pytest.raises(IdiosyncraticVarShapeError, match="idiosyncratic_var must have shape"):
+    with pytest.raises(FactorModelError, match="idiosyncratic_var must have shape"):
         FactorModel(
             factor_loadings=np.eye(4, 2),
             factor_covariance=np.eye(2),
@@ -94,7 +89,7 @@ def test_post_init_rejects_wrong_idiosyncratic_var_shape():
 
 def test_post_init_rejects_non_positive_idiosyncratic_var():
     """All entries of idiosyncratic_var must be strictly positive."""
-    with pytest.raises(NonPositiveIdiosyncraticVarError, match="strictly positive"):
+    with pytest.raises(FactorModelError, match="strictly positive"):
         FactorModel(
             factor_loadings=np.eye(3, 2),
             factor_covariance=np.eye(2),
@@ -103,8 +98,8 @@ def test_post_init_rejects_non_positive_idiosyncratic_var():
 
 
 def test_post_init_rejects_negative_idiosyncratic_var():
-    """Negative entries in idiosyncratic_var must also raise NonPositiveIdiosyncraticVarError."""
-    with pytest.raises(NonPositiveIdiosyncraticVarError, match="strictly positive"):
+    """Negative entries in idiosyncratic_var must also raise FactorModelError."""
+    with pytest.raises(FactorModelError, match="strictly positive"):
         FactorModel(
             factor_loadings=np.eye(3, 2),
             factor_covariance=np.eye(2),
@@ -223,22 +218,22 @@ def test_from_returns_k_equals_min_t_n():
 
 
 def test_from_returns_raises_on_1d_input():
-    """from_returns must raise ReturnMatrixDimensionError when input is not 2-D."""
-    with pytest.raises(ReturnMatrixDimensionError, match="Return matrix must be 2-D"):
+    """from_returns must raise FactorModelError when input is not 2-D."""
+    with pytest.raises(FactorModelError, match="Return matrix must be 2-D"):
         FactorModel.from_returns(np.ones(10), k=1)
 
 
 def test_from_returns_raises_on_k_zero():
-    """from_returns must raise FactorCountError when k < 1."""
+    """from_returns must raise FactorModelError when k < 1."""
     ret_mat = np.random.default_rng(0).standard_normal((20, 4))
-    with pytest.raises(FactorCountError, match="k must satisfy"):
+    with pytest.raises(FactorModelError, match="k must satisfy"):
         FactorModel.from_returns(ret_mat, k=0)
 
 
 def test_from_returns_raises_on_k_too_large():
-    """from_returns must raise FactorCountError when k > min(T, n)."""
+    """from_returns must raise FactorModelError when k > min(T, n)."""
     ret_mat = np.random.default_rng(0).standard_normal((20, 4))
-    with pytest.raises(FactorCountError, match="k must satisfy"):
+    with pytest.raises(FactorModelError, match="k must satisfy"):
         FactorModel.from_returns(ret_mat, k=5)
 
 

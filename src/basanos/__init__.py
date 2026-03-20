@@ -11,6 +11,9 @@ from basanos.exceptions import (
     BasanosError as BasanosError,
 )
 from basanos.exceptions import (
+    CleaningInvariantError as CleaningInvariantError,
+)
+from basanos.exceptions import (
     ColumnMismatchError as ColumnMismatchError,
 )
 from basanos.exceptions import (
@@ -18,6 +21,9 @@ from basanos.exceptions import (
 )
 from basanos.exceptions import (
     ExcessiveNullsError as ExcessiveNullsError,
+)
+from basanos.exceptions import (
+    FactorModelError as FactorModelError,
 )
 from basanos.exceptions import (
     InsufficientDataError as InsufficientDataError,

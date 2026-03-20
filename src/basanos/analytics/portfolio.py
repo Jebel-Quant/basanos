@@ -10,13 +10,12 @@ import polars as pl
 import polars.selectors as cs
 
 from ..exceptions import (
+    CleaningInvariantError,
     IntegerIndexBoundError,
     InvalidCashPositionTypeError,
     InvalidPricesTypeError,
     MissingDateColumnError,
-    NonFiniteAfterCleaningError,
     NonPositiveAumError,
-    NullsAfterCleaningError,
     RowCountMismatchError,
 )
 from ._plots import Plots
@@ -141,9 +140,11 @@ class Portfolio:
             for c in assets:
                 s = profits[c]
                 if int(s.null_count()) != 0:
-                    raise NullsAfterCleaningError(c)  # pragma: no cover
+                    raise CleaningInvariantError(c, "has unexpected null values after cleaning")  # pragma: no cover
                 if not bool(pl.Series(s).is_finite().all()):
-                    raise NonFiniteAfterCleaningError(c)  # pragma: no cover
+                    raise CleaningInvariantError(
+                        c, "has unexpected non-finite values after cleaning"
+                    )  # pragma: no cover
 
         return profits
 

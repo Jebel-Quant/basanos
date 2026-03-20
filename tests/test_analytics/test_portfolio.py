@@ -22,10 +22,9 @@ import pytest
 
 from basanos.analytics import Portfolio
 from basanos.exceptions import (
+    CleaningInvariantError,
     IntegerIndexBoundError,
     MissingDateColumnError,
-    NonFiniteAfterCleaningError,
-    NullsAfterCleaningError,
 )
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -899,32 +898,32 @@ def test_trading_cost_impact_plot_title_contains_bps(turnover_portfolio):
     assert "bps" in fig.layout.title.text.lower()
 
 
-# ─── NullsAfterCleaningError / NonFiniteAfterCleaningError ────────────────────
+# ─── CleaningInvariantError ───────────────────────────────────────────────────
 
 
-def test_nulls_after_cleaning_error_message_and_attribute():
-    """NullsAfterCleaningError must carry the column name and a descriptive message."""
-    exc = NullsAfterCleaningError("foo")
+def test_cleaning_invariant_error_null_message_and_attribute():
+    """CleaningInvariantError must carry the column name and a descriptive message for nulls."""
+    exc = CleaningInvariantError("foo", "still contains null values")
     assert exc.column == "foo"
     assert "foo" in str(exc)
     assert "null" in str(exc).lower()
 
 
-def test_nonfinite_after_cleaning_error_message_and_attribute():
-    """NonFiniteAfterCleaningError must carry the column name and a descriptive message."""
-    exc = NonFiniteAfterCleaningError("bar")
+def test_cleaning_invariant_error_nonfinite_message_and_attribute():
+    """CleaningInvariantError must carry the column name and a descriptive message for non-finite values."""
+    exc = CleaningInvariantError("bar", "has unexpected non-finite values after cleaning")
     assert exc.column == "bar"
     assert "bar" in str(exc)
     assert "non-finite" in str(exc).lower()
 
 
-def test_nulls_after_cleaning_error_is_value_error():
-    """NullsAfterCleaningError must be catchable as a ValueError."""
+def test_cleaning_invariant_null_error_is_value_error():
+    """CleaningInvariantError (null variant) must be catchable as a ValueError."""
     with pytest.raises(ValueError, match="null"):
-        raise NullsAfterCleaningError("col_x")
+        raise CleaningInvariantError("col_x", "still contains null values")
 
 
-def test_nonfinite_after_cleaning_error_is_value_error():
-    """NonFiniteAfterCleaningError must be catchable as a ValueError."""
+def test_cleaning_invariant_nonfinite_error_is_value_error():
+    """CleaningInvariantError (non-finite variant) must be catchable as a ValueError."""
     with pytest.raises(ValueError, match="non-finite"):
-        raise NonFiniteAfterCleaningError("col_y")
+        raise CleaningInvariantError("col_y", "has unexpected non-finite values after cleaning")
