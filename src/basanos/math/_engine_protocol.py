@@ -41,3 +41,7 @@ class _EngineProtocol(Protocol):
     def _iter_matrices(self) -> Generator[_MatrixRow, None, None]:
         """Yield ``(i, t, mask, matrix)`` tuples over all timestamps."""
         ...
+
+    def _ic_series(self, use_rank: bool) -> pl.DataFrame:
+        """Compute the cross-sectional IC time series."""
+        ...
