@@ -10,3 +10,5 @@ templates:
 
 exclude:
   - book/marimo/notebooks/rhiza.py
+  - tests/benchmarks/test_benchmarks.py‎
+
