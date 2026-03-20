@@ -43,6 +43,19 @@ package_module_name_map = { "jinja2" = "jinja2", "numpy" = "numpy", "plotly" = "
 
 [tool.coverage.report]
 fail_under = 90
+exclude_also = [
+    # TYPE_CHECKING blocks are never executed at runtime
+    "if TYPE_CHECKING:",
+    # Protocol bodies are structural type stubs, not runnable code
+    "class .*\\(Protocol\\):",
+    "\\.\\.\\.\\s*$",
+]
+
+[tool.coverage.run]
+omit = [
+    # Pure type-stubs file; only imported under TYPE_CHECKING
+    "src/basanos/math/_engine_protocol.py",
+]
 
 [tool.ty.environment]
 python-version = "3.12"

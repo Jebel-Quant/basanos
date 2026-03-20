@@ -8,28 +8,30 @@ is :class:`~basanos.math.optimizer.BasanosEngine`, which inherits from
 :class:`_SignalEvaluatorMixin`.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 import polars as pl
 from scipy.stats import spearmanr
+
+if TYPE_CHECKING:
+    from ._engine_protocol import _EngineProtocol
 
 
 class _SignalEvaluatorMixin:
     """Mixin providing cross-sectional information-coefficient (IC) metrics.
 
-    Expects the consuming class to expose:
+    The consuming class must satisfy :class:`~._engine_protocol._EngineProtocol`,
+    i.e. it must expose:
 
     * ``assets`` — list of asset column names
     * ``prices`` — Polars DataFrame with a ``'date'`` column
     * ``mu`` — Polars DataFrame of expected-return signals
     """
 
-    # Declared for the type checker; concrete values are provided by the
-    # consuming class (BasanosEngine).
-    assets: list[str]
-    prices: pl.DataFrame
-    mu: pl.DataFrame
-
-    def _ic_series(self, use_rank: bool) -> pl.DataFrame:
+    def _ic_series(self: _EngineProtocol, use_rank: bool) -> pl.DataFrame:
         """Compute the cross-sectional IC time series.
 
         For each timestamp *t* (from 0 to T-2), correlates the signal vector
@@ -76,7 +78,7 @@ class _SignalEvaluatorMixin:
         return pl.DataFrame({"date": ic_dates, col_name: pl.Series(ic_values, dtype=pl.Float64)})
 
     @property
-    def ic(self) -> pl.DataFrame:
+    def ic(self: _EngineProtocol) -> pl.DataFrame:
         """Cross-sectional Pearson Information Coefficient (IC) time series.
 
         For each timestamp *t* (excluding the last), computes the Pearson
@@ -102,7 +104,7 @@ class _SignalEvaluatorMixin:
         return self._ic_series(use_rank=False)
 
     @property
-    def rank_ic(self) -> pl.DataFrame:
+    def rank_ic(self: _EngineProtocol) -> pl.DataFrame:
         """Cross-sectional Spearman Rank Information Coefficient time series.
 
         Identical to :py:attr:`ic` but uses the Spearman rank correlation

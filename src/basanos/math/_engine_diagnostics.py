@@ -8,7 +8,10 @@ is :class:`~basanos.math.optimizer.BasanosEngine`, which inherits from
 :class:`_DiagnosticsMixin`.
 """
 
+from __future__ import annotations
+
 import logging
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -16,13 +19,17 @@ import polars as pl
 from ..exceptions import SingularMatrixError
 from ._linalg import solve, valid
 
+if TYPE_CHECKING:
+    from ._engine_protocol import _EngineProtocol
+
 _logger = logging.getLogger(__name__)
 
 
 class _DiagnosticsMixin:
     """Mixin providing matrix-quality and solver-quality diagnostic properties.
 
-    Expects the consuming class to expose:
+    The consuming class must satisfy :class:`~._engine_protocol._EngineProtocol`,
+    i.e. it must expose:
 
     * ``assets`` — list of asset column names
     * ``prices`` — Polars DataFrame with a ``'date'`` column
@@ -30,17 +37,8 @@ class _DiagnosticsMixin:
     * ``_iter_matrices()`` — generator yielding ``(i, t, mask, matrix)``
     """
 
-    # Declared for the type checker; concrete values are provided by the
-    # consuming class (BasanosEngine).
-    assets: list[str]
-    prices: pl.DataFrame
-    mu: pl.DataFrame
-
-    def _iter_matrices(self):
-        raise NotImplementedError
-
     @property
-    def condition_number(self) -> pl.DataFrame:
+    def condition_number(self: _EngineProtocol) -> pl.DataFrame:
         """Condition number κ of the effective correlation matrix at each timestamp.
 
         Uses the same covariance mode as :attr:`cash_position`: for
@@ -66,7 +64,7 @@ class _DiagnosticsMixin:
         return pl.DataFrame({"date": self.prices["date"], "condition_number": pl.Series(kappas, dtype=pl.Float64)})
 
     @property
-    def effective_rank(self) -> pl.DataFrame:
+    def effective_rank(self: _EngineProtocol) -> pl.DataFrame:
         r"""Effective rank of the effective correlation matrix at each timestamp.
 
         Measures the true dimensionality of the portfolio by computing the
@@ -109,7 +107,7 @@ class _DiagnosticsMixin:
         return pl.DataFrame({"date": self.prices["date"], "effective_rank": pl.Series(ranks, dtype=pl.Float64)})
 
     @property
-    def solver_residual(self) -> pl.DataFrame:
+    def solver_residual(self: _EngineProtocol) -> pl.DataFrame:
         r"""Per-timestamp solver residual ``‖C·x - μ‖₂``.
 
         After solving the normalised linear system ``C · x = μ`` at
@@ -158,7 +156,7 @@ class _DiagnosticsMixin:
         return pl.DataFrame({"date": self.prices["date"], "residual": pl.Series(residuals, dtype=pl.Float64)})
 
     @property
-    def signal_utilisation(self) -> pl.DataFrame:
+    def signal_utilisation(self: _EngineProtocol) -> pl.DataFrame:
         r"""Per-asset signal utilisation: fraction of μ_i surviving the correlation filter.
 
         For each asset *i* and timestamp *t*, computes
