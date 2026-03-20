@@ -598,6 +598,8 @@ class BasanosConfig(BaseModel):
             TypeError: ...
         """
         legacy_keys = {"covariance_mode", "n_factors", "window"}
+        if not isinstance(data, dict):
+            return data
         found = legacy_keys & data.keys()
         if found:
             found_str = ", ".join(f"'{k}'" for k in sorted(found))
