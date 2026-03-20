@@ -55,6 +55,42 @@ This is a textbook example of how to structure a scientific Python library. The 
 
 ---
 
+## 2026-03-20 — Analysis Entry
+
+### Summary
+
+Since the previous entry (2026-03-19), the repository has undergone active feature consolidation around the sliding-window covariance mode. The configuration API was refactored to use a Pydantic discriminated union (`covariance_config: EwmaShrinkConfig | SlidingWindowConfig`), a latent bug in the ewma_shrink path was found and fixed via Hypothesis property testing, and test coverage was pushed from 99% to 100% (555 tests, 1,567 statements). The codebase continues to demonstrate high discipline; this entry focuses on what has changed and what remains structurally weak.
+
+### Strengths
+
+- **Discriminated union configuration (PR #229)**: Replacing flat `covariance_mode/n_factors/window` kwargs directly on `BasanosConfig` with `covariance_config=SlidingWindowConfig(window=W, n_factors=k)` is a material design improvement. Pydantic's discriminator field enforces that `window` and `n_factors` are only present when the mode requires them, eliminating silent misconfiguration. The pattern is cleanly extensible to future covariance modes.
+- **Hypothesis found a real bug**: `inv_a_norm` raises `SingularMatrixError` for singular correlation matrices (e.g., two assets with perfectly identical prices and `shrink=1.0`), but the ewma_shrink path in `cash_position` had no handler for it. Hypothesis's property test `test_position_leverage_is_non_negative` generated the exact falsifying example that exposed this. The fix (catch `SingularMatrixError`, treat as `denom=nan`, zero positions) is minimal and correct. Property-based testing earning its cost.
+- **Exception narrowing (PR #227)**: Broad `except Exception` replaced with `except (np.linalg.LinAlgError, ValueError)` in `_iter_matrices` and the sliding-window `cash_position` loop. The correct exception types are now explicit and the error surface is documented.
+- **`_iter_matrices` abstraction**: The private generator yielding `(i, t, mask, matrix)` unifies diagnostic computation (`condition_number`, `effective_rank`, `solver_residual`, `signal_utilisation`) across both covariance modes. Each diagnostic now iterates a single unified sequence rather than branching independently per mode. Clean.
+- **Warm-up gap detection**: The `__post_init__` guard warning when `n_rows < 2 * window` (`optimizer.py:728`) proactively catches the most common misuse of the sliding-window mode before any computation runs. The warning message is specific enough to act on.
+- **Paper workflow restored**: `make paper` target exists and `paper.yml` CI workflow compiles LaTeX. The previously noted weakness (no PDF build automation) is resolved.
+- **Test suite growth**: Tests grew from ~7,200 to ~8,240 lines. The new `TestSlidingWindowErrorPaths` class covers six distinct failure modes in the sliding-window path that were previously untested: SVD failure in `_iter_matrices`, SVD failure in `cash_position`, Woodbury solve failure, zero-mu short-circuit, and `SingularMatrixError` from `inv_a_norm`.
+
+### Weaknesses
+
+- **BENCHMARKS.md version mismatch persists**: The environment table still records `basanos version: 0.3.0` (commit `86fb095`) despite current version being `0.4.2`. Sliding-window benchmark cases were added (PR #226) but the header was not updated. A reader cannot determine whether those numbers were produced at v0.3.0 or v0.4.x.
+- **`np.linalg.inv` in the Woodbury path**: `_factor_model.py:217` computes `mid = np.linalg.inv(self.factor_covariance) + ...`, explicitly inverting the factor covariance matrix. For typical `k=2..5` this is inconsequential, but it is numerically inferior to a solve formulation, inconsistent with the Cholesky-first discipline applied everywhere else in `_linalg.py`, and risks accumulating float error as `k` grows.
+- **Warm-up rows indistinguishable in output**: `cash_position` returns NaN for warm-up rows, zero for zero-signal rows, and zero for degenerate-covariance rows. Downstream consumers cannot distinguish these three semantically distinct states without inspecting the mu frame and configuration themselves.
+- **`pragma: no cover` on dead-code branches**: Two `k_eff < 1` branches in `_iter_matrices` and `cash_position` (`optimizer.py:898,1029`) are annotated `# pragma: no cover` rather than removed. Both are provably unreachable given validated config (`window >= 1`, `n_factors >= 1`) and the `mask.any()` precondition. Dead code should be deleted, not hidden from coverage reporting.
+- **Single ADR**: `docs/adr/` contains one ADR (Rhiza framework dependency). Given non-trivial decisions made recently — discriminated union config, Woodbury identity vs. Cholesky for factor models, warm-up semantics — the ADR practice is significantly under-utilised.
+
+### Risks / Technical Debt
+
+- **Breaking API change with real migration surface**: PR #229 changed `BasanosConfig` construction from `covariance_mode="sliding_window", n_factors=2, window=30` to `covariance_config=SlidingWindowConfig(window=30, n_factors=2)`. Any downstream consumer using the old API fails at runtime with a Pydantic `extra_forbidden` error. The in-flight branch `copilot/document-warm-up-gap-in-basanosconfig` required two test fixes to migrate, confirming the migration surface is real.
+- **Hypothesis counterexample not pinned deterministically**: The singular-matrix edge case that broke `test_position_leverage_is_non_negative` lives in `.hypothesis/examples/`. On a fresh CI runner without the database, the property test may not rediscover it for many runs. The edge case (singular shrunk correlation matrix) should be promoted to a deterministic unit test, independent of Hypothesis replay.
+- **No streaming or incremental API**: `cash_position` materialises the full `(T, N)` result array before returning. Live systems appending one row at a time must re-run the full computation. This is an architectural gap that will require significant refactoring to address.
+- **Polars upper bound maintenance burden**: `polars>=1.37.1,<2` requires manual bumps as new minor versions release. No compatibility shim or API deprecation test exists.
+
+### Score
+
+**9/10** — Unchanged from previous entry
+
+**Rationale**: The recent changes are net positive: the discriminated union config is a genuine design improvement, the Hypothesis-found bug fix demonstrates the testing infrastructure working as intended, and exception narrowing improves debuggability. The score does not increase because the weaknesses are real (stale benchmark metadata, `np.linalg.inv` in the Woodbury path, dead-code pragma annotations, thin ADR coverage) and the breaking API change on an in-flight branch introduces migration risk. The project remains exemplary for its size and domain.
 ## 2026-03-19 — Analysis Entry #2
 
 ### Summary

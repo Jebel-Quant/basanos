@@ -6,6 +6,9 @@ templates:
   - marimo
   - github
   - legal
+  - benchmarks
 
 exclude:
   - book/marimo/notebooks/rhiza.py
+  - tests/benchmarks/test_benchmarks.py‎
+
