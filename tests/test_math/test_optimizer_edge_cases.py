@@ -394,3 +394,48 @@ def test_signal_utilisation_singular_matrix_returns_nan(caplog: pytest.LogCaptur
 
     warnings = [r for r in caplog.records if "SingularMatrixError" in r.message and "signal_utilisation" in r.message]
     assert len(warnings) > 0, "Expected at least one SingularMatrixError warning from signal_utilisation"
+
+
+# ─── Edge case 7: SingularMatrixError in _iter_solve solve() path ────────────
+
+
+def test_iter_solve_singular_matrix_yields_degenerate_and_zero_positions(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """_iter_solve yields status='degenerate' and zero positions when solve raises SingularMatrixError.
+
+    The branch at optimizer.py:1089–1093 is reached when:
+      1. ``inv_a_norm`` returns a finite denom above ``denom_tol`` (normal path), and
+      2. the subsequent ``solve(matrix, expected_mu)`` call raises ``SingularMatrixError``.
+
+    ``inv_a_norm`` calls ``_cholesky_solve`` directly and is therefore unaffected
+    by patching ``basanos.math.optimizer.solve``, so the norm check succeeds while
+    the position solve raises — exercising the previously uncovered branch.
+    """
+    cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6)
+    prices = _non_monotonic_prices(40, 2)
+    mu = _sinusoidal_mu(prices)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+    with patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError("singular")):
+        statuses = engine.position_status
+        cp = engine.cash_position
+
+    warmup = cfg.corr
+    post_warmup_statuses = statuses["status"].slice(warmup).to_list()
+    # After warmup, only 'degenerate' and 'zero_signal' statuses are expected:
+    # 'degenerate' when solve raises SingularMatrixError, 'zero_signal' when mu is all-zero.
+    for s in post_warmup_statuses:
+        assert s in {"degenerate", "zero_signal"}, f"Unexpected status {s!r} after warmup"
+
+    # Sinusoidal mu is non-zero, so at least one row must reach the solve branch and be 'degenerate'.
+    assert "degenerate" in post_warmup_statuses, "Expected at least one 'degenerate' status after warmup"
+
+    # The 'degenerate' branch (optimizer.py:1092) yields np.zeros_like(expected_mu), so every
+    # finite cash position after warmup must be zero.
+    for asset in engine.assets:
+        vals = cp[asset].slice(warmup).to_numpy()
+        finite_vals = vals[np.isfinite(vals)]
+        assert np.allclose(finite_vals, 0.0), (
+            f"Non-zero cash positions for asset {asset!r} when solve raises SingularMatrixError: {finite_vals}"
+        )
