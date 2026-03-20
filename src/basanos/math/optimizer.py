@@ -248,6 +248,14 @@ class EwmaShrinkConfig(BaseModel):
     This is the default covariance mode. No additional parameters are required
     beyond those already present on :class:`BasanosConfig` (``shrink``, ``corr``).
 
+    .. note::
+        This class is **intentionally minimal**. The only field is the
+        ``covariance_mode`` discriminator, which is required to make Pydantic's
+        discriminated-union dispatch work correctly (see :data:`CovarianceConfig`).
+        Before adding new EWMA-specific fields here, consider whether the field
+        name clashes with existing :class:`BasanosConfig` top-level fields and
+        whether it would constitute a breaking change to the public API.
+
     Examples:
         >>> cfg = EwmaShrinkConfig()
         >>> cfg.covariance_mode
