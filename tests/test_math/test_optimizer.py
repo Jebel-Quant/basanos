@@ -613,6 +613,40 @@ def test_cash_position_skips_rows_with_all_nan_prices() -> None:
     assert row["B"] is None or (isinstance(row["B"], float) and np.isnan(row["B"]))
 
 
+def test_cash_position_skips_rows_with_all_nan_prices_sliding_window() -> None:
+    """sliding-window cash_position should mark timestamps with all-NaN prices as degenerate."""
+    n = 120
+    start = date(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    rng = np.random.default_rng(42)
+    a = list(100.0 + np.cumsum(rng.normal(0.0, 0.5, size=n)))
+    b = list(200.0 + np.cumsum(rng.normal(0.0, 0.7, size=n)))
+    idx_nan = 80
+    a[idx_nan] = None  # type: ignore[assignment]
+    b[idx_nan] = None  # type: ignore[assignment]
+    prices = pl.DataFrame({"date": dates, "A": a, "B": b}).with_columns(
+        pl.col("A").cast(pl.Float64), pl.col("B").cast(pl.Float64)
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(np.tanh(np.sin(np.linspace(0.0, np.pi, n))), dtype=pl.Float64),
+            "B": pl.Series(np.tanh(np.cos(np.linspace(0.0, np.pi, n))), dtype=pl.Float64),
+        }
+    )
+    cfg = BasanosConfig(
+        vola=10,
+        corr=20,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=30, n_factors=2),
+    )
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+    status = engine.position_status
+    assert status.filter(pl.col("date") == dates[idx_nan])["status"][0] == "degenerate"
+
+
 def test_cash_position_warns_when_denom_is_near_zero(optimizer_prices: pl.DataFrame, caplog) -> None:
     """A warning should be emitted when the normalisation denominator is degenerate.
 

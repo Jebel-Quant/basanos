@@ -200,3 +200,68 @@ Seven PRs merged since entry #3 systematically close six of the eight weaknesses
 
 **Rationale**: The sprint closed six of eight prior items with focused, minimal PRs. The Woodbury fix and singular-matrix promotion are correctness improvements; the migration `TypeError` and `position_status` are meaningful user-experience improvements. The score does not increase because `position_status` introduces a new and significant DRY violation that re-creates the core loop outside the optimizer's natural abstraction boundary — a design debt that will compound as the covariance mode set grows. The `k_eff < 1` dead-code re-appearance and coverage regression are minor but indicate the fix in PR #239 was not applied holistically.
 
+---
+
+## 2026-03-20 — Analysis Entry #5
+
+### Summary
+
+Five PRs merged since entry #4 close every weakness and risk filed in that session. The headline change is the `_iter_solve` generator (PR #263): a single authoritative private method that yields `(i, t, mask, pos_or_none, status)` per timestamp, collapsing the two near-identical optimizer loops that previously existed in `cash_position` and `position_status` into one. `cash_position` and `position_status` are now thin consumers of `_iter_solve`. Additionally, `BasanosConfig.replace()` (PR #264) replaces the fragile `model_copy(update={...})` pattern with an explicitly typed constructor-forwarding method, and the warm-up gap documentation (issue #224) is finally closed at the field level (PR #256). Coverage recovers to 99.81% with 580 tests. Zero open issues remain from the two prior sprints.
+
+### Strengths
+
+- **`_iter_solve` closes the DRY violation cleanly** (`optimizer.py:1025`): The generator is 70+ lines and fully documented with a `Yields` section describing all five tuple elements. `cash_position` (`optimizer.py:1142`) and `position_status` (`optimizer.py:1214`) are now ~20-line wrappers that consume it — no logic duplication. This is structurally correct: the loop now has a single implementation that cannot diverge between the two public properties. The approach also makes it straightforward to add a third consumer (e.g., a streaming API) without touching the core logic.
+- **`BasanosConfig.replace()` is a typed, forward-compatible pattern** (`optimizer.py:620`): The new method enumerates all 12 `BasanosConfig` fields explicitly and passes them to the constructor. Unlike `model_copy(update={...})`, any new required field added to `BasanosConfig` will immediately surface as a missing-argument lint error at every `replace()` call site. The `sharpe_at_pca_components` use case that motivated the risk note in entry #3 is now safe. 36 lines of tests added.
+- **Cross-property consistency tests added** (`test_optimizer.py:+157 lines`, PR #261): Tests assert that rows labelled `valid` have ≥1 non-zero position, `warmup` rows are NaN, `zero_signal` / `degenerate` rows are zero. These tests are parametrised over both covariance modes. The skip-rather-than-fail design (4 skipped when a status code doesn't appear in the fixture) is pragmatic — avoids false failures while still exercising every path that the fixture can produce.
+- **Warm-up gap documented at field level** (PR #256, `optimizer.py:296–303`): `SlidingWindowConfig.window`'s `Field(description=...)` now explicitly states the W-1 row warm-up semantics. Issue #224, open since the initial sliding-window merge, is finally closed.
+- **Dead-code branch removed from `position_status`** (PR #262): The `if k_eff < 1: # pragma: no cover` re-introduced in entry #4 is gone. The fix is now complete and consistent across the entire codebase.
+- **Coverage recovery**: 99.81% (580 tests, up from 570) vs. 99.27% in entry #4. The regression is almost fully reversed.
+
+### Weaknesses
+
+- **One `pragma: no cover` remains** (`optimizer.py:1091`): The `except SingularMatrixError` block inside `_iter_solve`'s EwmaShrink path — reached only when `solve(matrix, expected_mu)` fails after `inv_a_norm` already succeeded with a finite denominator — is marked uncovered. This is a genuinely rare edge (matrix passes the norm check but fails the solve), so the annotation is defensible, but it prevents 100% coverage recovery.
+- **Skipped consistency tests depend on fixture coverage**: The 4 skipped tests (`warmup`, `zero_signal`, `degenerate` status checks) skip at runtime when the fixture doesn't produce that code. If a future refactor changes which status codes appear in the standard fixtures, the consistency guarantee silently loses coverage rather than failing loudly. Dedicated fixtures that force each status code would be more robust.
+- **`_iter_solve` docstring mentions `pos_or_none` as `None` for warmup/no-price rows**, but `cash_position` uses `NaN` for warmup and `0` for no-price. The distinction is handled correctly in `cash_position`'s consumer logic, but the tuple contract mixes sentinel semantics (`None` vs zero array) that a future consumer must understand to implement correctly.
+
+### Risks / Technical Debt
+
+- **No streaming / incremental API**: Unchanged from prior entries. `_iter_solve` materialises all timestamps in one pass; live systems still must re-run the full computation per new row.
+- **Polars upper bound maintenance burden**: Unchanged. `polars>=1.37.1,<2` requires manual bumps.
+
+### Score
+
+**9/10** — Unchanged; technical debt from entry #4 fully cleared, no new issues introduced
+
+**Rationale**: All four items filed in entry #4 are resolved, and the implementation quality is genuinely higher: `_iter_solve` is the right abstraction, `BasanosConfig.replace()` is the right pattern, and the consistency tests provide a real regression guard. The score remains 9/10 rather than increasing because the two structural limits — no incremental API and the Polars ceiling — are unchanged, and the single remaining `pragma: no cover` indicates one untested failure mode in the core loop. The codebase is in its cleanest state to date.
+
+---
+
+## 2026-03-20 — Analysis Entry #6
+
+### Summary
+
+Four PRs merged since entry #5 address all three weaknesses and both risks filed in that session. The Polars upper bound is removed (PR #268), the `_iter_solve` docstring has a precise RST contract table for `(status, pos_or_none)` combinations (PR #272), a deterministic test covers the previously-uncovered `SingularMatrixError` branch (PR #270), and dedicated fixtures for all four `position_status` codes are added (PR #269). Coverage holds at 99.81% (584 tests); 3 statements remain uncovered and 4 tests still skip. The skip issue is partially resolved — new dedicated tests exist but the old skip-based tests were not removed.
+
+### Strengths
+
+- **Polars upper bound removed** (`pyproject.toml`): `polars>=1.37.1,<2` → `polars>=1.37.1`. This eliminates the manual-bump maintenance burden noted since the initial analysis. The change is one character; the benefit is permanent removal of a recurring chore.
+- **`_iter_solve` tuple contract fully specified** (`optimizer.py:1025`): The docstring now contains an RST list-table mapping every `(status, pos_or_none)` combination to its downstream effect in `cash_position`. `None` is now exclusive to `'warmup'`; all other statuses yield an `np.ndarray` (possibly zero-length). Future consumers can branch on `pos_or_none is None` without inspecting `status`. This is the right contract and it is clearly documented.
+- **`SingularMatrixError` branch covered** (`test_optimizer_edge_cases.py:+45 lines`, PR #270): The previously `# pragma: no cover` annotated branch is now exercised by a deterministic test that mocks `_cholesky_solve` to raise after `inv_a_norm` succeeds. The annotation is removed; the branch is verified correct.
+- **Dedicated `position_status` fixtures added** (PR #269, `test_optimizer.py:+158 lines`): Fixtures are constructed to guarantee each status code appears at least once — a `SlidingWindowConfig` engine with insufficient history for warmup, a zero-`mu` engine for zero-signal, a NaN-price engine for degenerate, and a valid engine. These tests no longer depend on the standard fixture incidentally producing the right rows.
+
+### Weaknesses
+
+- **Old skip-based consistency tests not removed** (`test_optimizer.py:2635,2650,2665`): PR #269 added dedicated fixtures alongside the skip-based tests but did not remove the originals. The result is that 4 tests still skip on every run, and the same consistency property is now tested twice — once robustly (new dedicated fixtures) and once weakly (old skip guards). This is test-suite noise, not a correctness risk, but it contradicts the stated intent of issue #266.
+- **Sliding-window no-price degenerate path uncovered** (`optimizer.py:1129–1130`): The `not mask.any()` → `yield ..., np.zeros(0), "degenerate"` branch in the sliding-window arm of `_iter_solve` has no test. The analogous EwmaShrink branch is covered. A fixture with at least one all-NaN price row under `SlidingWindowConfig` would close this gap.
+- **`_reject_legacy_flat_kwargs` non-dict path uncovered** (`optimizer.py:601`): The `if not isinstance(data, dict): return data` early-exit is never exercised. Pydantic passes a dict for normal construction; the non-dict path is reached only during model deserialization from an existing instance. Minor, but contributes to the 3 remaining uncovered statements.
+
+### Risks / Technical Debt
+
+- **No streaming / incremental API**: Unchanged.
+
+### Score
+
+**9/10** — Unchanged
+
+**Rationale**: The sprint closes all filed items. The Polars ceiling removal is a long-outstanding dependency hygiene win. The `_iter_solve` contract table is exemplary documentation. The score does not increase because the two remaining coverage gaps (`optimizer.py:1129-1130` and `:601`) are small but real, the old skip tests were not cleaned up, and the structural streaming gap remains. The codebase continues to demonstrate strong engineering discipline; these are polish items rather than material concerns.
+
