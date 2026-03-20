@@ -2753,6 +2753,44 @@ def _zero_signal_sw_engine_for_consistency() -> BasanosEngine:
     return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
 
+def _degenerate_sw_engine_for_consistency() -> BasanosEngine:
+    """SlidingWindow engine with one all-NaN price row after warm-up, guaranteeing a 'degenerate' row.
+
+    A row five steps past the end of the 30-day warm-up window has ``None``
+    for every asset so ``mask.any()`` is ``False`` at that step, causing the
+    optimizer to yield ``'degenerate'`` via the ``optimizer.py:1129-1130`` branch.
+    """
+    n = 80
+    window = 30
+    degen_row = window + 5  # first fully-active row that is intentionally all-NaN
+    rng = np.random.default_rng(88)
+    start = date(2024, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    p_a: list[float | None] = list(100.0 + np.cumsum(rng.normal(0, 0.5, n)))
+    p_b: list[float | None] = list(200.0 + np.cumsum(rng.normal(0, 0.7, n)))
+    p_a[degen_row] = None  # all-NaN row after warm-up → 'degenerate' in sliding-window arm
+    p_b[degen_row] = None
+    prices = pl.DataFrame({"date": dates, "A": p_a, "B": p_b}).with_columns(
+        pl.col("A").cast(pl.Float64), pl.col("B").cast(pl.Float64)
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(np.tanh(np.sin(np.linspace(0, 4 * np.pi, n))), dtype=pl.Float64),
+            "B": pl.Series(np.tanh(np.cos(np.linspace(0, 4 * np.pi, n))), dtype=pl.Float64),
+        }
+    )
+    cfg = BasanosConfig(
+        vola=10,
+        corr=20,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=30, n_factors=2),
+    )
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+
 def _degenerate_ewma_engine_for_consistency() -> BasanosEngine:
     """EWMA engine with one all-NaN price row, guaranteeing a 'degenerate' row.
 
@@ -2828,6 +2866,25 @@ class TestPositionStatusConsistencyGuaranteed:
         assets = engine.assets
         degen_indices = [i for i, v in enumerate((status_df["status"] == "degenerate").to_list()) if v]
         assert degen_indices, "Fixture must produce at least one 'degenerate' row"
+        for i in degen_indices:
+            row = pos_df.row(i, named=True)
+            values = [row[a] for a in assets]
+            assert all(_is_nan_value(v) or _is_zero_value(v) for v in values), (
+                f"Row {i} is labelled 'degenerate' but has non-zero finite positions: {values}"
+            )
+
+    def test_sliding_window_no_price_row_is_degenerate(self) -> None:
+        """Sliding-window arm: all-NaN price row after warm-up must be labelled 'degenerate'.
+
+        This covers the ``not mask.any()`` branch at optimizer.py:1129-1130 which was
+        previously unreachable by existing tests.
+        """
+        engine = _degenerate_sw_engine_for_consistency()
+        status_df = engine.position_status
+        pos_df = engine.cash_position
+        assets = engine.assets
+        degen_indices = [i for i, v in enumerate((status_df["status"] == "degenerate").to_list()) if v]
+        assert degen_indices, "Fixture must produce at least one 'degenerate' row (all-NaN price after warm-up)"
         for i in degen_indices:
             row = pos_df.row(i, named=True)
             values = [row[a] for a in assets]
