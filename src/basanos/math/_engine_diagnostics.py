@@ -30,6 +30,15 @@ class _DiagnosticsMixin:
     * ``_iter_matrices()`` — generator yielding ``(i, t, mask, matrix)``
     """
 
+    # Declared for the type checker; concrete values are provided by the
+    # consuming class (BasanosEngine).
+    assets: list[str]
+    prices: pl.DataFrame
+    mu: pl.DataFrame
+
+    def _iter_matrices(self):
+        raise NotImplementedError
+
     @property
     def condition_number(self) -> pl.DataFrame:
         """Condition number κ of the effective correlation matrix at each timestamp.

@@ -23,6 +23,12 @@ class _SignalEvaluatorMixin:
     * ``mu`` — Polars DataFrame of expected-return signals
     """
 
+    # Declared for the type checker; concrete values are provided by the
+    # consuming class (BasanosEngine).
+    assets: list[str]
+    prices: pl.DataFrame
+    mu: pl.DataFrame
+
     def _ic_series(self, use_rank: bool) -> pl.DataFrame:
         """Compute the cross-sectional IC time series.
 
