@@ -22,217 +22,16 @@ from typing import TYPE_CHECKING
 import numpy as np
 import plotly.graph_objects as go
 import plotly.io as pio
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 if TYPE_CHECKING:
     from .optimizer import BasanosConfig, BasanosEngine
 
-
-# ── CSS (reuses the same dark-theme palette as _report.py) ───────────────────
-
-_CSS = """
-/* ── Reset & Base ─────────────────────────────────── */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
-    background: #0f1117;
-    color: #e2e8f0;
-    line-height: 1.6;
-}
-
-/* ── Header ───────────────────────────────────────── */
-.report-header {
-    background: linear-gradient(135deg, #1a1f35 0%, #0d1b2a 100%);
-    border-bottom: 2px solid #2d3748;
-    padding: 2.5rem 2rem 2rem;
-}
-.report-header h1 {
-    font-size: 2rem;
-    font-weight: 700;
-    color: #63b3ed;
-    letter-spacing: -0.5px;
-}
-.report-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1.5rem;
-    margin-top: 0.75rem;
-    font-size: 0.875rem;
-    color: #a0aec0;
-}
-.report-meta span strong { color: #e2e8f0; }
-
-/* ── Table of Contents ────────────────────────────── */
-.toc {
-    background: #1a1f35;
-    border-bottom: 1px solid #2d3748;
-    padding: 0.75rem 2rem;
-    display: flex;
-    gap: 1.5rem;
-    flex-wrap: wrap;
-    font-size: 0.8rem;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-}
-.toc a {
-    color: #63b3ed;
-    text-decoration: none;
-    opacity: 0.8;
-    transition: opacity 0.2s;
-}
-.toc a:hover { opacity: 1; text-decoration: underline; }
-
-/* ── Main Content ─────────────────────────────────── */
-.container {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 2rem;
-}
-
-/* ── Sections ─────────────────────────────────────── */
-.section { margin-bottom: 3rem; }
-.section-title {
-    font-size: 1.25rem;
-    font-weight: 600;
-    color: #90cdf4;
-    margin-bottom: 1.25rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid #2d3748;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-.section-title::before {
-    content: "";
-    display: inline-block;
-    width: 4px;
-    height: 1.2em;
-    background: #4299e1;
-    border-radius: 2px;
-}
-
-/* ── Chart Card ───────────────────────────────────── */
-.chart-card {
-    background: #1a202c;
-    border: 1px solid #2d3748;
-    border-radius: 12px;
-    padding: 1rem;
-    overflow: hidden;
-}
-.chart-card .js-plotly-plot,
-.chart-card .plotly-graph-div { width: 100% !important; }
-.chart-unavailable {
-    color: #a0aec0;
-    font-style: italic;
-    padding: 1rem;
-}
-
-/* ── Parameter & Guidance Tables ─────────────────── */
-.param-table, .guidance-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.875rem;
-}
-.param-table th, .guidance-table th {
-    background: #2d3748;
-    color: #90cdf4;
-    padding: 0.6rem 1rem;
-    text-align: left;
-    font-weight: 600;
-    white-space: nowrap;
-}
-.param-table td, .guidance-table td {
-    padding: 0.5rem 1rem;
-    border-bottom: 1px solid #2d3748;
-    vertical-align: top;
-}
-.param-table td.param-name {
-    font-family: "SFMono-Regular", Consolas, monospace;
-    color: #63b3ed;
-    white-space: nowrap;
-    font-weight: 600;
-}
-.param-table td.param-value {
-    font-family: "SFMono-Regular", Consolas, monospace;
-    color: #68d391;
-    white-space: nowrap;
-}
-.param-table td.param-constraint {
-    font-family: "SFMono-Regular", Consolas, monospace;
-    color: #f6ad55;
-    white-space: nowrap;
-}
-.param-table td.param-description { color: #cbd5e0; }
-.param-table tbody tr:hover,
-.guidance-table tbody tr:hover { background: #1e2a3a; }
-.guidance-table td.regime { color: #cbd5e0; white-space: nowrap; }
-.guidance-table td.shrink-range { color: #f6ad55; font-weight: 600; }
-.guidance-table td.notes { color: #a0aec0; }
-
-/* ── Theory Section ───────────────────────────────── */
-.theory-block {
-    background: #1a202c;
-    border: 1px solid #2d3748;
-    border-radius: 12px;
-    padding: 1.5rem 2rem;
-    line-height: 1.8;
-}
-.theory-block h3 {
-    color: #90cdf4;
-    font-size: 1rem;
-    font-weight: 600;
-    margin: 1.25rem 0 0.5rem;
-}
-.theory-block h3:first-child { margin-top: 0; }
-.theory-block p { color: #cbd5e0; margin-bottom: 0.75rem; }
-.theory-block code {
-    font-family: "SFMono-Regular", Consolas, monospace;
-    background: #2d3748;
-    padding: 0.1em 0.4em;
-    border-radius: 4px;
-    font-size: 0.875em;
-    color: #63b3ed;
-}
-.theory-block .math-block {
-    font-family: "SFMono-Regular", Consolas, monospace;
-    background: #2d3748;
-    border-left: 3px solid #4299e1;
-    padding: 0.75rem 1rem;
-    border-radius: 0 8px 8px 0;
-    margin: 0.75rem 0;
-    color: #e2e8f0;
-    font-size: 0.9rem;
-}
-.theory-block ul {
-    list-style: none;
-    padding: 0;
-}
-.theory-block ul li {
-    color: #cbd5e0;
-    padding: 0.2rem 0;
-    padding-left: 1.5rem;
-    position: relative;
-}
-.theory-block ul li::before {
-    content: "▸";
-    position: absolute;
-    left: 0;
-    color: #4299e1;
-}
-.theory-block a { color: #63b3ed; }
-.theory-block a:hover { text-decoration: underline; }
-.refs { color: #a0aec0; font-size: 0.85rem; margin-top: 1rem; }
-
-/* ── Footer ───────────────────────────────────────── */
-.report-footer {
-    text-align: center;
-    padding: 1.5rem;
-    color: #4a5568;
-    font-size: 0.75rem;
-    border-top: 1px solid #2d3748;
-    margin-top: 3rem;
-}
-"""
+_TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
+_env = Environment(
+    loader=FileSystemLoader(_TEMPLATES_DIR),
+    autoescape=select_autoescape(["html"]),
+)
 
 
 # ── Parameter metadata ────────────────────────────────────────────────────────
@@ -425,76 +224,6 @@ def _guidance_table_html() -> str:
     )
 
 
-# ── Theory HTML ───────────────────────────────────────────────────────────────
-
-_THEORY_HTML = """
-<div class="theory-block">
-  <h3>Linear Shrinkage toward the Identity</h3>
-  <p>
-    The <code>shrink</code> parameter (&lambda;) controls how much the EWMA sample
-    correlation matrix <em>C<sub>EWMA</sub></em> is regularised before being
-    passed to the linear solver.  The shrunk matrix is:
-  </p>
-  <div class="math-block">C_shrunk = &lambda; &middot; C_EWMA + (1 - &lambda;) &middot; I_n</div>
-  <p>
-    where <em>I<sub>n</sub></em> is the n x n identity matrix.
-    Setting &lambda; = 1 uses the raw EWMA correlation matrix (no shrinkage); setting
-    &lambda; = 0 replaces it entirely with the identity (positions become purely
-    signal-proportional, uncorrelated).
-  </p>
-
-  <h3>Why Shrinkage?</h3>
-  <p>
-    When the number of assets <em>n</em> is large relative to the lookback
-    window <em>T</em> (high concentration ratio <em>n/T</em>), the sample
-    covariance matrix is poorly estimated.  Extreme eigenvalues amplify
-    estimation noise and cause the linear solver to allocate excessive
-    leverage to a few eigendirections.  Shrinkage toward the identity damps
-    these extremes, improves the condition number, and produces more stable,
-    diversified positions.
-  </p>
-
-  <h3>When to Prefer Strong Shrinkage (low &lambda;)</h3>
-  <ul>
-    <li>Fewer than ~30 assets with a <code>corr</code> lookback shorter than 100 days.</li>
-    <li>High-volatility or crisis regimes where correlations spike and the
-        sample matrix is less representative of the true structure.</li>
-    <li>Portfolios where estimation noise is more costly than correlation bias
-        (low signal-to-noise ratio of <code>mu</code>).</li>
-  </ul>
-
-  <h3>When to Prefer Light Shrinkage (high &lambda;)</h3>
-  <ul>
-    <li>Many assets with a long lookback (low concentration ratio).</li>
-    <li>The EWMA correlation structure carries genuine diversification
-        information that the solver should exploit.</li>
-    <li>Out-of-sample testing shows that position stability is not a concern.</li>
-  </ul>
-
-  <h3>EWMA Parameters - vola and corr</h3>
-  <p>
-    Both <code>vola</code> and <code>corr</code> are span-equivalent EWMA
-    lookbacks (in trading periods).  The EWMA decay factor is
-    <em>a = 2 / (span + 1)</em>, giving a centre-of-mass of
-    <em>span / 2</em> periods.  <code>corr</code> must be &gt;= <code>vola</code>
-    to ensure the correlation estimator sees at least as much history as the
-    volatility normaliser.
-  </p>
-
-  <h3>References</h3>
-  <p class="refs">
-    Ledoit, O. &amp; Wolf, M. (2004).
-    <em>A well-conditioned estimator for large-dimensional covariance matrices.</em>
-    Journal of Multivariate Analysis, 88(2), 365-411.<br/>
-    Chen, Y., Wiesel, A., Eldar, Y. C., &amp; Hero, A. O. (2010).
-    <em>Shrinkage Algorithms for MMSE Covariance Estimation.</em>
-    IEEE Transactions on Signal Processing, 58(10), 5016-5029.<br/>
-    See also: <code>basanos.math._signal.shrink2id</code> for the implementation.
-  </p>
-</div>
-"""
-
-
 # ── Plotly helper ─────────────────────────────────────────────────────────────
 
 
@@ -579,65 +308,22 @@ class ConfigReport:
         toc_lambda = '<a href="#lambda-sweep">Lambda Sweep</a>' if has_engine else ""
         toc_extra_sep = "&nbsp;&nbsp;" if has_engine else ""
 
-        # ── Assemble HTML ──────────────────────────────────────────────────
-        return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>{title}</title>
-  <style>{_CSS}</style>
-</head>
-<body>
-
-<header class="report-header">
-  <h1>&#x2699;&#xFE0F; {title}</h1>
-  <div class="report-meta">
-    <span><strong>vola:</strong> {cfg.vola}</span>
-    <span><strong>corr:</strong> {cfg.corr}</span>
-    <span><strong>clip:</strong> {cfg.clip}</span>
-    <span><strong>shrink&nbsp;(λ):</strong> {cfg.shrink}</span>
-    <span><strong>AUM:</strong> {cfg.aum:,.0f}</span>
-  </div>
-</header>
-
-<nav class="toc">
-  <a href="#parameters">Parameters</a>
-  {toc_extra_sep}{toc_lambda}
-  <a href="#guidance">Shrinkage Guidance</a>
-  <a href="#theory">Theory</a>
-</nav>
-
-<div class="container">
-
-  <section class="section" id="parameters">
-    <h2 class="section-title">Configuration Parameters</h2>
-    <div class="chart-card" style="overflow-x: auto;">{params_html}</div>
-  </section>
-
-  <section class="section" id="lambda-sweep">
-    <h2 class="section-title">Lambda (Shrinkage) Sweep</h2>
-    {sweep_section}
-  </section>
-
-  <section class="section" id="guidance">
-    <h2 class="section-title">Shrinkage Guidance — n / T Regimes</h2>
-    <div class="chart-card" style="overflow-x: auto;">{guidance_html}</div>
-  </section>
-
-  <section class="section" id="theory">
-    <h2 class="section-title">Theory &amp; References</h2>
-    {_THEORY_HTML}
-  </section>
-
-</div>
-
-<footer class="report-footer">
-  Generated by <strong>basanos</strong>
-</footer>
-
-</body>
-</html>"""
+        # ── Render template ────────────────────────────────────────────────
+        template = _env.get_template("config_report.html")
+        return template.render(
+            title=title,
+            vola=cfg.vola,
+            corr=cfg.corr,
+            clip=cfg.clip,
+            shrink=cfg.shrink,
+            aum=f"{cfg.aum:,.0f}",
+            toc_lambda=toc_lambda,
+            toc_extra_sep=toc_extra_sep,
+            params_html=params_html,
+            sweep_section=sweep_section,
+            guidance_html=guidance_html,
+            container_max_width="1200px",
+        )
 
     def save(self, path: str | Path, title: str = "Basanos Configuration Report") -> Path:
         """Save the HTML report to a file.
