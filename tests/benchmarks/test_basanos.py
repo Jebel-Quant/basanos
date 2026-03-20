@@ -224,6 +224,47 @@ class TestPortfolioBenchmarks:
         assert "drawdown" in result.columns
         assert "NAV_compounded" in result.columns
 
+    def test_profit_252_5(self, benchmark, pf_252_5):
+        """Benchmark total daily profit on 252-day, 5-asset portfolio."""
+        result = benchmark(lambda: pf_252_5.profit)
+        assert "profit" in result.columns
+        assert result.shape[0] == 252
+
+    def test_returns_252_5(self, benchmark, pf_252_5):
+        """Benchmark daily returns on 252-day, 5-asset portfolio."""
+        result = benchmark(lambda: pf_252_5.returns)
+        assert "returns" in result.columns
+        assert result.shape[0] == 252
+
+    def test_highwater_252_5(self, benchmark, pf_252_5):
+        """Benchmark high-water mark series on 252-day, 5-asset portfolio."""
+        result = benchmark(lambda: pf_252_5.highwater)
+        assert "highwater" in result.columns
+        assert result.shape[0] == 252
+
+    def test_turnover_252_5(self, benchmark, pf_252_5):
+        """Benchmark daily turnover on 252-day, 5-asset portfolio."""
+        result = benchmark(lambda: pf_252_5.turnover)
+        assert "turnover" in result.columns
+        assert result.shape[0] == 252
+
+    def test_turnover_weekly_252_5(self, benchmark, pf_252_5):
+        """Benchmark weekly turnover aggregation on 252-day, 5-asset portfolio."""
+        result = benchmark(lambda: pf_252_5.turnover_weekly)
+        assert "turnover" in result.columns
+
+    def test_turnover_summary_252_5(self, benchmark, pf_252_5):
+        """Benchmark turnover summary statistics on 252-day, 5-asset portfolio."""
+        result = benchmark(pf_252_5.turnover_summary)
+        assert result.shape[0] == 3
+        assert "metric" in result.columns
+
+    def test_trading_cost_impact_252_5(self, benchmark, pf_252_5):
+        """Benchmark trading cost impact sweep on 252-day, 5-asset portfolio."""
+        result = benchmark(lambda: pf_252_5.trading_cost_impact(max_bps=10))
+        assert "sharpe" in result.columns
+        assert result.shape[0] == 11
+
 
 # ─── Stats benchmarks ─────────────────────────────────────────────────────────
 
@@ -315,6 +356,67 @@ class TestBasanosEngineBenchmarks:
         result = benchmark(lambda: engine_252_5.portfolio)
         assert isinstance(result, Portfolio)
         assert result.assets == engine_252_5.assets
+
+    def test_cor_tensor_252_5(self, benchmark, engine_252_5):
+        """Benchmark stacked correlation tensor on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.cor_tensor)
+        assert result.shape == (252, 5, 5)
+
+    def test_risk_position_252_5(self, benchmark, engine_252_5):
+        """Benchmark risk positions (pre-vola scaling) on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.risk_position)
+        assert result.shape == engine_252_5.prices.shape
+
+    def test_position_leverage_252_5(self, benchmark, engine_252_5):
+        """Benchmark gross leverage (L1 norm of cash positions) on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.position_leverage)
+        assert "leverage" in result.columns
+        assert result.shape[0] == 252
+
+    def test_condition_number_252_5(self, benchmark, engine_252_5):
+        """Benchmark per-timestamp condition number on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.condition_number)
+        assert "condition_number" in result.columns
+        assert result.shape[0] == 252
+
+    def test_effective_rank_252_5(self, benchmark, engine_252_5):
+        """Benchmark per-timestamp effective rank on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.effective_rank)
+        assert "effective_rank" in result.columns
+        assert result.shape[0] == 252
+
+    def test_solver_residual_252_5(self, benchmark, engine_252_5):
+        """Benchmark per-timestamp solver residual on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.solver_residual)
+        assert "residual" in result.columns
+        assert result.shape[0] == 252
+
+    def test_signal_utilisation_252_5(self, benchmark, engine_252_5):
+        """Benchmark per-asset signal utilisation on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.signal_utilisation)
+        assert result.shape == engine_252_5.prices.shape
+
+    def test_ic_252_5(self, benchmark, engine_252_5):
+        """Benchmark Pearson IC time series on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.ic)
+        assert "ic" in result.columns
+        assert result.shape[0] == 251
+
+    def test_rank_ic_252_5(self, benchmark, engine_252_5):
+        """Benchmark Spearman Rank IC time series on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.rank_ic)
+        assert "rank_ic" in result.columns
+        assert result.shape[0] == 251
+
+    def test_icir_252_5(self, benchmark, engine_252_5):
+        """Benchmark ICIR (IC mean / IC std) on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.icir)
+        assert isinstance(result, float)
+
+    def test_naive_sharpe_252_5(self, benchmark, engine_252_5):
+        """Benchmark naive equal-weight Sharpe baseline on 252-day, 5-asset engine."""
+        result = benchmark(lambda: engine_252_5.naive_sharpe)
+        assert isinstance(result, float)
 
 
 # ─── Sliding-window BasanosEngine benchmarks ─────────────────────────────────
