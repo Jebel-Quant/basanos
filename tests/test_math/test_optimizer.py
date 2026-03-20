@@ -35,7 +35,7 @@ from basanos.exceptions import (
     SingularMatrixError,
 )
 from basanos.math import BasanosConfig, BasanosEngine
-from basanos.math.optimizer import SlidingWindowConfig
+from basanos.math.optimizer import SlidingWindowConfig, _validate_inputs
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -480,7 +480,30 @@ def test_post_init_excessive_nan_respects_config(small_mu: pl.DataFrame) -> None
     )
 
 
-# ─── cash_position: basic schema and finite values ────────────────────────────────────────────
+# ─── _validate_inputs: callable independently of BasanosEngine ───────────────
+
+
+def test_validate_inputs_callable_directly(small_prices: pl.DataFrame, small_mu: pl.DataFrame) -> None:
+    """_validate_inputs can be called directly without constructing a BasanosEngine."""
+    cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    # valid inputs should return None without raising
+    assert _validate_inputs(small_prices, small_mu, cfg) is None
+
+
+def test_validate_inputs_raises_missing_date_directly() -> None:
+    """_validate_inputs raises MissingDateColumnError when called directly without BasanosEngine."""
+    cfg = BasanosConfig(vola=4, corr=4, clip=3.0, shrink=0.5, aum=1e6)
+    prices_no_date = pl.DataFrame({"A": [1.0, 2.0], "B": [3.0, 4.0]})
+    mu_ok = pl.DataFrame(
+        {
+            "date": pl.date_range(date(2020, 1, 1), date(2020, 1, 2), interval="1d", eager=True),
+            "A": [0.1, 0.2],
+            "B": [0.3, 0.4],
+        }
+    )
+    with pytest.raises(MissingDateColumnError) as exc_info:
+        _validate_inputs(prices_no_date, mu_ok, cfg)
+    assert exc_info.value.frame_name == "prices"
 
 
 def test_optimize_returns_frame_with_expected_schema_and_finite_after_warmup(optimizer_prices, optimizer_mu):

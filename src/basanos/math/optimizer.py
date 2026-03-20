@@ -112,6 +112,85 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
+
+def _validate_inputs(prices: pl.DataFrame, mu: pl.DataFrame, cfg: "BasanosConfig") -> None:
+    """Validate ``prices``, ``mu``, and ``cfg`` for use with :class:`BasanosEngine`.
+
+    Checks that both DataFrames contain a ``'date'`` column, share identical
+    shapes and column sets, contain no non-positive prices, no excessive NaN
+    fractions, and no monotonically non-varying price series.  Also emits a
+    warning when the dataset is too short relative to a configured
+    sliding-window size.
+
+    Args:
+        prices: DataFrame of price levels per asset over time.
+        mu: DataFrame of expected-return signals aligned with ``prices``.
+        cfg: Engine configuration instance.
+
+    Raises:
+        MissingDateColumnError: If ``'date'`` is absent from either frame.
+        ShapeMismatchError: If ``prices`` and ``mu`` have different shapes.
+        ColumnMismatchError: If the column sets of the two frames differ.
+        NonPositivePricesError: If any asset contains a non-positive price.
+        ExcessiveNullsError: If any asset column exceeds ``cfg.max_nan_fraction``.
+        MonotonicPricesError: If any asset price series is monotonically
+            non-decreasing or non-increasing.
+    """
+    # ensure 'date' column exists in prices before any other validation
+    if "date" not in prices.columns:
+        raise MissingDateColumnError("prices")
+
+    # ensure 'date' column exists in mu as well (kept for symmetry and downstream assumptions)
+    if "date" not in mu.columns:
+        raise MissingDateColumnError("mu")
+
+    # check that prices and mu have the same shape
+    if prices.shape != mu.shape:
+        raise ShapeMismatchError(prices.shape, mu.shape)
+
+    # check that the columns of prices and mu are identical
+    if not set(prices.columns) == set(mu.columns):
+        raise ColumnMismatchError(prices.columns, mu.columns)
+
+    assets = [c for c in prices.columns if c != "date" and prices[c].dtype.is_numeric()]
+
+    # check for non-positive prices: log returns require strictly positive prices
+    for asset in assets:
+        col = prices[asset].drop_nulls()
+        if col.len() > 0 and (col <= 0).any():
+            raise NonPositivePricesError(asset)
+
+    # check for excessive NaN values: more than cfg.max_nan_fraction null in any asset column
+    n_rows = prices.height
+    if n_rows > 0:
+        for asset in assets:
+            nan_frac = prices[asset].null_count() / n_rows
+            if nan_frac > cfg.max_nan_fraction:
+                raise ExcessiveNullsError(asset, nan_frac, cfg.max_nan_fraction)
+
+    # check for monotonic price series: a strictly non-decreasing or non-increasing
+    # series has no variance in its return sign, indicating malformed or synthetic data
+    for asset in assets:
+        col = prices[asset].drop_nulls()
+        if col.len() > 2:
+            diffs = col.diff().drop_nulls()
+            if (diffs >= 0).all() or (diffs <= 0).all():
+                raise MonotonicPricesError(asset)
+
+    # warn when the dataset is too short to benefit from the sliding window
+    if cfg.covariance_mode == CovarianceMode.sliding_window and cfg.window is not None:
+        w: int = cfg.window
+        if n_rows < 2 * w:
+            _logger.warning(
+                "Dataset length (%d rows) is less than 2 * window (%d). "
+                "The first %d timestamps will yield zero positions during warm-up; "
+                "consider using a longer history or reducing 'window'.",
+                n_rows,
+                2 * w,
+                w - 1,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Re-export config symbols so ``from basanos.math.optimizer import …`` keeps
 # working for existing callers.
@@ -197,66 +276,8 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     cfg: BasanosConfig
 
     def __post_init__(self) -> None:
-        """Validate basic invariants right after initialization.
-
-        Ensures both ``prices`` and ``mu`` contain a ``'date'`` column and
-        share identical shapes/columns, which downstream computations rely on.
-        Also checks for data quality issues that would cause silent failures
-        downstream: non-positive prices, excessive NaN values, and monotonic
-        (non-varying) price series.
-        """
-        # ensure 'date' column exists in prices before any other validation
-        if "date" not in self.prices.columns:
-            raise MissingDateColumnError("prices")
-
-        # ensure 'date' column exists in mu as well (kept for symmetry and downstream assumptions)
-        if "date" not in self.mu.columns:
-            raise MissingDateColumnError("mu")
-
-        # check that prices and mu have the same shape
-        if self.prices.shape != self.mu.shape:
-            raise ShapeMismatchError(self.prices.shape, self.mu.shape)
-
-        # check that the columns of prices and mu are identical
-        if not set(self.prices.columns) == set(self.mu.columns):
-            raise ColumnMismatchError(self.prices.columns, self.mu.columns)
-
-        # check for non-positive prices: log returns require strictly positive prices
-        for asset in self.assets:
-            col = self.prices[asset].drop_nulls()
-            if col.len() > 0 and (col <= 0).any():
-                raise NonPositivePricesError(asset)
-
-        # check for excessive NaN values: more than cfg.max_nan_fraction null in any asset column
-        n_rows = self.prices.height
-        if n_rows > 0:
-            for asset in self.assets:
-                nan_frac = self.prices[asset].null_count() / n_rows
-                if nan_frac > self.cfg.max_nan_fraction:
-                    raise ExcessiveNullsError(asset, nan_frac, self.cfg.max_nan_fraction)
-
-        # check for monotonic price series: a strictly non-decreasing or non-increasing
-        # series has no variance in its return sign, indicating malformed or synthetic data
-        for asset in self.assets:
-            col = self.prices[asset].drop_nulls()
-            if col.len() > 2:
-                diffs = col.diff().drop_nulls()
-                if (diffs >= 0).all() or (diffs <= 0).all():
-                    raise MonotonicPricesError(asset)
-
-        # warn when the dataset is too short to benefit from the sliding window
-        if self.cfg.covariance_mode == CovarianceMode.sliding_window and self.cfg.window is not None:
-            w: int = self.cfg.window
-            n_rows = self.prices.height
-            if n_rows < 2 * w:
-                _logger.warning(
-                    "Dataset length (%d rows) is less than 2 * window (%d). "
-                    "The first %d timestamps will yield zero positions during warm-up; "
-                    "consider using a longer history or reducing 'window'.",
-                    n_rows,
-                    2 * w,
-                    w - 1,
-                )
+        """Validate inputs by delegating to :func:`_validate_inputs`."""
+        _validate_inputs(self.prices, self.mu, self.cfg)
 
     # ------------------------------------------------------------------
     # Core data-access properties
