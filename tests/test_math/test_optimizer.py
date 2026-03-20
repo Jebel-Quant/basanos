@@ -2632,51 +2632,6 @@ class TestPositionStatusCashPositionConsistency:
                 f"Row {i} is labelled 'valid' but all positions are zero or NaN: {values}"
             )
 
-    def test_warmup_rows_have_all_nan_positions(
-        self, engine: BasanosEngine, status_df: pl.DataFrame, pos_df: pl.DataFrame
-    ) -> None:
-        """Every 'warmup' row in position_status must have all-NaN positions."""
-        assets = engine.assets
-        warmup_indices = [i for i, v in enumerate((status_df["status"] == "warmup").to_list()) if v]
-        if not warmup_indices:
-            pytest.skip("No 'warmup' rows found (expected for ewma_shrink mode)")
-        for i in warmup_indices:
-            row = pos_df.row(i, named=True)
-            values = [row[a] for a in assets]
-            assert all(_is_nan_value(v) for v in values), (
-                f"Row {i} is labelled 'warmup' but not all positions are NaN: {values}"
-            )
-
-    def test_zero_signal_rows_have_all_zero_positions(
-        self, engine: BasanosEngine, status_df: pl.DataFrame, pos_df: pl.DataFrame
-    ) -> None:
-        """Every 'zero_signal' row in position_status must have all-zero positions."""
-        assets = engine.assets
-        zs_indices = [i for i, v in enumerate((status_df["status"] == "zero_signal").to_list()) if v]
-        if not zs_indices:
-            pytest.skip("No 'zero_signal' rows found in this engine configuration")
-        for i in zs_indices:
-            row = pos_df.row(i, named=True)
-            values = [row[a] for a in assets]
-            assert all(_is_zero_value(v) for v in values), (
-                f"Row {i} is labelled 'zero_signal' but not all positions are zero: {values}"
-            )
-
-    def test_degenerate_rows_have_zero_or_nan_positions(
-        self, engine: BasanosEngine, status_df: pl.DataFrame, pos_df: pl.DataFrame
-    ) -> None:
-        """Every 'degenerate' row must have all-zero or all-NaN positions."""
-        assets = engine.assets
-        degen_indices = [i for i, v in enumerate((status_df["status"] == "degenerate").to_list()) if v]
-        if not degen_indices:
-            pytest.skip("No 'degenerate' rows found in this engine configuration")
-        for i in degen_indices:
-            row = pos_df.row(i, named=True)
-            values = [row[a] for a in assets]
-            assert all(_is_nan_value(v) or _is_zero_value(v) for v in values), (
-                f"Row {i} is labelled 'degenerate' but has non-zero finite positions: {values}"
-            )
-
 
 # ─── Dedicated minimal fixtures for guaranteed status-code coverage ───────────
 
