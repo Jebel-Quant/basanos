@@ -267,6 +267,41 @@ Four PRs merged since entry #5 address all three weaknesses and both risks filed
 
 ---
 
+## 2026-03-20 — Analysis Entry #8
+
+### Summary
+
+Six commits across four PRs since entry #7 close all five weaknesses and both risks filed in that session, then continue the God Object decomposition with a second split pass: `optimizer.py` sheds `_ewm_corr_numpy` into `_ewm_corr.py` (126 lines) and `_SolveMixin` into `_engine_solve.py` (241 lines), reducing the main file from ~1,033 to 716 lines. A `typing.Protocol` (`_EngineProtocol`) replaces the annotation-only attribute stubs and the `raise NotImplementedError` sentinel in `_DiagnosticsMixin`, making the mixin contract formally verifiable. `problem.md` is deleted (superseded by the compiled paper), version bumped to 0.4.3, and Jinja2 upper bound removed. Test suite reaches 656 tests. The module decomposition is effectively complete; the remaining open items are structural design decisions rather than engineering gaps.
+
+### Strengths
+
+- **`_EngineProtocol` is the correct mixin contract pattern** (`_engine_protocol.py:31`): A `typing.Protocol` with 6 attribute declarations and 2 method stubs fully replaces the annotation-only class variables from entry #7. Type checkers (`ty`, `mypy`) can now verify statically that any class used as a mixin host satisfies the contract. The `self: _EngineProtocol` self-typing in `_SolveMixin`, `_DiagnosticsMixin`, and `_SignalEvaluatorMixin` methods is the accepted pattern for structural Protocol constraints on `self` in Python mixins — not standard `self`, but unambiguous and understood by all major type checkers.
+- **`_ewm_corr_numpy` stands alone** (`_ewm_corr.py:14`): The 126-line module is arguably the best-documented unit in the codebase. It states its pandas-parity contract, explains why `ignore_na=False` forces joint-finite masking, documents the IIR structure and all 14 peak arrays with sizes, and includes complexity tables. Separating it enables profiling and testing without loading `BasanosEngine` machinery. The mathematical notation in comments (e.g., `v_x[t,j,i] carries x_j[t]`) eliminates the usual risk of the implementation diverging silently from its rationale.
+- **`_SolveMixin` extraction completes the core decomposition** (`_engine_solve.py:28`): The 241-line module is entirely focused on per-timestamp solve logic (`_iter_matrices`, `_iter_solve`). `optimizer.py` no longer contains any of the hot-path computation — it is now a dataclass facade wiring `_DiagnosticsMixin`, `_SignalEvaluatorMixin`, and `_SolveMixin` together, with its own scope limited to input validation, EWM data preparation, and position/portfolio aggregation.
+- **`optimizer.py` is 716 lines, down from 1,033** (31% reduction): The decomposition across six modules is now structurally complete. The module-level docstring (`optimizer.py:62–78`) explicitly enumerates all seven sub-modules with their responsibilities, forming a navigable architecture overview.
+- **`_reject_legacy_flat_kwargs` dead guard removed cleanly** (`_config.py:412`, PR #293): Annotating `data` as `dict[str, object]` rather than `object` removes the `isinstance` guard at the source — the type annotation itself encodes the invariant that Pydantic always passes a dict, eliminating both the dead code and the coverage annotation.
+- **`problem.md` deleted**: The standalone problem statement is superseded by `paper/basanos.tex` and the `make paper` build. Removing it eliminates a divergence risk — there is now a single authoritative problem definition.
+- **All three remaining dependency ceilings removed**: Jinja2 `<4` removed in PR #292. Combined with the Polars ceiling removal in entry #6 and the earlier NumPy/SciPy practices, the dependency configuration is now in its cleanest state: only Pydantic (`<3`) and scipy/numpy (`<2`, `<3`) retain upper bounds — both justified by known API stability patterns.
+
+### Weaknesses
+
+- **`cor` key type is `dict[object, np.ndarray]`** (`optimizer.py:299`, `_engine_protocol.py:43`): The `@property` and its Protocol mirror both use `object` as the dict key type. The actual keys are polars date values (the output of `self.prices["date"].to_list()`). `object` admits any key and defeats static analysis of any code that indexes `cor[t]`. Narrowing to `dict[datetime.date, np.ndarray]` or `dict[Any, np.ndarray]` with a comment would be more informative; the former would actually catch key-type mismatches.
+- **`PortfolioData`/`Portfolio` IS-A coupling** (`analytics/portfolio.py`): Unchanged from entry #7. `Portfolio(PortfolioData)` means `isinstance(p, PortfolioData)` is true for any `Portfolio` instance. This is likely intentional (the two share all fields) but is not documented as a deliberate design decision. An ADR or a docstring note on the IS-A vs. composition trade-off would signal intent and prevent a future contributor from refactoring toward composition on the assumption the inheritance is accidental.
+- **`__post_init__` validation is 60+ lines in the engine facade** (`optimizer.py:199–258`): The six validation checks (date column, shape, column parity, non-positive prices, excessive NaNs, monotonic prices, warm-up gap) could live in a dedicated `_validate_inputs` private method or even a helper module, keeping `__post_init__` to a summary call. This is a minor readability issue at 716 lines total, but worth noting as `optimizer.py` approaches its final form.
+
+### Risks / Technical Debt
+
+- **No streaming / incremental API**: Unchanged from all prior entries. `_iter_solve` and `_iter_matrices` process all `T` timestamps in one pass. Live systems must re-run the full computation per new row. The `_SolveMixin` extraction actually makes this addressable in future: a streaming variant could inherit the same mixin and override `__iter__` behaviour.
+- **`self: _EngineProtocol` pattern not documented for contributors**: The mixin methods use an unconventional `self` type annotation. New contributors adding a fourth mixin or extending an existing one may default to annotation-only attributes (reproducing the entry #7 weakness). A brief note in `_engine_protocol.py` or `CONTRIBUTING.md` on the expected pattern would prevent regression.
+
+### Score
+
+**9/10** — Unchanged
+
+**Rationale**: The second decomposition pass finishes what entry #7 started: `optimizer.py` is now a clean facade with no hot-path logic remaining in it. The Protocol-based mixin contract is the correct long-term design. Every weakness and risk from entry #7 is resolved. The score does not increase because the two structural limits — no incremental API and the `PortfolioData`/`Portfolio` inheritance coupling — are unchanged, and the `dict[object, ...]` key type on `cor` is a precision gap in the type contract that the Protocol work otherwise made exemplary. The codebase architecture is in its best state to date.
+
+---
+
 ## 2026-03-20 — Analysis Entry #7
 
 ### Summary
