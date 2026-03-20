@@ -58,7 +58,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "jinja2", specifier = ">=3.1,<4" },
+    { name = "jinja2", specifier = ">=3.1" },
     { name = "numpy", specifier = ">=2.4,<3" },
     { name = "plotly", specifier = ">=6.6.0,<7" },
     { name = "polars", specifier = ">=1.37.1" },
