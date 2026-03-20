@@ -15,6 +15,29 @@ Before sending a pull request, make sure you do the following:
 and all tests pass.
 - [Write unit tests](#writing-unit-tests) for new functionality added.
 
+## Build system
+
+The project uses a [Rhiza](https://github.com/jebel-quant/rhiza)-managed Makefile
+hierarchy. The root `Makefile` includes `.rhiza/rhiza.mk`, which auto-loads all
+`.mk` modules from `.rhiza/make.d/`.
+
+### Active make modules
+
+| Module | Key targets | Purpose |
+|--------|-------------|---------|
+| `bootstrap.mk` | `install`, `clean` | Environment setup (uv, venv, deps) |
+| `quality.mk` | `fmt`, `deptry`, `todos` | Formatting and dependency checks |
+| `test.mk` | `test`, `typecheck`, `security`, `benchmark` | Testing and static analysis |
+| `docs.mk` | `docs`, `mkdocs-serve` | API documentation (pdoc / MkDocs) |
+| `book.mk` | `book` | Companion documentation book |
+| `marimo.mk` | `marimo` | Interactive Marimo notebooks |
+| `releasing.mk` | `bump`, `release`, `publish` | Version bumping and releases |
+| `gh-aw.mk` | `gh-aw-compile`, `gh-aw-run` | GitHub Agentic Workflows |
+| `github.mk` | `view-prs`, `view-issues` | GitHub CLI helpers |
+| `agentic.mk` | `copilot`, `claude`, `analyse-repo` | AI agent integrations |
+
+Run `make help` to see all available targets.
+
 ## Building from source
 
 You'll need to build the project locally to start editing code.
