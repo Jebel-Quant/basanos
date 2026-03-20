@@ -22,6 +22,8 @@ from typing import Any, Protocol
 import numpy as np
 import polars as pl
 
+from ._config import BasanosConfig
+
 # (i, t, mask, matrix) — see BasanosEngine._iter_matrices for details.
 _MatrixRow = tuple[int, Any, np.ndarray, np.ndarray | None]
 
@@ -37,6 +39,9 @@ class _EngineProtocol(Protocol):
     assets: list[str]
     prices: pl.DataFrame
     mu: pl.DataFrame
+    cfg: BasanosConfig
+    cor: dict[object, np.ndarray]
+    ret_adj: pl.DataFrame
 
     def _iter_matrices(self) -> Generator[_MatrixRow, None, None]:
         """Yield ``(i, t, mask, matrix)`` tuples over all timestamps."""
