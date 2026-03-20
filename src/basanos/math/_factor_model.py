@@ -19,12 +19,7 @@ import numpy as np
 
 from basanos.exceptions import (
     DimensionMismatchError,
-    FactorCountError,
-    FactorCovarianceShapeError,
-    FactorLoadingsDimensionError,
-    IdiosyncraticVarShapeError,
-    NonPositiveIdiosyncraticVarError,
-    ReturnMatrixDimensionError,
+    FactorModelError,
     SingularMatrixError,
 )
 from basanos.math._linalg import (
@@ -91,23 +86,29 @@ class FactorModel:
         """Validate shape consistency and strict positivity after initialization.
 
         Raises:
-            FactorLoadingsDimensionError: If ``factor_loadings`` is not 2-D.
-            FactorCovarianceShapeError: If ``factor_covariance`` shape does not
+            FactorModelError: If ``factor_loadings`` is not 2-D.
+            FactorModelError: If ``factor_covariance`` shape does not
                 match the number of factors inferred from ``factor_loadings``.
-            IdiosyncraticVarShapeError: If ``idiosyncratic_var`` length does
+            FactorModelError: If ``idiosyncratic_var`` length does
                 not match the number of assets inferred from ``factor_loadings``.
-            NonPositiveIdiosyncraticVarError: If any element of
+            FactorModelError: If any element of
                 ``idiosyncratic_var`` is not strictly positive.
         """
         if self.factor_loadings.ndim != 2:
-            raise FactorLoadingsDimensionError(self.factor_loadings.ndim)
+            raise FactorModelError(f"factor_loadings must be 2-D, got ndim={self.factor_loadings.ndim}.")  # noqa: TRY003
         n, k = self.factor_loadings.shape
         if self.factor_covariance.shape != (k, k):
-            raise FactorCovarianceShapeError(k, self.factor_covariance.shape)
+            raise FactorModelError(  # noqa: TRY003
+                f"factor_covariance must have shape ({k}, {k}) to match "
+                f"factor_loadings columns, got {self.factor_covariance.shape}."
+            )
         if self.idiosyncratic_var.shape != (n,):
-            raise IdiosyncraticVarShapeError(n, self.idiosyncratic_var.shape)
+            raise FactorModelError(  # noqa: TRY003
+                f"idiosyncratic_var must have shape ({n},) to match factor_loadings rows, "
+                f"got {self.idiosyncratic_var.shape}."
+            )
         if not np.all(self.idiosyncratic_var > 0):
-            raise NonPositiveIdiosyncraticVarError()
+            raise FactorModelError("All entries of idiosyncratic_var must be strictly positive.")  # noqa: TRY003
 
     @property
     def n_assets(self) -> int:
@@ -255,8 +256,8 @@ class FactorModel:
                 ``n_factors = k``.
 
         Raises:
-            ReturnMatrixDimensionError: If *returns* is not 2-D.
-            FactorCountError: If *k* is outside the range ``[1, min(T, n)]``.
+            FactorModelError: If *returns* is not 2-D.
+            FactorModelError: If *k* is outside the range ``[1, min(T, n)]``.
 
         Examples:
             >>> import numpy as np
@@ -271,10 +272,10 @@ class FactorModel:
             (5, 5)
         """
         if returns.ndim != 2:
-            raise ReturnMatrixDimensionError(returns.ndim)
+            raise FactorModelError(f"Return matrix must be 2-D, got ndim={returns.ndim}.")  # noqa: TRY003
         t_len, n = returns.shape
         if not (1 <= k <= min(t_len, n)):
-            raise FactorCountError(k, min(t_len, n))
+            raise FactorModelError(f"k must satisfy 1 <= k <= min(T, n) = {min(t_len, n)}, got k={k}.")  # noqa: TRY003
 
         _, s, vt = np.linalg.svd(returns, full_matrices=False)
 
