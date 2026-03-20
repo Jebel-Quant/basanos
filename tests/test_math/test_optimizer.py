@@ -250,6 +250,38 @@ def test_basanos_config_new_fields_validation():
         BasanosConfig(**base, max_nan_fraction=1.0)
 
 
+def test_basanos_config_rejects_legacy_kwargs():
+    """Passing pre-v0.4 flat kwargs raises TypeError with a migration hint."""
+    base = {"vola": 16, "corr": 32, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
+
+    with pytest.raises(TypeError, match="covariance_config=SlidingWindowConfig"):
+        BasanosConfig(**base, covariance_mode="sliding_window", window=30, n_factors=2)
+
+    with pytest.raises(TypeError, match="legacy keyword argument"):
+        BasanosConfig(**base, window=30, n_factors=2)
+
+    with pytest.raises(TypeError, match="legacy keyword argument"):
+        BasanosConfig(**base, covariance_mode="ewma_shrink")
+
+
+def test_basanos_config_error_lists_legacy_keys():
+    """The TypeError message lists all legacy keys the caller actually passed."""
+    base = {"vola": 16, "corr": 32, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
+
+    with pytest.raises(TypeError, match="'n_factors'") as exc_info:
+        BasanosConfig(**base, n_factors=2)
+
+    assert "n_factors" in str(exc_info.value)
+
+    with pytest.raises(TypeError) as exc_info:
+        BasanosConfig(**base, covariance_mode="sliding_window", window=30, n_factors=2)
+
+    error_msg = str(exc_info.value)
+    assert "covariance_mode" in error_msg
+    assert "window" in error_msg
+    assert "n_factors" in error_msg
+
+
 # ─── BasanosEngine construction validation ────────────────────────────────────
 
 

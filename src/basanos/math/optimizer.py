@@ -67,7 +67,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 import numpy as np
 import polars as pl
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from scipy.signal import lfilter
 from scipy.stats import spearmanr
 
@@ -565,6 +565,46 @@ class BasanosConfig(BaseModel):
     )
 
     model_config = {"frozen": True, "extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_flat_kwargs(cls, data: object) -> object:
+        """Raise an informative TypeError when the pre-v0.4 flat kwargs are used.
+
+        Before v0.4 callers passed ``covariance_mode``, ``n_factors``, and
+        ``window`` as top-level keyword arguments to :class:`BasanosConfig`.
+        Those fields were replaced by the nested discriminated union
+        ``covariance_config``.  Without this validator Pydantic raises a
+        generic ``extra_forbidden`` error that gives no migration guidance.
+
+        Examples:
+            >>> BasanosConfig(
+            ...     vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6,
+            ...     covariance_mode="sliding_window", window=30, n_factors=2,
+            ... )  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+                ...
+            TypeError: ...
+        """
+        if not isinstance(data, dict):
+            return data
+        legacy_keys = {"covariance_mode", "n_factors", "window"}
+        found = legacy_keys & data.keys()
+        if found:
+            found_str = ", ".join(f"'{k}'" for k in sorted(found))
+            msg = (
+                f"BasanosConfig received legacy keyword argument(s): {found_str}. "
+                "These flat fields were removed in v0.4. "
+                "Migrate to the nested covariance_config API:\n\n"
+                "  # Before (v0.3 and earlier):\n"
+                "  BasanosConfig(..., covariance_mode='sliding_window', window=30, n_factors=2)\n\n"
+                "  # After (v0.4+):\n"
+                "  from basanos.math import SlidingWindowConfig\n"
+                "  BasanosConfig(..., covariance_config=SlidingWindowConfig(window=30, n_factors=2))\n\n"
+                "For the default EWMA-shrink mode no covariance_config argument is needed."
+            )
+            raise TypeError(msg)
+        return data
 
     @property
     def covariance_mode(self) -> CovarianceMode:

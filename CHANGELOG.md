@@ -12,6 +12,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `[project.urls]` added to `pyproject.toml` (Homepage, Repository, Issues).
 - `Idea` section added to README explaining the core concept and C=I corner case.
 
+### Changed
+
+- `BasanosConfig` now raises an informative `TypeError` (rather than a generic
+  Pydantic `extra_forbidden` error) when the pre-v0.4 flat kwargs
+  `covariance_mode`, `n_factors`, or `window` are passed directly to the
+  constructor.  The error message includes a copy-pasteable migration recipe.
+
+### Migration
+
+#### `BasanosConfig` covariance API (v0.3 → v0.4)
+
+The flat kwargs `covariance_mode`, `n_factors`, and `window` were replaced by
+a nested discriminated union field `covariance_config`.
+
+**Before (v0.3 and earlier):**
+
+```python
+from basanos.math import BasanosConfig
+
+cfg = BasanosConfig(
+    vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6,
+    covariance_mode="sliding_window",
+    window=30,
+    n_factors=2,
+)
+```
+
+**After (v0.4+):**
+
+```python
+from basanos.math import BasanosConfig, SlidingWindowConfig
+
+cfg = BasanosConfig(
+    vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6,
+    covariance_config=SlidingWindowConfig(window=30, n_factors=2),
+)
+```
+
+For the default EWMA-shrink mode no `covariance_config` argument is needed:
+
+```python
+cfg = BasanosConfig(vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6)
+```
+
 ## [0.2.3] - 2026-03-16
 
 ### Added
