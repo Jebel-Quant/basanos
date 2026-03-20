@@ -5,6 +5,7 @@ ref: v0.8.14
 include: []
 exclude:
 - book/marimo/notebooks/rhiza.py
+- "tests/benchmarks/test_benchmarks.py\u200E"
 templates:
 - tests
 - marimo
@@ -121,5 +122,5 @@ files:
 - ruff.toml
 - tests/benchmarks/conftest.py
 - tests/benchmarks/test_benchmarks.py
-synced_at: '2026-03-20T04:08:13Z'
+synced_at: '2026-03-20T04:17:46Z'
 strategy: merge
