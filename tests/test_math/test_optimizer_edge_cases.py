@@ -352,8 +352,8 @@ def test_solver_residual_singular_matrix_returns_nan(caplog: pytest.LogCaptureFi
     engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
     with (
-        patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError("degenerate")),
-        caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        patch("basanos.math._engine_diagnostics.solve", side_effect=SingularMatrixError("degenerate")),
+        caplog.at_level(logging.WARNING, logger="basanos.math._engine_diagnostics"),
     ):
         result = engine.solver_residual
 
@@ -381,8 +381,8 @@ def test_signal_utilisation_singular_matrix_returns_nan(caplog: pytest.LogCaptur
     engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
     with (
-        patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError("degenerate")),
-        caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+        patch("basanos.math._engine_diagnostics.solve", side_effect=SingularMatrixError("degenerate")),
+        caplog.at_level(logging.WARNING, logger="basanos.math._engine_diagnostics"),
     ):
         result = engine.signal_utilisation
 

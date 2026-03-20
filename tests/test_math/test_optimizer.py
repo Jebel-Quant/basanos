@@ -1665,8 +1665,8 @@ class TestDiagnostics:
         engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
         with (
-            patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError()),
-            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+            patch("basanos.math._engine_diagnostics.solve", side_effect=SingularMatrixError()),
+            caplog.at_level(logging.WARNING, logger="basanos.math._engine_diagnostics"),
         ):
             sr = engine.solver_residual
 
@@ -1688,8 +1688,8 @@ class TestDiagnostics:
         engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
         with (
-            patch("basanos.math.optimizer.solve", side_effect=SingularMatrixError()),
-            caplog.at_level(logging.WARNING, logger="basanos.math.optimizer"),
+            patch("basanos.math._engine_diagnostics.solve", side_effect=SingularMatrixError()),
+            caplog.at_level(logging.WARNING, logger="basanos.math._engine_diagnostics"),
         ):
             su = engine.signal_utilisation
 
