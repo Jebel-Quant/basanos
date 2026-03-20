@@ -12,6 +12,7 @@ transforms (lag, truncate, smoothed_holding), and attribution tools
 """
 
 import dataclasses
+from typing import Self
 
 import polars as pl
 
@@ -84,7 +85,7 @@ class PortfolioData:
     @classmethod
     def from_risk_position(
         cls, prices: pl.DataFrame, risk_position: pl.DataFrame, vola: int = 32, aum: float = 1e8
-    ) -> "PortfolioData":
+    ) -> Self:
         """Create a PortfolioData from per-asset risk positions.
 
         De-volatizes each risk position using an EWMA volatility estimate
@@ -113,7 +114,7 @@ class PortfolioData:
         return cls(prices=prices, cashposition=cash_position, aum=aum)
 
     @classmethod
-    def from_cash_position(cls, prices: pl.DataFrame, cash_position: pl.DataFrame, aum: float = 1e8) -> "PortfolioData":
+    def from_cash_position(cls, prices: pl.DataFrame, cash_position: pl.DataFrame, aum: float = 1e8) -> Self:
         """Create a PortfolioData directly from cash positions aligned with prices.
 
         Args:
