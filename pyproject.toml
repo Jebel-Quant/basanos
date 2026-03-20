@@ -9,7 +9,7 @@ description = "Correlation-aware portfolio optimization and analytics for Python
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "jinja2>=3.1,<4",
+    "jinja2>=3.1",
     "numpy>=2.4,<3",
     "plotly>=6.6.0,<7",
     "polars>=1.37.1",
