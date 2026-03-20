@@ -2078,6 +2078,42 @@ class TestBasanosConfigSlidingWindow:
         assert sw_cfg.window == 30
         assert sw_cfg.n_factors == 2
 
+    def test_replace_updates_shrink(self):
+        """replace(shrink=...) should return a new config with only shrink changed."""
+        base_cfg = BasanosConfig(**self._base)
+        new_cfg = base_cfg.replace(shrink=0.9)
+        assert new_cfg.shrink == 0.9
+        assert new_cfg.vola == base_cfg.vola
+        assert new_cfg.corr == base_cfg.corr
+        assert new_cfg.clip == base_cfg.clip
+        assert new_cfg.aum == base_cfg.aum
+        assert new_cfg.covariance_config == base_cfg.covariance_config
+
+    def test_replace_updates_covariance_config(self):
+        """replace(covariance_config=...) should switch from ewma_shrink to sliding_window."""
+        from basanos.math import CovarianceMode
+
+        base_cfg = BasanosConfig(**self._base)
+        sw_cfg = base_cfg.replace(covariance_config=SlidingWindowConfig(window=30, n_factors=2))
+        assert sw_cfg.covariance_mode is CovarianceMode.sliding_window
+        assert sw_cfg.window == 30
+        assert sw_cfg.n_factors == 2
+        assert sw_cfg.vola == base_cfg.vola
+        assert sw_cfg.corr == base_cfg.corr
+        assert sw_cfg.shrink == base_cfg.shrink
+
+    def test_replace_with_no_args_returns_equivalent_config(self):
+        """replace() with no overrides should return a config equal to the original."""
+        base_cfg = BasanosConfig(**self._base)
+        copied = base_cfg.replace()
+        assert copied == base_cfg
+
+    def test_replace_validates_fields(self):
+        """replace() should validate field constraints just like the constructor."""
+        base_cfg = BasanosConfig(**self._base)
+        with pytest.raises(ValueError, match=r"less than or equal to 1"):
+            base_cfg.replace(shrink=2.0)  # shrink must be in [0, 1]
+
 
 # ─── Sliding window warm-up warning ──────────────────────────────────────────
 
@@ -2476,3 +2512,160 @@ class TestSlidingWindowErrorPaths:
         assert pos.shape == sw_engine.prices.shape
         records = [r for r in caplog.records if "Woodbury solve failed" in r.message]
         assert records, "Expected a 'Woodbury solve failed' warning"
+
+
+# ─── Cross-property consistency: position_status vs cash_position ─────────────
+
+
+def _is_nan_value(v: object) -> bool:
+    """Return True if *v* is None or a float NaN."""
+    return v is None or (isinstance(v, float) and np.isnan(v))
+
+
+def _is_zero_value(v: object) -> bool:
+    """Return True if *v* is a non-NaN float equal to zero."""
+    return isinstance(v, float) and not np.isnan(v) and v == 0.0
+
+
+def _is_nonzero_position(v: object) -> bool:
+    """Return True if *v* is a finite, non-zero float position."""
+    return isinstance(v, float) and np.isfinite(v) and v != 0.0
+
+
+def _ewma_engine_for_consistency() -> BasanosEngine:
+    """Build a 120-row, 2-asset EWMA-shrink engine for consistency tests."""
+    prices, mu = _make_prices_mu(120)
+    cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+
+def _sw_engine_for_consistency() -> BasanosEngine:
+    """Build a 120-row, 3-asset sliding-window engine for consistency tests."""
+    n = 120
+    rng = np.random.default_rng(99)
+    start = date(2023, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "X": pl.Series(100.0 + np.cumsum(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "Y": pl.Series(200.0 + np.cumsum(rng.normal(0, 0.7, n)), dtype=pl.Float64),
+            "Z": pl.Series(50.0 + np.cumsum(rng.normal(0, 0.3, n)), dtype=pl.Float64),
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "X": pl.Series(np.tanh(np.sin(np.linspace(0, 4 * np.pi, n))), dtype=pl.Float64),
+            "Y": pl.Series(np.tanh(np.cos(np.linspace(0, 4 * np.pi, n))), dtype=pl.Float64),
+            "Z": pl.Series(np.tanh(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+        }
+    )
+    cfg = BasanosConfig(
+        vola=10,
+        corr=20,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=30, n_factors=2),
+    )
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+
+@pytest.mark.parametrize(
+    "engine_factory",
+    [
+        pytest.param(_ewma_engine_for_consistency, id="ewma_shrink"),
+        pytest.param(_sw_engine_for_consistency, id="sliding_window"),
+    ],
+)
+class TestPositionStatusCashPositionConsistency:
+    """Cross-property consistency between position_status and cash_position.
+
+    These tests assert that every status label produced by ``position_status``
+    is coherent with the corresponding row of ``cash_position``, regardless of
+    the covariance mode.  They are intentionally independent of the internal
+    optimizer loop so that any future divergence between the two properties
+    is caught immediately.
+    """
+
+    @pytest.fixture
+    def engine(self, engine_factory) -> BasanosEngine:
+        """Construct the engine from the parametrised factory."""
+        return engine_factory()
+
+    @pytest.fixture
+    def status_df(self, engine: BasanosEngine) -> pl.DataFrame:
+        """Return the position_status DataFrame for the engine."""
+        return engine.position_status
+
+    @pytest.fixture
+    def pos_df(self, engine: BasanosEngine) -> pl.DataFrame:
+        """Return the cash_position DataFrame for the engine."""
+        return engine.cash_position
+
+    def test_dates_are_identical(self, status_df: pl.DataFrame, pos_df: pl.DataFrame) -> None:
+        """position_status and cash_position must share the same dates in the same order."""
+        assert status_df["date"].to_list() == pos_df["date"].to_list(), (
+            "position_status and cash_position have different date sequences"
+        )
+
+    def test_valid_rows_have_nonzero_position(
+        self, engine: BasanosEngine, status_df: pl.DataFrame, pos_df: pl.DataFrame
+    ) -> None:
+        """Every 'valid' row in position_status must have at least one non-zero position."""
+        assets = engine.assets
+        valid_indices = [i for i, v in enumerate((status_df["status"] == "valid").to_list()) if v]
+        if not valid_indices:
+            pytest.skip("No 'valid' rows found in this engine configuration")
+        for i in valid_indices:
+            row = pos_df.row(i, named=True)
+            values = [row[a] for a in assets]
+            assert any(_is_nonzero_position(v) for v in values), (
+                f"Row {i} is labelled 'valid' but all positions are zero or NaN: {values}"
+            )
+
+    def test_warmup_rows_have_all_nan_positions(
+        self, engine: BasanosEngine, status_df: pl.DataFrame, pos_df: pl.DataFrame
+    ) -> None:
+        """Every 'warmup' row in position_status must have all-NaN positions."""
+        assets = engine.assets
+        warmup_indices = [i for i, v in enumerate((status_df["status"] == "warmup").to_list()) if v]
+        if not warmup_indices:
+            pytest.skip("No 'warmup' rows found (expected for ewma_shrink mode)")
+        for i in warmup_indices:
+            row = pos_df.row(i, named=True)
+            values = [row[a] for a in assets]
+            assert all(_is_nan_value(v) for v in values), (
+                f"Row {i} is labelled 'warmup' but not all positions are NaN: {values}"
+            )
+
+    def test_zero_signal_rows_have_all_zero_positions(
+        self, engine: BasanosEngine, status_df: pl.DataFrame, pos_df: pl.DataFrame
+    ) -> None:
+        """Every 'zero_signal' row in position_status must have all-zero positions."""
+        assets = engine.assets
+        zs_indices = [i for i, v in enumerate((status_df["status"] == "zero_signal").to_list()) if v]
+        if not zs_indices:
+            pytest.skip("No 'zero_signal' rows found in this engine configuration")
+        for i in zs_indices:
+            row = pos_df.row(i, named=True)
+            values = [row[a] for a in assets]
+            assert all(_is_zero_value(v) for v in values), (
+                f"Row {i} is labelled 'zero_signal' but not all positions are zero: {values}"
+            )
+
+    def test_degenerate_rows_have_zero_or_nan_positions(
+        self, engine: BasanosEngine, status_df: pl.DataFrame, pos_df: pl.DataFrame
+    ) -> None:
+        """Every 'degenerate' row must have all-zero or all-NaN positions."""
+        assets = engine.assets
+        degen_indices = [i for i, v in enumerate((status_df["status"] == "degenerate").to_list()) if v]
+        if not degen_indices:
+            pytest.skip("No 'degenerate' rows found in this engine configuration")
+        for i in degen_indices:
+            row = pos_df.row(i, named=True)
+            values = [row[a] for a in assets]
+            assert all(_is_nan_value(v) or _is_zero_value(v) for v in values), (
+                f"Row {i} is labelled 'degenerate' but has non-zero finite positions: {values}"
+            )
