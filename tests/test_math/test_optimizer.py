@@ -2669,3 +2669,161 @@ class TestPositionStatusCashPositionConsistency:
             assert all(_is_nan_value(v) or _is_zero_value(v) for v in values), (
                 f"Row {i} is labelled 'degenerate' but has non-zero finite positions: {values}"
             )
+
+
+# ─── Dedicated minimal fixtures for guaranteed status-code coverage ───────────
+
+
+def _warmup_sw_engine_for_consistency() -> BasanosEngine:
+    """Sliding-window engine where T < window, guaranteeing all rows are 'warmup'.
+
+    With window=50 and only 20 price rows, every row satisfies ``i + 1 < window``
+    so the optimizer loop yields ``'warmup'`` for each one.
+    """
+    n = 20
+    rng = np.random.default_rng(42)
+    start = date(2024, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(100.0 + np.cumsum(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "B": pl.Series(200.0 + np.cumsum(rng.normal(0, 0.7, n)), dtype=pl.Float64),
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(np.tanh(np.sin(np.linspace(0, 2 * np.pi, n))), dtype=pl.Float64),
+            "B": pl.Series(np.tanh(np.cos(np.linspace(0, 2 * np.pi, n))), dtype=pl.Float64),
+        }
+    )
+    cfg = BasanosConfig(
+        vola=5,
+        corr=8,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=50, n_factors=2),
+    )
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+
+def _zero_signal_sw_engine_for_consistency() -> BasanosEngine:
+    """Sliding-window engine with all-zero mu, guaranteeing 'zero_signal' rows after warmup.
+
+    Rows ``0`` to ``window-1`` yield ``'warmup'`` (sliding-window mode).
+    Rows from ``window`` onward have ``mu == 0`` so the optimizer yields
+    ``'zero_signal'``.  Volatility (``min_samples=10``) is also finite by
+    then, so the corresponding ``cash_position`` values are exactly zero.
+    """
+    n = 60
+    rng = np.random.default_rng(43)
+    start = date(2024, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(100.0 + np.cumsum(rng.normal(0, 0.5, n)), dtype=pl.Float64),
+            "B": pl.Series(200.0 + np.cumsum(rng.normal(0, 0.7, n)), dtype=pl.Float64),
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series([0.0] * n, dtype=pl.Float64),
+            "B": pl.Series([0.0] * n, dtype=pl.Float64),
+        }
+    )
+    cfg = BasanosConfig(
+        vola=10,
+        corr=20,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=30, n_factors=2),
+    )
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+
+def _degenerate_ewma_engine_for_consistency() -> BasanosEngine:
+    """EWMA engine with one all-NaN price row, guaranteeing a 'degenerate' row.
+
+    Row 30 has ``None`` for every asset so ``mask.any()`` is ``False`` at that
+    step, causing the optimizer to yield ``'degenerate'``.
+    """
+    n = 60
+    rng = np.random.default_rng(77)
+    start = date(2024, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    p_a: list[float | None] = list(100.0 + np.cumsum(rng.normal(0, 0.5, n)))
+    p_b: list[float | None] = list(200.0 + np.cumsum(rng.normal(0, 0.7, n)))
+    p_a[30] = None  # all-NaN row → 'degenerate'
+    p_b[30] = None
+    prices = pl.DataFrame({"date": dates, "A": p_a, "B": p_b}).with_columns(
+        pl.col("A").cast(pl.Float64), pl.col("B").cast(pl.Float64)
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(np.tanh(np.sin(np.linspace(0, 4 * np.pi, n))), dtype=pl.Float64),
+            "B": pl.Series(np.tanh(np.cos(np.linspace(0, 4 * np.pi, n))), dtype=pl.Float64),
+        }
+    )
+    cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+    return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+
+class TestPositionStatusConsistencyGuaranteed:
+    """Guaranteed-coverage consistency tests using dedicated minimal fixtures.
+
+    Each engine factory is constructed so that the targeted ``position_status``
+    code appears at least once.  No ``pytest.skip`` guard is needed: the
+    opening ``assert`` acts as a self-check that the fixture is still
+    correctly calibrated.
+    """
+
+    def test_warmup_rows_have_all_nan_positions(self) -> None:
+        """Warmup rows must have all-NaN positions (sliding-window, T < window)."""
+        engine = _warmup_sw_engine_for_consistency()
+        status_df = engine.position_status
+        pos_df = engine.cash_position
+        assets = engine.assets
+        warmup_indices = [i for i, v in enumerate((status_df["status"] == "warmup").to_list()) if v]
+        assert warmup_indices, "Fixture must produce at least one 'warmup' row"
+        for i in warmup_indices:
+            row = pos_df.row(i, named=True)
+            values = [row[a] for a in assets]
+            assert all(_is_nan_value(v) for v in values), (
+                f"Row {i} is labelled 'warmup' but not all positions are NaN: {values}"
+            )
+
+    def test_zero_signal_rows_have_all_zero_positions(self) -> None:
+        """Zero-signal rows must have all-zero positions (all-zero mu engine)."""
+        engine = _zero_signal_sw_engine_for_consistency()
+        status_df = engine.position_status
+        pos_df = engine.cash_position
+        assets = engine.assets
+        zs_indices = [i for i, v in enumerate((status_df["status"] == "zero_signal").to_list()) if v]
+        assert zs_indices, "Fixture must produce at least one 'zero_signal' row"
+        for i in zs_indices:
+            row = pos_df.row(i, named=True)
+            values = [row[a] for a in assets]
+            assert all(_is_zero_value(v) for v in values), (
+                f"Row {i} is labelled 'zero_signal' but not all positions are zero: {values}"
+            )
+
+    def test_degenerate_rows_have_zero_or_nan_positions(self) -> None:
+        """Degenerate rows must have zero or NaN positions (all-NaN price row)."""
+        engine = _degenerate_ewma_engine_for_consistency()
+        status_df = engine.position_status
+        pos_df = engine.cash_position
+        assets = engine.assets
+        degen_indices = [i for i, v in enumerate((status_df["status"] == "degenerate").to_list()) if v]
+        assert degen_indices, "Fixture must produce at least one 'degenerate' row"
+        for i in degen_indices:
+            row = pos_df.row(i, named=True)
+            values = [row[a] for a in assets]
+            assert all(_is_nan_value(v) or _is_zero_value(v) for v in values), (
+                f"Row {i} is labelled 'degenerate' but has non-zero finite positions: {values}"
+            )
