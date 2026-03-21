@@ -18,7 +18,7 @@ delegated transparently so that the public API remains unchanged.
 """
 
 import dataclasses
-from typing import Self
+from typing import ClassVar, Self
 
 import polars as pl
 import polars.selectors as cs
@@ -72,6 +72,7 @@ class Portfolio:
     cashposition: pl.DataFrame
     prices: pl.DataFrame
     aum: float = 1e8
+    _data: ClassVar[PortfolioData]
 
     def __post_init__(self) -> None:
         """Create and cache the internal PortfolioData instance.
@@ -88,7 +89,7 @@ class Portfolio:
     @property
     def data(self) -> PortfolioData:
         """The underlying :class:`PortfolioData` instance used for data delegation."""
-        return self._data  # type: ignore[attr-defined]
+        return self._data
 
     # ── Factory classmethods ──────────────────────────────────────────────────
 
