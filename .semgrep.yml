@@ -1,0 +1,59 @@
+# Local Semgrep rules for NumPy best-practice and security checks.
+# These rules replace the retired `p/numpy` registry ruleset.
+rules:
+  - id: numpy-load-allow-pickle
+    pattern: np.load($PATH)
+    message: |
+      np.load() with default allow_pickle=True can deserialise arbitrary objects
+      and execute malicious code. Pass allow_pickle=False unless pickle support
+      is explicitly required.
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      cwe: "CWE-502: Deserialization of Untrusted Data"
+
+  - id: numpy-random-seed
+    pattern: np.random.seed(...)
+    message: |
+      np.random.seed() sets the global random state, which is not thread-safe
+      and makes reproducibility fragile. Use np.random.default_rng() with a
+      local Generator instance instead.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: best-practice
+
+  - id: numpy-global-random-state
+    patterns:
+      - pattern-either:
+          - pattern: np.random.rand(...)
+          - pattern: np.random.randn(...)
+          - pattern: np.random.randint(...)
+          - pattern: np.random.random(...)
+          - pattern: np.random.normal(...)
+          - pattern: np.random.uniform(...)
+          - pattern: np.random.choice(...)
+          - pattern: np.random.shuffle(...)
+    message: |
+      Using global numpy random functions (np.random.*) is not thread-safe
+      and produces non-reproducible results across NumPy versions. Use a
+      local Generator: rng = np.random.default_rng(seed); rng.method(...).
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: best-practice
+
+  - id: numpy-matrix-deprecated
+    patterns:
+      - pattern-either:
+          - pattern: np.matrix(...)
+          - pattern: np.mat(...)
+    message: |
+      np.matrix is deprecated and scheduled for removal. Use np.array or
+      np.ndarray instead. np.matrix has subtle differences in operator
+      semantics (e.g. * performs matrix multiplication) that can cause bugs.
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: maintainability
