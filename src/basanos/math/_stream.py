@@ -53,7 +53,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from ._ewm_corr import _EwmCorrState
@@ -64,6 +64,7 @@ from scipy.signal import lfilter
 
 from ..exceptions import MissingDateColumnError
 from ._config import BasanosConfig, EwmaShrinkConfig, SlidingWindowConfig
+from ._engine_solve import SolveStatus
 from ._factor_model import FactorModel
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id
@@ -190,8 +191,10 @@ class StepResult:
         cash_position: Optimised cash-position vector, shape ``(N,)``.
             Entries are ``NaN`` for assets that are still in the EWMA warmup
             period or that are otherwise inactive at this step.
-        status: Solver outcome label for this timestep (one of
-            ``"warmup"``, ``"zero_signal"``, ``"degenerate"``, or ``"valid"``):
+        status: Solver outcome label for this timestep
+            (:class:`~basanos.math.SolveStatus`).  Since :class:`SolveStatus`
+            is a ``StrEnum``, values compare equal to their string equivalents
+            (e.g. ``result.status == "valid"`` is ``True``):
 
             * ``'warmup'`` — fewer rows have been seen than the EWMA warmup
               requires; all positions are ``NaN``.
@@ -222,7 +225,7 @@ class StepResult:
 
     date: object
     cash_position: np.ndarray
-    status: Literal["warmup", "zero_signal", "degenerate", "valid"]
+    status: SolveStatus
     vola: np.ndarray
 
 
@@ -745,7 +748,7 @@ class BasanosStream:
             return StepResult(
                 date=date,
                 cash_position=np.full(n_assets, np.nan),
-                status="warmup",
+                status=SolveStatus.WARMUP,
                 vola=np.full(n_assets, np.nan),
             )
 
@@ -767,13 +770,13 @@ class BasanosStream:
 
         # ── Solve for position ───────────────────────────────────────────────
         new_cash_pos = np.full(n_assets, np.nan, dtype=float)
-        status = "degenerate"
+        status = SolveStatus.DEGENERATE
 
         if isinstance(cfg.covariance_config, SlidingWindowConfig):
             # ── SW path: FactorModel solve via Woodbury identity ─────────────
             sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
             if not mask.any():
-                status = "degenerate"
+                status = SolveStatus.DEGENERATE
             else:
                 win_w = sw_config.window
                 win_k = sw_config.n_factors
@@ -791,12 +794,12 @@ class BasanosStream:
                 except (np.linalg.LinAlgError, ValueError) as exc:
                     _logger.debug("Sliding window SVD failed at date=%s: %s", date, exc)
                     new_cash_pos[mask] = 0.0
-                    status = "degenerate"
+                    status = SolveStatus.DEGENERATE
                 else:
                     expected_mu = np.nan_to_num(new_m[mask])
                     if np.allclose(expected_mu, 0.0):
                         new_cash_pos[mask] = 0.0
-                        status = "zero_signal"
+                        status = SolveStatus.ZERO_SIGNAL
                     else:
                         try:
                             x = fm.solve(expected_mu)
@@ -804,7 +807,7 @@ class BasanosStream:
                         except (SingularMatrixError, np.linalg.LinAlgError) as exc:
                             _logger.warning("Woodbury solve failed at date=%s: %s", date, exc)
                             new_cash_pos[mask] = 0.0
-                            status = "degenerate"
+                            status = SolveStatus.DEGENERATE
                         else:
                             if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
                                 _logger.warning(
@@ -815,13 +818,13 @@ class BasanosStream:
                                     cfg.denom_tol,
                                 )
                                 new_cash_pos[mask] = 0.0
-                                status = "degenerate"
+                                status = SolveStatus.DEGENERATE
                             else:
                                 risk_pos = (x / denom_val) / profit_variance
                                 vola_sub = vola_vec[mask]
                                 with np.errstate(invalid="ignore"):
                                     new_cash_pos[mask] = risk_pos / vola_sub
-                                status = "valid"
+                                status = SolveStatus.VALID
         else:
             # ── EWM path: shrink2id correlation matrix solve ─────────────────
             # Reconstruct the EWM correlation matrix from filter outputs.
@@ -854,13 +857,13 @@ class BasanosStream:
             matrix = shrink2id(corr, lamb=cfg.shrink)
 
             if not mask.any():
-                status = "degenerate"
+                status = SolveStatus.DEGENERATE
             else:
                 corr_sub = matrix[np.ix_(mask, mask)]
                 expected_mu = np.nan_to_num(new_m[mask])
                 if np.allclose(expected_mu, 0.0):
                     new_cash_pos[mask] = 0.0
-                    status = "zero_signal"
+                    status = SolveStatus.ZERO_SIGNAL
                 else:
                     try:
                         denom_val = inv_a_norm(expected_mu, corr_sub)
@@ -876,19 +879,19 @@ class BasanosStream:
                             cfg.denom_tol,
                         )
                         new_cash_pos[mask] = 0.0
-                        status = "degenerate"
+                        status = SolveStatus.DEGENERATE
                     else:
                         try:
                             pos = solve(corr_sub, expected_mu) / denom_val
                         except SingularMatrixError:
                             new_cash_pos[mask] = 0.0
-                            status = "degenerate"
+                            status = SolveStatus.DEGENERATE
                         else:
                             risk_pos = pos / profit_variance
                             vola_sub = vola_vec[mask]
                             with np.errstate(invalid="ignore"):
                                 new_cash_pos[mask] = risk_pos / vola_sub
-                            status = "valid"
+                            status = SolveStatus.VALID
 
         # ── Persist updated state ───────────────────────────────────────────
         state.corr_zi_x = corr_zi_x

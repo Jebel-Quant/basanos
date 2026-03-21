@@ -436,7 +436,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         """
         assets = self.assets
 
-        # Compute risk positions row-by-row using _iter_solve for the solve logic.
+        # Compute risk positions row-by-row using _replay_profit_variance.
         prices_num = self.prices.select(assets).to_numpy()
         returns_num = np.zeros_like(prices_num, dtype=float)
         returns_num[1:] = prices_num[1:] / prices_num[:-1] - 1.0
@@ -445,28 +445,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         cash_pos_np = np.full_like(prices_num, fill_value=np.nan, dtype=float)
         vola_np = self.vola.select(assets).to_numpy()
 
-        profit_variance = self.cfg.profit_variance_init
-        lamb = self.cfg.profit_variance_decay
-
-        for i, _t, mask, pos, _status in self._iter_solve():
-            # Compute profit contribution using only finite returns and available positions.
-            # This must happen for every row (including warmup / degenerate) so that the
-            # profit_variance EMA is updated from the correct previous-step cash positions.
-            if i > 0:
-                ret_mask = np.isfinite(returns_num[i]) & mask
-                # Profit at time i comes from yesterday's cash position applied to today's returns
-                if ret_mask.any():
-                    with np.errstate(invalid="ignore"):
-                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
-                    lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
-                    rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
-                    profit = lhs @ rhs
-                    profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
-
-            if pos is not None:
-                risk_pos_np[i, mask] = pos / profit_variance
-                with np.errstate(invalid="ignore"):
-                    cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
+        self._replay_profit_variance(risk_pos_np, cash_pos_np, vola_np, returns_num)
 
         # Build Polars DataFrame for cash positions (numeric columns only)
         cash_position = self.prices.with_columns(
@@ -479,7 +458,8 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     def position_status(self) -> pl.DataFrame:
         """Per-timestamp reason code explaining each :attr:`cash_position` row.
 
-        Labels every row with exactly one of four string codes:
+        Labels every row with exactly one of four :class:`~basanos.math.SolveStatus`
+        codes (which compare equal to their string equivalents):
 
         * ``'warmup'``: Insufficient history for the sliding-window
           covariance mode (``i + 1 < cfg.covariance_config.window``).
