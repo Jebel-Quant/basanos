@@ -938,9 +938,9 @@ def cost_portfolio():
     """3-day, single-asset portfolio for position-delta cost tests.
 
     Position sequence:  0 → 1000 → 700
-    Δ position:         0,  1000,   300  (absolute)
+    |Δ position|:       0,  1000,   300
     cost_per_unit = 0.01
-    Expected daily costs: 0.0, 10.0, 3.0
+    Expected daily costs: [0, 1000, 300] * 0.01 = [0.0, 10.0, 3.0]
     """
     n = 3
     start = date(2020, 1, 1)

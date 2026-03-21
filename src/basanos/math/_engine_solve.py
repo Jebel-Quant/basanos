@@ -269,6 +269,38 @@ class _SolveMixin:
             return i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
         return _SolveMixin._denom_guard_yield(i, t, mask, expected_mu, pos, denom, denom_tol)
 
+    @staticmethod
+    def _apply_turnover_constraint(
+        new_cash: np.ndarray,
+        prev_cash: np.ndarray,
+        max_turnover: float,
+    ) -> np.ndarray:
+        """Cap the L1 norm of the position change to *max_turnover*.
+
+        When ``sum(|new_cash - prev_cash|) > max_turnover``, the delta is
+        scaled back proportionally toward *prev_cash* so that the constraint
+        is exactly met.  When the constraint is already satisfied the input is
+        returned unchanged.
+
+        Args:
+            new_cash: Proposed cash positions after the solve step, shape
+                ``(n_active,)`` — ``NaN`` values treated as zero.
+            prev_cash: Cash positions at the previous step, shape
+                ``(n_active,)`` — ``NaN`` values treated as zero.
+            max_turnover: Maximum allowed L1 norm of the position change.
+
+        Returns:
+            np.ndarray: The (possibly scaled) new cash positions.
+        """
+        curr = np.nan_to_num(new_cash, nan=0.0)
+        prev = np.nan_to_num(prev_cash, nan=0.0)
+        delta = curr - prev
+        total_delta = float(np.sum(np.abs(delta)))
+        if total_delta > max_turnover:
+            scale = max_turnover / total_delta
+            return prev + delta * scale
+        return new_cash
+
     def _replay_profit_variance(
         self: _EngineProtocol,
         risk_pos_np: np.ndarray,
@@ -312,13 +344,7 @@ class _SolveMixin:
             if pos is not None:
                 new_cash = _SolveMixin._scale_to_cash(pos, profit_variance, vola_np[i, mask])
                 if max_to is not None and i > 0:
-                    prev = np.nan_to_num(cash_pos_np[i - 1, mask], nan=0.0)
-                    curr = np.nan_to_num(new_cash, nan=0.0)
-                    delta = curr - prev
-                    total_delta = float(np.sum(np.abs(delta)))
-                    if total_delta > max_to:
-                        scale = max_to / total_delta
-                        new_cash = prev + delta * scale
+                    new_cash = _SolveMixin._apply_turnover_constraint(new_cash, cash_pos_np[i - 1, mask], max_to)
                 risk_pos_np[i, mask] = new_cash * vola_np[i, mask]
                 cash_pos_np[i, mask] = new_cash
         return profit_variance
