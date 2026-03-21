@@ -61,21 +61,23 @@ dataset sizes.
 
 Internal structure
 ------------------
-The implementation is split across focused private modules to reduce
-God-Object complexity:
+The implementation is split across focused private modules to keep each file
+readable and independently testable:
 
 * :mod:`basanos.math._config` — :class:`BasanosConfig` and all
   covariance-mode configuration classes.
 * :mod:`basanos.math._ewm_corr` — :func:`ewm_corr`, the vectorised
   IIR-filter implementation of per-row EWM correlation matrices.
-* :mod:`basanos.math._engine_solve` — :class:`_SolveMixin` with
+* :mod:`basanos.math._engine_solve` — private helpers providing the
   ``_iter_matrices`` and ``_iter_solve`` generators (per-timestamp solve
   logic).
-* :mod:`basanos.math._engine_diagnostics` — :class:`_DiagnosticsMixin`
-  (condition number, effective rank, solver residual, signal utilisation).
-* :mod:`basanos.math._engine_ic` — :class:`_SignalEvaluatorMixin`
-  (IC, Rank IC, ICIR, and summary statistics).
-* This module — :class:`BasanosEngine` facade that wires everything together.
+* :mod:`basanos.math._engine_diagnostics` — private helpers providing
+  matrix-quality diagnostics (condition number, effective rank, solver
+  residual, signal utilisation).
+* :mod:`basanos.math._engine_ic` — private helpers providing signal
+  evaluation metrics (IC, Rank IC, ICIR, and summary statistics).
+* This module — :class:`BasanosEngine`, a single flat class that wires
+  every method together in clearly delimited sections.
 """
 
 import dataclasses
@@ -102,9 +104,9 @@ from ._config import (
     EwmaShrinkConfig,
     SlidingWindowConfig,
 )
-from ._engine_diagnostics import _DiagnosticsMixin
-from ._engine_ic import _SignalEvaluatorMixin
-from ._engine_solve import _SolveMixin
+from ._engine_diagnostics import _DiagnosticsMixin as _DiagnosticsMixin
+from ._engine_ic import _SignalEvaluatorMixin as _SignalEvaluatorMixin
+from ._engine_solve import _SolveMixin as _SolveMixin
 from ._ewm_corr import ewm_corr as _ewm_corr_numpy
 from ._signal import vol_adj
 
@@ -216,31 +218,57 @@ __all__ = [
 
 
 @dataclasses.dataclass(frozen=True)
-class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
+class BasanosEngine:
     """Engine to compute correlation matrices and optimize risk positions.
 
     Encapsulates price data and configuration to build EWM-based
     correlations, apply shrinkage, and solve for normalized positions.
 
-    The engine is organized into focused concerns, each handled by a
-    dedicated sub-module:
+    All public methods are defined directly in this class, organised into
+    clearly delimited sections:
 
     * **Core data access** — :attr:`assets`, :attr:`ret_adj`, :attr:`vola`,
       :attr:`cor`, :attr:`cor_tensor`
     * **Solve / position logic** — :attr:`cash_position`,
       :attr:`position_status`, :attr:`risk_position`,
-      :attr:`position_leverage` (this module)
+      :attr:`position_leverage`, :meth:`warmup_state`
     * **Portfolio and performance** — :attr:`portfolio`,
       :attr:`naive_sharpe`, :meth:`sharpe_at_shrink`,
-      :meth:`sharpe_at_window_factors` (this module)
+      :meth:`sharpe_at_window_factors`
     * **Matrix diagnostics** — :attr:`condition_number`,
       :attr:`effective_rank`, :attr:`solver_residual`,
       :attr:`signal_utilisation`
-      (:mod:`basanos.math._engine_diagnostics`)
     * **Signal evaluation** — :attr:`ic`, :attr:`rank_ic`, :attr:`ic_mean`,
       :attr:`ic_std`, :attr:`icir`, :attr:`rank_ic_mean`,
       :attr:`rank_ic_std`
-      (:mod:`basanos.math._engine_ic`)
+    * **Reporting** — :attr:`config_report`
+
+    Data-flow diagram
+    -----------------
+
+    .. code-block:: text
+
+        prices (pl.DataFrame)
+          │
+          ├─ vol_adj ──► ret_adj (volatility-adjusted log returns)
+          │                │
+          │                ├─ ewm_corr ──► cor / cor_tensor
+          │                │                │
+          │                │                └─ shrink2id / FactorModel
+          │                │                        │
+          │              vola                 covariance matrix
+          │                │                        │
+          └── mu ──────────┴── _iter_solve ──────────┘
+                                    │
+                              cash_position
+                                    │
+                           ┌────────┴────────┐
+                       portfolio          diagnostics
+                      (Portfolio)    (condition_number,
+                                      effective_rank,
+                                      solver_residual,
+                                      signal_utilisation,
+                                      ic, rank_ic, …)
 
     Attributes:
         prices: Polars DataFrame of price levels per asset over time.  Must
@@ -394,10 +422,22 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         return np.stack(list(self.cor.values()), axis=0)
 
     # ------------------------------------------------------------------
-    # Internal solve helpers — provided by _SolveMixin
+    # Internal solve helpers — directly assigned from _engine_solve
     # ------------------------------------------------------------------
-    # _iter_matrices and _iter_solve are defined in
-    # basanos.math._engine_solve._SolveMixin; they are inherited here.
+    # These descriptors retain their original function objects so that
+    # ``patch("basanos.math._engine_solve.solve", ...)`` in tests continues
+    # to intercept calls made inside these methods.
+
+    _compute_mask = _SolveMixin.__dict__["_compute_mask"]
+    _check_signal = _SolveMixin.__dict__["_check_signal"]
+    _scale_to_cash = _SolveMixin.__dict__["_scale_to_cash"]
+    _row_early_check = _SolveMixin.__dict__["_row_early_check"]
+    _denom_guard_yield = _SolveMixin.__dict__["_denom_guard_yield"]
+    _compute_position = _SolveMixin.__dict__["_compute_position"]
+    _replay_profit_variance = _SolveMixin.__dict__["_replay_profit_variance"]
+    _iter_matrices = _SolveMixin.__dict__["_iter_matrices"]
+    _iter_solve = _SolveMixin.__dict__["_iter_solve"]
+    warmup_state = _SolveMixin.__dict__["warmup_state"]
 
     # ------------------------------------------------------------------
     # Position properties
@@ -725,3 +765,28 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         from ._config_report import ConfigReport
 
         return ConfigReport(config=self.cfg, engine=self)
+
+    # ------------------------------------------------------------------
+    # Matrix diagnostics — directly assigned from _engine_diagnostics
+    # ------------------------------------------------------------------
+    # These descriptors retain their original function objects so that
+    # ``patch("basanos.math._engine_diagnostics.solve", ...)`` in tests
+    # continues to intercept calls made inside these methods.
+
+    condition_number = _DiagnosticsMixin.__dict__["condition_number"]
+    effective_rank = _DiagnosticsMixin.__dict__["effective_rank"]
+    solver_residual = _DiagnosticsMixin.__dict__["solver_residual"]
+    signal_utilisation = _DiagnosticsMixin.__dict__["signal_utilisation"]
+
+    # ------------------------------------------------------------------
+    # Signal evaluation — directly assigned from _engine_ic
+    # ------------------------------------------------------------------
+
+    _ic_series = _SignalEvaluatorMixin.__dict__["_ic_series"]
+    ic = _SignalEvaluatorMixin.__dict__["ic"]
+    rank_ic = _SignalEvaluatorMixin.__dict__["rank_ic"]
+    ic_mean = _SignalEvaluatorMixin.__dict__["ic_mean"]
+    ic_std = _SignalEvaluatorMixin.__dict__["ic_std"]
+    icir = _SignalEvaluatorMixin.__dict__["icir"]
+    rank_ic_mean = _SignalEvaluatorMixin.__dict__["rank_ic_mean"]
+    rank_ic_std = _SignalEvaluatorMixin.__dict__["rank_ic_std"]
