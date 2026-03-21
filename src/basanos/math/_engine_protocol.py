@@ -75,18 +75,15 @@ from __future__ import annotations
 
 import datetime
 from collections.abc import Generator
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import polars as pl
 
 from ._config import BasanosConfig
 
-# (i, t, mask, matrix) — see BasanosEngine._iter_matrices for details.
-_MatrixRow = tuple[int, Any, np.ndarray, np.ndarray | None]
-
-# (i, t, mask, pos_or_none, status) — see BasanosEngine._iter_solve for details.
-_SolveRow = tuple[int, Any, np.ndarray, np.ndarray | None, str]
+if TYPE_CHECKING:
+    from ._engine_solve import MatrixYield, SolveYield
 
 
 class _EngineProtocol(Protocol):
@@ -105,11 +102,11 @@ class _EngineProtocol(Protocol):
     ret_adj: pl.DataFrame
     vola: pl.DataFrame
 
-    def _iter_matrices(self) -> Generator[_MatrixRow, None, None]:
+    def _iter_matrices(self) -> Generator[MatrixYield, None, None]:
         """Yield ``(i, t, mask, matrix)`` tuples over all timestamps."""
         ...
 
-    def _iter_solve(self) -> Generator[_SolveRow, None, None]:
+    def _iter_solve(self) -> Generator[SolveYield, None, None]:
         """Yield ``(i, t, mask, pos_or_none, status)`` tuples over all timestamps."""
         ...
 
