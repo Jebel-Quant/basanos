@@ -129,7 +129,7 @@ class _SolveMixin:
     @staticmethod
     def _row_early_check(
         i: int,
-        t: object,
+        t: datetime.date,
         mask: np.ndarray,
         mu_row: np.ndarray,
     ) -> tuple[np.ndarray, SolveYield | None]:
@@ -164,7 +164,7 @@ class _SolveMixin:
     @staticmethod
     def _denom_guard_yield(
         i: int,
-        t: object,
+        t: datetime.date,
         mask: np.ndarray,
         expected_mu: np.ndarray,
         pos_raw: np.ndarray,
@@ -398,11 +398,11 @@ class _SolveMixin:
                 except SingularMatrixError:
                     denom = float("nan")
                 try:
-                    pos_raw = solve(matrix, expected_mu)
+                    pos = solve(matrix, expected_mu)
                 except SingularMatrixError:
                     yield i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
                     continue
-                yield i, t, mask, pos, SolveStatus.VALID
+                yield _SolveMixin._denom_guard_yield(i, t, mask, expected_mu, pos, denom, self.cfg.denom_tol)
             else:
                 if i + 1 < win_w:
                     yield i, t, mask, None, SolveStatus.WARMUP
