@@ -1424,6 +1424,65 @@ def test_save_appends_npz_suffix():
     assert restored.assets == stream.assets
 
 
+def test_save_writes_format_version():
+    """`save` must embed a ``format_version`` key in the archive."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, _assets = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "stream.npz"
+        stream.save(p)
+        data = np.load(p, allow_pickle=False)
+
+    assert "format_version" in data
+    assert int(data["format_version"]) == 1
+
+
+def test_load_raises_on_missing_format_version():
+    """`load` must raise ValueError when the archive has no format_version key."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, _assets = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "stream.npz"
+        stream.save(p)
+
+        # Re-save without the format_version key to simulate a legacy archive.
+        data = dict(np.load(p, allow_pickle=False))
+        del data["format_version"]
+        np.savez(p, **data)
+
+        with pytest.raises(ValueError, match="format version tag"):
+            BasanosStream.load(p)
+
+
+def test_load_raises_on_wrong_format_version():
+    """`load` must raise ValueError when the stored version does not match."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, _assets = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "stream.npz"
+        stream.save(p)
+
+        # Overwrite format_version with a future version number.
+        data = dict(np.load(p, allow_pickle=False))
+        data["format_version"] = np.array(999)
+        np.savez(p, **data)
+
+        with pytest.raises(ValueError, match="format version 999"):
+            BasanosStream.load(p)
+
+
 # ─── SlidingWindowConfig streaming tests ─────────────────────────────────────
 
 
