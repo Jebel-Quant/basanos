@@ -2585,22 +2585,11 @@ class TestSlidingWindowErrorPaths:
         records = [r for r in caplog.records if "Factor model fit failed" in r.message]
         assert records, "Expected a 'Factor model fit failed' warning"
 
-    def test_woodbury_solve_failure_zeros_positions(
-        self, sw_engine: BasanosEngine, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """When fm.solve raises LinAlgError, positions are zeroed and a warning is logged."""
-        from unittest.mock import MagicMock
-
-        mock_fm = MagicMock()
-        mock_fm.solve.side_effect = np.linalg.LinAlgError("singular")
-        with (
-            patch("basanos.math._engine_solve.FactorModel.from_returns", return_value=mock_fm),
-            caplog.at_level(logging.WARNING, logger="basanos.math._engine_solve"),
-        ):
+    def test_singular_covariance_zeros_positions(self, sw_engine: BasanosEngine) -> None:
+        """When the linear solve raises SingularMatrixError, positions are zeroed (degenerate status)."""
+        with patch("basanos.math._engine_solve.solve", side_effect=SingularMatrixError("singular")):
             pos = sw_engine.cash_position
         assert pos.shape == sw_engine.prices.shape
-        records = [r for r in caplog.records if "Woodbury solve failed" in r.message]
-        assert records, "Expected a 'Woodbury solve failed' warning"
 
 
 # ─── Cross-property consistency: position_status vs cash_position ─────────────
