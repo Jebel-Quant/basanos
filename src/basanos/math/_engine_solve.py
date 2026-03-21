@@ -284,7 +284,7 @@ class _SolveMixin:
         if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
             cor = self.cor
             for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
+                mask = _SolveMixin._compute_mask(prices_num[i])
                 if not mask.any():
                     yield i, t, mask, None
                     continue
@@ -297,9 +297,8 @@ class _SolveMixin:
             win_k: int = sw_config.n_factors
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
             for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
-                rows_available = i + 1
-                if not mask.any() or rows_available < win_w:
+                mask = _SolveMixin._compute_mask(prices_num[i])
+                if not mask.any() or i + 1 < win_w:
                     yield i, t, mask, None
                     continue
                 window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
@@ -369,13 +368,28 @@ class _SolveMixin:
         mu_np = self.mu.select(assets).to_numpy()
         dates = self.prices["date"].to_list()
 
-        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
+        # Set up mode-specific state once before the per-row loop.
+        is_ewma = isinstance(self.cfg.covariance_config, EwmaShrinkConfig)
+        if is_ewma:
             cor = self.cor
-            for i, t in enumerate(dates):
-                mask = _SolveMixin._compute_mask(prices_num[i])
-                expected_mu, early = _SolveMixin._row_early_check(i, t, mask, mu_np[i])
-                if early is not None:
-                    yield early
+        else:
+            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
+            win_w: int = sw_config.window
+            win_k: int = sw_config.n_factors
+            ret_adj_np = self.ret_adj.select(assets).to_numpy()
+
+        for i, t in enumerate(dates):
+            # Shared: mask computation and empty-mask guard.
+            mask = _SolveMixin._compute_mask(prices_num[i])
+            if not mask.any():
+                yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
+                continue
+
+            if is_ewma:
+                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
+                expected_mu = np.nan_to_num(mu_np[i][mask])
+                if sig_status is not None:
+                    yield i, t, mask, np.zeros_like(expected_mu), sig_status
                     continue
                 corr_n = cor[t]
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
@@ -388,19 +402,9 @@ class _SolveMixin:
                 except SingularMatrixError:
                     yield i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
                     continue
-                yield _SolveMixin._denom_guard_yield(i, t, mask, expected_mu, pos_raw, denom, self.cfg.denom_tol)
-        else:
-            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
-            win_w: int = sw_config.window
-            win_k: int = sw_config.n_factors
-            ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            for i, t in enumerate(dates):
-                mask = _SolveMixin._compute_mask(prices_num[i])
-                rows_available = i + 1
-                if not mask.any():
-                    yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
-                    continue
-                if rows_available < win_w:
+                yield i, t, mask, pos, SolveStatus.VALID
+            else:
+                if i + 1 < win_w:
                     yield i, t, mask, None, SolveStatus.WARMUP
                     continue
                 # Signal check comes after the warmup guard so we avoid
