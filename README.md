@@ -910,6 +910,9 @@ responsive   = BasanosConfig(vola=8,  corr=16, clip=4.0, shrink=0.3, aum=1e6)
 |-----------|------|------------|-------------|
 | `window` | `int` | `> 0` | Rolling window length *W* (number of most-recent observations). Rule of thumb: *W* ≥ 2·n_assets. The first *W*−1 output rows are zero (warm-up). |
 | `n_factors` | `int` | `> 0` | Number of latent factors *k*. Fewer factors = stronger regularisation. *k* = 1 = single market factor; *k* = 2–5 typical for diversified equity. |
+| `max_components` | `int \| None` | `> 0` or `None` | Optional hard cap on SVD components used per streaming step. When set, the effective component count is `min(n_factors, window, n_valid_assets, max_components)`. Useful for large universes where only a few factors dominate and you want to limit SVD cost. Defaults to `None` (no extra cap). |
+
+> **Effective component count:** at each streaming step the number of SVD components actually used is `k_eff = min(n_factors, window, n_valid_assets[, max_components])`. This implicit truncation ensures the SVD remains well-posed when assets temporarily drop out of the universe. Use `max_components` for explicit control over computational cost in large universes.
 
 > **Note:** `corr` and `shrink` on `BasanosConfig` are ignored in `sliding_window` mode. They remain required fields for API consistency (and for `ewma_shrink` mode), but have no effect on factor-model positions. Any valid value (e.g. `corr=32, shrink=0.5`) is acceptable as a placeholder.
 
