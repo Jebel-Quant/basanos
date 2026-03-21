@@ -28,7 +28,10 @@ Basanos computes **correlation-adjusted risk positions** from price data and exp
 - [Quick Start](#quick-start)
 - [Notebooks](#notebooks)
 - [How It Works](#how-it-works)
-- [Shrinkage Methodology](#shrinkage-methodology)
+- [Covariance Modes](#covariance-modes)
+  - [Mode 1 — EWMA with Shrinkage](#mode-1--ewma-with-shrinkage)
+  - [Mode 2 — Sliding-Window Factor Model](#mode-2--sliding-window-factor-model)
+  - [Choosing Between Modes](#choosing-between-modes)
 - [Performance Characteristics](#performance-characteristics)
 - [API Reference](#api-reference)
 - [Configuration Reference](#configuration-reference)
@@ -50,7 +53,9 @@ where C is the (shrunk, time-varying) correlation matrix and μ is the signal. S
 Three design choices keep the output stable and usable in practice:
 
 1. **EWMA estimates** — both volatility and correlations are computed as exponentially weighted moving averages, so the optimizer adapts to changing regimes without requiring a fixed lookback window.
-2. **Identity shrinkage** — the estimated correlation matrix is blended toward the identity matrix. This regularises the solve, guards against noise in the off-diagonal entries, and prevents numerically extreme positions when the sample is small relative to the number of assets. Setting `cfg.shrink = 0` (full shrinkage, C = I) is a meaningful corner case: the system reduces to `x = μ`, i.e. signal-proportional sizing — which is also the solution a Markowitz optimizer produces when all assets are treated as uncorrelated.
+2. **Regularised correlation matrix** — the correlation matrix must be well-conditioned to invert reliably. Basanos offers two complementary strategies (see [Covariance Modes](#covariance-modes)):
+   - *EWMA with shrinkage* (default): the estimated EWMA correlation is blended toward the identity matrix, pulling noisy eigenvalues toward a common value. The `cfg.shrink` parameter (λ) controls how much of the raw EWMA matrix is retained.
+   - *Sliding-window factor model*: a rolling block of recent vol-adjusted returns is decomposed via truncated SVD into `k` latent factors, giving a low-rank-plus-diagonal covariance structure. **No shrinkage is needed**: the number of factors `k` is the sole regularisation knob — reducing `k` compresses more of the correlation structure into fewer factors, analogous to strong shrinkage.
 3. **Scale invariance** — positions are normalised by the inverse-matrix norm of μ, so doubling the signal magnitude does not double the position. Sizing is driven instead by a running estimate of realised profit variance, which scales risk up in good regimes and down in bad ones.
 
 The output of the solve is a *risk position* (units of volatility). Dividing by per-asset EWMA volatility converts it into a *cash position* — how many dollars to hold in each asset.
@@ -59,11 +64,11 @@ The output of the solve is a *risk position* (units of volatility). Dividing by 
 
 ## Features
 
-- **Correlation-Aware Optimization** — EWMA correlation estimation with shrinkage towards identity
+- **Correlation-Aware Optimization** — Two covariance modes: EWMA with linear shrinkage (default) or sliding-window factor model
 - **Dynamic Risk Management** — Volatility-normalized positions with configurable clipping and variance scaling
 - **Signal Evaluation** — IC and Rank IC time series, ICIR summary statistics, and a naïve equal-weight Sharpe benchmark to isolate signal skill
 - **Diagnostic Properties** — Condition number, effective rank, solver residual, signal utilisation, risk position, and gross leverage for every timestamp
-- **Factor Risk Model** — `FactorModel` decomposition Σ = B·F·Bᵀ + D fitted via truncated SVD for low-rank covariance inspection
+- **Factor Risk Model** — `FactorModel` decomposition Σ = B·F·Bᵀ + D fitted via truncated SVD; used as the covariance estimator in `sliding_window` mode and available for standalone low-rank covariance inspection
 - **Portfolio Analytics** — Sharpe, VaR, CVaR, drawdown, skew, kurtosis, and more
 - **Performance Attribution** — Tilt/timing decomposition to isolate allocation vs. selection effects
 - **Interactive Visualizations** — Plotly dashboards for NAV, drawdown, lead/lag analysis, and correlation heatmaps
@@ -114,6 +119,7 @@ mu = pl.DataFrame({
     "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
 })
 
+# Mode 1 — EWMA with shrinkage (default)
 cfg = BasanosConfig(
     vola=16,    # EWMA lookback for volatility (days)
     corr=32,    # EWMA lookback for correlation (days, must be >= vola)
@@ -125,6 +131,53 @@ cfg = BasanosConfig(
 engine    = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 positions = engine.cash_position  # pl.DataFrame of optimized cash positions
 portfolio = engine.portfolio      # Portfolio object for analytics
+```
+
+### Factor Model Mode
+
+Use `SlidingWindowConfig` to switch to the sliding-window factor model. No explicit shrinkage is needed — the number of factors `k` acts as the sole regularisation knob (fewer factors = stronger compression of the correlation structure).
+
+```python
+import numpy as np
+import polars as pl
+from basanos.math import BasanosConfig, BasanosEngine, SlidingWindowConfig
+
+n_days = 200
+dates = pl.date_range(
+    pl.date(2023, 1, 1),
+    pl.date(2023, 1, 1) + pl.duration(days=n_days - 1),
+    eager=True,
+)
+rng = np.random.default_rng(42)
+
+prices = pl.DataFrame({
+    "date": dates,
+    "AAPL":  100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
+    "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
+    "MSFT":  200.0 + np.cumsum(rng.normal(0, 1.5, n_days)),
+})
+mu = pl.DataFrame({
+    "date": dates,
+    "AAPL":  np.tanh(rng.normal(0, 0.5, n_days)),
+    "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
+    "MSFT":  np.tanh(rng.normal(0, 0.5, n_days)),
+})
+
+# Mode 2 — Sliding-window factor model (no shrinkage required)
+cfg = BasanosConfig(
+    vola=16,
+    corr=32,
+    clip=3.5,
+    shrink=0.5,  # only used if covariance_mode is ewma_shrink; ignored here
+    aum=1e6,
+    covariance_config=SlidingWindowConfig(
+        window=60,    # rolling window length W (rows); rule of thumb: W >= 2 * n_assets
+        n_factors=2,  # number of latent factors k; fewer = stronger regularisation
+    ),
+)
+
+engine    = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+positions = engine.cash_position
 ```
 
 ### Portfolio Analytics
@@ -301,21 +354,31 @@ The optimizer implements a three-step pipeline per timestamp:
 
 1. **Volatility adjustment** — Log returns are normalized by an EWMA volatility estimate and clipped at `cfg.clip` standard deviations to limit the influence of outliers.
 
-2. **Correlation estimation** — An EWMA correlation matrix is computed from the vol-adjusted returns using a lookback of `cfg.corr` days. The matrix is shrunk toward the identity matrix with retention weight `cfg.shrink` (λ):
+2. **Covariance estimation** — A regularised correlation matrix is built from the vol-adjusted returns. Two modes are available (see [Covariance Modes](#covariance-modes)):
 
-   ```
-   C_shrunk = λ · C_ewma + (1 − λ) · I
-   ```
+   - *EWMA with shrinkage* (default, `EwmaShrinkConfig`): An EWMA correlation matrix is computed over a `cfg.corr`-day lookback and blended toward the identity with weight `cfg.shrink` (λ):
 
-   where λ = `cfg.shrink`. `λ = 1.0` uses the raw EWMA matrix; `λ = 0.0` replaces it with the identity (treating all assets as uncorrelated). See [Shrinkage Methodology](#shrinkage-methodology) below for guidance on choosing λ.
+     ```
+     C_shrunk = λ · C_ewma + (1 − λ) · I
+     ```
 
-3. **Position solving** — For each timestamp, the system `C_shrunk · x = mu` is solved for `x` (the risk position vector). The solution is normalized by the inverse-matrix norm of `mu`, making positions scale-invariant with respect to signal magnitude. Positions are further scaled by a running profit-variance estimate to adapt risk dynamically.
+     See [Mode 1 — EWMA with Shrinkage](#mode-1--ewma-with-shrinkage) for guidance on choosing λ.
+
+   - *Sliding-window factor model* (`SlidingWindowConfig`): The `window` most-recent vol-adjusted returns are decomposed via truncated SVD into `k` latent factors, giving a low-rank-plus-diagonal estimator solved efficiently via the Woodbury identity. **No explicit shrinkage is required** — `k` is the regularisation knob. See [Mode 2 — Sliding-Window Factor Model](#mode-2--sliding-window-factor-model).
+
+3. **Position solving** — For each timestamp, the system `C · x = mu` is solved for `x` (the risk position vector). The solution is normalized by the inverse-matrix norm of `mu`, making positions scale-invariant with respect to signal magnitude. Positions are further scaled by a running profit-variance estimate to adapt risk dynamically.
 
 Cash positions are obtained by dividing risk positions by per-asset EWMA volatility.
 
-## Shrinkage Methodology
+## Covariance Modes
 
-### Why shrink?
+Basanos offers two covariance-estimation strategies, selectable via the `covariance_config` field of `BasanosConfig`. Both solve the same linear system `C · x = μ` but differ in how `C` is regularised.
+
+### Mode 1 — EWMA with Shrinkage
+
+**Config class:** `EwmaShrinkConfig` (default; no extra fields needed beyond the top-level `BasanosConfig` parameters)
+
+#### Why shrink?
 
 Sample correlation matrices estimated from *T* observations of *n* assets are
 poorly conditioned when *n* is large relative to *T* — the classical
@@ -340,7 +403,11 @@ a fixed λ — appropriate for *regularising a linear solver* rather than
 *estimating a covariance matrix*, where practical stability often matters
 more than minimum Frobenius loss.
 
-### How to choose `cfg.shrink` (= λ)
+Setting `λ = 0.0` (full shrinkage, C = I) is a meaningful corner case: the
+system reduces to `x = μ`, i.e. signal-proportional sizing — the same result
+a Markowitz optimizer produces when all assets are treated as uncorrelated.
+
+#### How to choose `cfg.shrink` (= λ)
 
 The key quantity is the **concentration ratio** *n / T*, where *n* = number
 of assets and *T* = `cfg.corr` (the EWMA lookback).
@@ -363,11 +430,117 @@ intensity. Always validate on held-out data.
   optimizer behaves almost as if all assets were independent.
 - Shrinkage is most influential in the range λ ∈ [0.3, 0.8].
 
-### Interactive demonstration
-
 The `book/marimo/notebooks/shrinkage_guide.py` notebook shows the empirical
 effect of different shrinkage levels on portfolio Sharpe ratio and position
 stability for a realistic synthetic dataset.
+
+### Mode 2 — Sliding-Window Factor Model
+
+**Config class:** `SlidingWindowConfig(window=W, n_factors=k)`
+
+#### How it works
+
+At each timestamp *t*, the `W` most recent rows of vol-adjusted returns are
+stacked into a matrix **R** ∈ ℝ^(W×n) and decomposed via **truncated SVD**
+into *k* leading singular triplets. This yields a **factor risk model**:
+
+```
+Ĉ = (1/W) · V_k · Σ_k² · V_kᵀ + D̂
+```
+
+where **V_k** (n×k) contains the top-*k* right singular vectors (factor
+loadings), **Σ_k** is the diagonal matrix of the top-*k* singular values, and
+**D̂** = diag(d₁, …, dₙ) is chosen so that **Ĉ** has unit diagonal
+(idiosyncratic variance).  The full decomposition is:
+
+```
+Σ = B · F · Bᵀ + D
+```
+
+| Term | Shape | Meaning |
+|------|-------|---------|
+| **B** = V_k | n × k | Factor loading matrix |
+| **F** = Σ_k² / W | k × k | Factor covariance matrix |
+| **D** | n × n (diagonal) | Per-asset idiosyncratic variance |
+
+The linear system **Ĉ · x = μ** is then solved via the **Woodbury
+(Sherman–Morrison) identity**, exploiting the low-rank-plus-diagonal structure
+to reduce the per-step cost from O(n³) to **O(k³ + kn)** — a large saving
+when k ≪ n.
+
+#### Why no shrinkage is needed
+
+The factor model is itself a **low-rank regularisation**. Truncating the SVD
+to *k* factors discards all eigenvalues beyond rank *k*, replacing them with
+the idiosyncratic floor **D̂**. This achieves the same goal as shrinkage but
+through a different mechanism:
+
+| Concept | EWMA + Shrinkage | Factor Model |
+|---------|-----------------|--------------|
+| **Regularisation mechanism** | Blend all eigenvalues toward 1 (identity target) | Retain only the top *k* eigenvalues; replace the rest with an asset-specific floor |
+| **Regularisation knob** | `shrink` (λ ∈ [0, 1]) — closer to 0 = stronger | `n_factors` (k ≥ 1) — smaller k = stronger |
+| **Extreme** | λ = 0 → C = I (fully uncorrelated) | k = 1 → single market factor |
+| **Full structure** | λ = 1 → raw EWMA matrix | k = n → full sample covariance |
+| **Ill-conditioning** | Can still be ill-conditioned at λ ≈ 1 with small T | Always well-conditioned; D is diagonal and strictly positive |
+| **Solver cost** | O(n³) per step | **O(k³ + kn)** per step via Woodbury |
+
+Because the idiosyncratic component **D** is strictly positive by construction,
+**Ĉ** is always positive definite and invertible — regardless of `W` or `k`.
+No additional regularisation (shrinkage) is required or applied.
+
+#### How to choose `window` and `n_factors`
+
+**`window` (W):**
+
+- Rule of thumb: **W ≥ 2·n** keeps the sample covariance matrix over the window
+  well-posed before truncation.
+- Smaller W makes the estimator react faster to regime changes but increases
+  estimation noise. Larger W is smoother but slower to adapt.
+- The first W−1 rows of output will be zero (warm-up period).
+
+**`n_factors` (k):**
+
+- k controls how much of the correlation structure is captured. Think of it as
+  the *effective rank* of the systematic component.
+- **k = 1** recovers the single market-factor model (one global source of
+  co-movement). This is the strongest regularisation short of the identity.
+- **k = 2–5** is a natural range for diversified equity portfolios: market,
+  sector, style factors.
+- Increasing k captures finer cross-asset correlation at the cost of higher
+  estimation noise in the factor loadings.
+- Unlike shrinkage (a continuous [0, 1] dial), k is a discrete choice — use
+  `engine.sharpe_at_window_factors(window=W, n_factors=k)` to sweep over
+  candidate values on your dataset.
+
+| Portfolio size | Typical k range | Rationale |
+|---------------|-----------------|-----------|
+| 2–5 assets | 1–2 | Very few independent sources of risk |
+| 10–30 assets | 2–5 | Market + a handful of sector/style factors |
+| 50–200 assets | 3–10 | Richer factor structure; keep k ≪ n |
+| > 200 assets | 5–20 | Start from variance-explained criterion |
+
+A practical starting point is to choose k such that the top-k factors explain
+60–80% of the variance of the vol-adjusted returns over the window.
+
+### Choosing Between Modes
+
+| Criterion | EWMA + Shrinkage | Sliding-Window Factor Model |
+|-----------|-----------------|----------------------------|
+| **Tuning parameters** | λ (continuous) | W (window) + k (factors) |
+| **Intuition** | "How much do I trust the raw EWMA correlations?" | "How many independent risk drivers exist in my universe?" |
+| **Computational cost** | O(T·N²) for EWMA; O(N³) per solve | O(W·N·k) per step; O(k³ + kN) per solve |
+| **Memory** | O(T·N²) peak | O(W·N) sliding buffer |
+| **Warm-up** | Gradual (EWMA decay) | Hard cutoff at W rows |
+| **Regime adaptability** | Smooth exponential decay | Hard rolling window (all rows equally weighted) |
+| **Best for** | Moderate N (≤ 200), long histories, continuous λ search | Large N, short histories, interpretable factor structure |
+
+When in doubt, start with **EWMA + shrinkage** (the default) — it requires
+fewer design decisions and has a well-understood parameter space. Switch to
+the **factor model** when:
+- n is large and n/W approaches or exceeds 0.5 (sample covariance poorly conditioned),
+- you want O(k³ + kn) per-step cost rather than O(n³),
+- you want an interpretable factor structure (e.g., for risk attribution), or
+- you prefer a single discrete knob (k) over a continuous one (λ).
 
 ### References
 
@@ -380,6 +553,8 @@ stability for a realistic synthetic dataset.
 - Stein, C. (1956). *Inadmissibility of the usual estimator for the mean of a
   multivariate normal distribution.* Proceedings of the Third Berkeley
   Symposium, 1, 197–206.
+- Woodbury, M. A. (1950). *Inverting modified matrices.* Memorandum Report 42,
+  Statistical Research Group, Princeton University.
 
 ## Performance Characteristics
 
@@ -474,6 +649,7 @@ See [`BENCHMARKS.md`](BENCHMARKS.md) for full results and regression baselines.
 
 ```python
 from basanos.math import BasanosConfig, BasanosEngine, FactorModel
+from basanos.math import EwmaShrinkConfig, SlidingWindowConfig, CovarianceMode
 ```
 
 | Class | Description |
@@ -481,6 +657,9 @@ from basanos.math import BasanosConfig, BasanosEngine, FactorModel
 | `BasanosConfig` | Immutable configuration (Pydantic model) |
 | `BasanosEngine` | Core optimizer; produces positions and a `Portfolio` |
 | `FactorModel` | Factor risk model decomposition Σ = B·F·Bᵀ + D |
+| `EwmaShrinkConfig` | Covariance config for EWMA + shrinkage mode (default) |
+| `SlidingWindowConfig` | Covariance config for sliding-window factor model mode |
+| `CovarianceMode` | Enum: `ewma_shrink` / `sliding_window` |
 
 **`BasanosEngine` properties**
 
@@ -514,7 +693,8 @@ from basanos.math import BasanosConfig, BasanosEngine, FactorModel
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `sharpe_at_shrink` | `sharpe_at_shrink(shrink: float) → float` | Annualised Sharpe ratio for a given shrinkage weight λ ∈ [0, 1]; use for lambda sweeps |
+| `sharpe_at_shrink` | `sharpe_at_shrink(shrink: float) → float` | Annualised Sharpe ratio for a given shrinkage weight λ ∈ [0, 1]; use for lambda sweeps (EWMA mode) |
+| `sharpe_at_window_factors` | `sharpe_at_window_factors(window: int, n_factors: int) → float` | Annualised Sharpe ratio for given sliding-window `window` and `n_factors`; sweeps factor model hyperparameters |
 
 **`BasanosConfig` properties**
 
@@ -686,20 +866,23 @@ dark-themed styling, a statistics table, and embedded interactive Plotly charts.
 
 ## Configuration Reference
 
+### `BasanosConfig` — core parameters
+
 **Required parameters**
 
 | Parameter | Type | Constraint | Description |
 |-----------|------|------------|-------------|
 | `vola` | `int` | `> 0` | EWMA lookback for volatility (days) |
-| `corr` | `int` | `>= vola` | EWMA lookback for correlation (days) |
+| `corr` | `int` | `>= vola` | EWMA lookback for correlation (days); used only in `ewma_shrink` mode |
 | `clip` | `float` | `> 0` | Clipping threshold for vol-adjusted returns |
-| `shrink` | `float` | `[0, 1]` | Shrinkage intensity — `0` = identity (no correlation adj.), `1` = raw EWMA |
+| `shrink` | `float` | `[0, 1]` | Shrinkage intensity (λ) — `0` = identity, `1` = raw EWMA; used only in `ewma_shrink` mode |
 | `aum` | `float` | `> 0` | Assets under management for position scaling |
 
 **Optional parameters** (sensible defaults for most use cases)
 
 | Parameter | Type | Default | Constraint | Description |
 |-----------|------|---------|------------|-------------|
+| `covariance_config` | `EwmaShrinkConfig \| SlidingWindowConfig` | `EwmaShrinkConfig()` | — | Covariance estimation strategy; see below |
 | `profit_variance_init` | `float` | `1.0` | `> 0` | Initial value for the profit-variance EMA |
 | `profit_variance_decay` | `float` | `0.99` | `(0, 1)` | EMA decay factor λ for realised P&L variance; default gives ~69-period half-life |
 | `denom_tol` | `float` | `1e-12` | `> 0` | Minimum normalisation denominator; positions are zeroed at or below this threshold |
@@ -707,14 +890,47 @@ dark-themed styling, a statistics table, and embedded interactive Plotly charts.
 | `min_corr_denom` | `float` | `1e-14` | `> 0` | Guard threshold for the EWMA correlation denominator; correlations below this are set to NaN |
 | `max_nan_fraction` | `float` | `0.9` | `(0, 1)` | Maximum tolerated fraction of null values in any asset price column before raising `ExcessiveNullsError` |
 
+### `EwmaShrinkConfig` — EWMA with shrinkage (default)
+
+No additional fields beyond the top-level `BasanosConfig` parameters (`corr`, `shrink`).
+
 ```python
-from basanos.math import BasanosConfig
+from basanos.math import BasanosConfig  # EwmaShrinkConfig is the default
 
 # Conservative — longer lookbacks, stronger shrinkage
 conservative = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.7, aum=1e6)
 
 # Responsive — shorter lookbacks, lighter shrinkage
 responsive   = BasanosConfig(vola=8,  corr=16, clip=4.0, shrink=0.3, aum=1e6)
+```
+
+### `SlidingWindowConfig` — sliding-window factor model
+
+| Parameter | Type | Constraint | Description |
+|-----------|------|------------|-------------|
+| `window` | `int` | `> 0` | Rolling window length *W* (number of most-recent observations). Rule of thumb: *W* ≥ 2·n_assets. The first *W*−1 output rows are zero (warm-up). |
+| `n_factors` | `int` | `> 0` | Number of latent factors *k*. Fewer factors = stronger regularisation. *k* = 1 = single market factor; *k* = 2–5 typical for diversified equity. |
+
+> **Note:** `corr` and `shrink` on `BasanosConfig` are ignored in `sliding_window` mode. They remain required fields for API consistency (and for `ewma_shrink` mode), but have no effect on factor-model positions. Any valid value (e.g. `corr=32, shrink=0.5`) is acceptable as a placeholder.
+
+```python
+from basanos.math import BasanosConfig, SlidingWindowConfig
+
+# Factor model — 60-day window, 3 latent factors
+cfg = BasanosConfig(
+    vola=16,
+    corr=32,   # unused in sliding_window mode but still required
+    clip=3.5,
+    shrink=0.5,  # unused in sliding_window mode
+    aum=1e6,
+    covariance_config=SlidingWindowConfig(window=60, n_factors=3),
+)
+
+# Single market-factor model — maximum regularisation
+single_factor = BasanosConfig(
+    vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6,
+    covariance_config=SlidingWindowConfig(window=120, n_factors=1),
+)
 ```
 
 ## Development
