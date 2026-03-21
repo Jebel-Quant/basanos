@@ -643,6 +643,35 @@ class BasanosStream:
         y_w, corr_zi_w = lfilter([1.0], filt_a_corr, new_v_w, axis=0, zi=state.corr_zi_w)
         corr_count = state.corr_count + joint_fin.astype(np.int64)
 
+        # ── Early return during EWM warmup period ───────────────────────────
+        # All accumulators are already updated above; skip the O(N²) matrix
+        # reconstruction and O(N³) Cholesky solve which are wasteful during
+        # warmup — the computed positions would be discarded anyway.
+        if in_warmup:
+            state.corr_zi_x = corr_zi_x
+            state.corr_zi_x2 = corr_zi_x2
+            state.corr_zi_xy = corr_zi_xy
+            state.corr_zi_w = corr_zi_w
+            state.corr_count = corr_count
+            state.vola_s_x = vola_s_x
+            state.vola_s_x2 = vola_s_x2
+            state.vola_s_w = vola_s_w
+            state.vola_s_w2 = vola_s_w2
+            state.vola_count = vola_count
+            state.pct_s_x = pct_s_x
+            state.pct_s_x2 = pct_s_x2
+            state.pct_s_w = pct_s_w
+            state.pct_s_w2 = pct_s_w2
+            state.pct_count = pct_count
+            state.prev_price = new_p.copy()
+            state.step_count += 1
+            return StepResult(
+                date=date,
+                cash_position=np.full(n_assets, np.nan),
+                status="warmup",
+                vola=np.full(n_assets, np.nan),
+            )
+
         # ── Reconstruct the EWM correlation matrix ─────────────────────────
         # Use y_*[0] (the filter OUTPUT for this step), not zf[0].
         s_x = y_x[0]
@@ -749,14 +778,6 @@ class BasanosStream:
         state.prev_cash_pos = new_cash_pos.copy()
         state.profit_variance = profit_variance
         state.step_count += 1
-
-        if in_warmup:
-            return StepResult(
-                date=date,
-                cash_position=np.full(n_assets, np.nan),
-                status="warmup",
-                vola=np.full(n_assets, np.nan),
-            )
 
         return StepResult(
             date=date,

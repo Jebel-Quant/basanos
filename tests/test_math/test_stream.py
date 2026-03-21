@@ -21,6 +21,7 @@ Covers:
 from __future__ import annotations
 
 import dataclasses
+import time
 from datetime import date, timedelta
 
 import numpy as np
@@ -533,6 +534,116 @@ def test_stream_warmup_status_before_min_periods():
     assert result.status == "warmup"
     assert np.all(np.isnan(result.cash_position))
     assert np.all(np.isnan(result.vola))
+
+
+def test_stream_warmup_skips_solve_state_unchanged():
+    """Warmup step() must not update profit_variance or prev_cash_pos.
+
+    The early-return guard skips the matrix reconstruction and solve block, so
+    *state.profit_variance* must remain exactly unchanged and *state.prev_cash_pos*
+    must remain NaN (no computed position) after every warmup step.
+    """
+    warmup_len = 5
+    n_total = warmup_len + 5
+    rng = np.random.default_rng(42)
+    start = date(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n_total - 1), interval="1d", eager=True)
+    price_a = np.array([100.0, 102.0, 101.0, 103.0, 102.0, 104.0, 103.0, 105.0, 104.0, 106.0], dtype=float)
+    price_b = np.array([200.0, 198.0, 202.0, 199.0, 203.0, 200.0, 204.0, 201.0, 205.0, 202.0], dtype=float)
+    prices = pl.DataFrame({"date": dates, "A": price_a, "B": price_b})
+    mu_vals = rng.normal(0, 0.5, n_total)
+    mu = pl.DataFrame({"date": dates, "A": mu_vals, "B": mu_vals})
+    cfg = BasanosConfig(vola=5, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    assert stream._state.step_count < cfg.corr, "fixture: stream must start in warmup"
+
+    assets = stream.assets
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    # Record state before any streaming step
+    initial_pv = stream._state.profit_variance
+    initial_prev_cash = stream._state.prev_cash_pos.copy()
+
+    for i in range(n_total - warmup_len):
+        assert stream._state.step_count < cfg.corr, "all steps in this loop must be warmup"
+        result = stream.step(prices_np[warmup_len + i], mu_np[warmup_len + i])
+
+        assert result.status == "warmup"
+        # The early-return path must not touch profit_variance or prev_cash_pos
+        assert stream._state.profit_variance == initial_pv, (
+            f"profit_variance changed during warmup step {i}; solve block may not be short-circuited"
+        )
+        assert np.all(np.isnan(stream._state.prev_cash_pos)) or np.array_equal(
+            stream._state.prev_cash_pos, initial_prev_cash
+        ), "prev_cash_pos changed during warmup; solve block may not be short-circuited"
+
+
+def test_stream_warmup_step_faster_than_full_solve():
+    """Warmup step() must short-circuit before the O(N**2) matrix solve.
+
+    Compare the per-step latency of a warmup stream (step_count < cfg.corr)
+    against a fully-warmed-up stream (step_count >= cfg.corr) using identical
+    inputs.  Warmup steps must be at least 1.5x faster because the
+    correlation-matrix reconstruction and Cholesky solve are skipped.
+    The 1.5x threshold provides tolerance for system-load variation in CI.
+    """
+    n_assets = 20  # large enough that O(N²) work is measurable
+    n_steps = 30
+
+    # corr=60: short batch (10 rows) stays in warmup; long batch (60 rows) exits it
+    cfg = BasanosConfig(vola=5, corr=60, clip=3.0, shrink=0.5, aum=1e6)
+    short_warmup = 10
+    long_warmup = 60
+    n_total = long_warmup + n_steps
+    rng = np.random.default_rng(7)
+    start = date(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n_total - 1), interval="1d", eager=True)
+    asset_names = [chr(ord("A") + i) for i in range(n_assets)]
+
+    price_data: dict[str, object] = {"date": dates}
+    mu_data: dict[str, object] = {"date": dates}
+    for a in asset_names:
+        base = 100.0 + rng.uniform(0, 100)
+        t = np.arange(n_total, dtype=float)
+        price_data[a] = np.abs(base + np.cumsum(rng.normal(0, 0.5, n_total)) + 5 * np.sin(t * 0.3)) + 1.0
+        mu_data[a] = rng.normal(0, 0.5, n_total)
+
+    prices = pl.DataFrame(price_data)
+    mu = pl.DataFrame(mu_data)
+    prices_np = prices.select(asset_names).to_numpy()
+    mu_np = mu.select(asset_names).to_numpy()
+
+    # Warmup stream: step_count = 10 < cfg.corr = 60  →  all steps are warmup
+    warmup_stream = BasanosStream.from_warmup(prices.head(short_warmup), mu.head(short_warmup), cfg)
+    assert warmup_stream._state.step_count < cfg.corr
+
+    # Post-warmup stream: step_count = 60 = cfg.corr  →  all steps are real solves
+    full_stream = BasanosStream.from_warmup(prices.head(long_warmup), mu.head(long_warmup), cfg)
+    assert full_stream._state.step_count >= cfg.corr
+
+    t0 = time.perf_counter()
+    for i in range(n_steps):
+        warmup_stream.step(prices_np[short_warmup + i], mu_np[short_warmup + i])
+    warmup_elapsed = time.perf_counter() - t0
+
+    t1 = time.perf_counter()
+    for i in range(n_steps):
+        full_stream.step(prices_np[long_warmup + i], mu_np[long_warmup + i])
+    full_elapsed = time.perf_counter() - t1
+
+    warmup_per_step = warmup_elapsed / n_steps
+    full_per_step = full_elapsed / n_steps
+
+    # Warmup per-step latency must be at least 1.5x faster than a full solve.
+    # The 1.5x factor provides tolerance for CI system-load variation while
+    # still reliably catching regressions where the early-return is absent.
+    assert warmup_per_step * 1.5 < full_per_step, (
+        f"Warmup step ({warmup_per_step * 1e6:.1f} us) not at least 1.5x faster than "
+        f"full-solve step ({full_per_step * 1e6:.1f} us); "
+        "the early-return guard may be missing or broken"
+    )
 
 
 def test_stream_degenerate_status_all_nan_prices():
