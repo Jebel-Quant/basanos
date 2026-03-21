@@ -123,3 +123,4 @@ local.mk
 
 .bandit-baseline.json
 
+output/
