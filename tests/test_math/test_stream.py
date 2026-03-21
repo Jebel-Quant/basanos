@@ -1812,3 +1812,85 @@ def test_sw_max_components_none_equals_no_cap():
 
     np.testing.assert_array_equal(result_explicit.cash_position, result_default.cash_position)
     assert result_explicit.status == result_default.status
+
+
+# ─── max_turnover constraint in BasanosStream.step() ─────────────────────────
+
+
+def _make_stream_for_turnover_test(
+    max_turnover: float | None = None,
+    n_total: int = 80,
+    n_assets: int = 5,
+    seed: int = 7,
+    warmup_len: int = 50,
+) -> tuple[BasanosStream, np.ndarray, np.ndarray]:
+    """Return (stream, prices_np, mu_np) for turnover constraint tests."""
+    prices, mu, _, assets = _make_prices_mu(n_total=n_total, n_assets=n_assets, seed=seed)
+    cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6, max_turnover=max_turnover)
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+    return stream, prices_np, mu_np
+
+
+def test_step_max_turnover_none_unchanged():
+    """step() with max_turnover=None must produce the same positions as no constraint."""
+    prices, mu, _, assets = _make_prices_mu(n_total=80, n_assets=5, seed=7)
+    cfg_none = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+    cfg_explicit = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6, max_turnover=None)
+    warmup_len = 50
+
+    stream_none = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg_none)
+    stream_explicit = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg_explicit)
+
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    for i in range(warmup_len, len(prices_np)):
+        r_none = stream_none.step(prices_np[i], mu_np[i])
+        r_explicit = stream_explicit.step(prices_np[i], mu_np[i])
+        np.testing.assert_array_equal(r_none.cash_position, r_explicit.cash_position)
+
+
+def test_step_max_turnover_constrains_l1_position_change():
+    """step() with max_turnover set must cap sum(|Δx_t|) at every non-warmup step."""
+    max_turnover = 1e4
+    stream, prices_np, mu_np = _make_stream_for_turnover_test(max_turnover=max_turnover)
+    warmup_len = 50
+
+    prev_pos = np.zeros(prices_np.shape[1])
+    for i in range(warmup_len, len(prices_np)):
+        result = stream.step(prices_np[i], mu_np[i])
+        curr = np.nan_to_num(result.cash_position, nan=0.0)
+        delta_l1 = float(np.sum(np.abs(curr - prev_pos)))
+        assert delta_l1 <= max_turnover + 1e-6, f"step {i}: turnover {delta_l1:.4f} exceeds max_turnover {max_turnover}"
+        prev_pos = curr
+
+
+def test_step_tight_max_turnover_reduces_total_turnover():
+    """A tighter max_turnover in step() must produce less or equal total L1 turnover."""
+    n_total, warmup_len = 80, 50
+    prices, mu, _, assets = _make_prices_mu(n_total=n_total, n_assets=5, seed=9)
+
+    def collect_positions(max_turnover: float | None) -> np.ndarray:
+        cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6, max_turnover=max_turnover)
+        stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+        prices_np = prices.select(assets).to_numpy()
+        mu_np = mu.select(assets).to_numpy()
+        rows = [stream.step(prices_np[i], mu_np[i]).cash_position for i in range(warmup_len, n_total)]
+        return np.array(rows)
+
+    pos_unconstrained = collect_positions(None)
+    pos_constrained = collect_positions(5e3)
+
+    def total_l1(pos: np.ndarray) -> float:
+        total = 0.0
+        for i in range(1, len(pos)):
+            prev = np.nan_to_num(pos[i - 1], nan=0.0)
+            curr = np.nan_to_num(pos[i], nan=0.0)
+            total += float(np.sum(np.abs(curr - prev)))
+        return total
+
+    assert total_l1(pos_constrained) <= total_l1(pos_unconstrained) + 1e-6, (
+        "Constrained stream produced more total turnover than unconstrained stream"
+    )
