@@ -476,6 +476,40 @@ Six commits since entry #11 close all three weaknesses and both risks from that 
 
 ---
 
+## 2026-03-21 — Analysis Entry #14
+
+### Summary
+
+Five commits since entry #13 close two of the three weaknesses and the single risk from that session, and expose one new short-lived API instability in the process. `plan.md` is removed from the repository root (`76e66fa`). `MatrixBundle` is introduced to future-proof `_compute_position` against argument-list growth (`3ef3990`, PR #413). A conda-forge recipe is added, making basanos installable via `conda install -c conda-forge basanos` (`c97ccd0`, PR #407). The `ewm_corr` API goes through a rapid public/private flip: `edad633` promotes it as a proper public function (closes #410), then `8554b9a` immediately re-privatizes it after the promotion broke the benchmark notebook import. The notebook import fix required a separate commit on the open branch (`a34a29e`). The four remaining notebook suites' semantic coverage gap — weakness #2 from entry #13 — remains open.
+
+### Strengths
+
+- **`plan.md` artifact removed** (`76e66fa`): The 348-line agent planning artifact at the repository root, flagged in entry #13, is deleted in a focused `chore` commit. The weakness is closed. Repository root is clean.
+
+- **`MatrixBundle` closes the `_compute_position` argument-list risk** (`_engine_solve.py:56–73`, PR #413): `MatrixBundle` is a frozen dataclass wrapping `matrix: np.ndarray`. `_compute_position` now takes `MatrixBundle | None` instead of a bare `np.ndarray | None`, and `_iter_matrices` yields `(i, t, mask, MatrixBundle | None)` via the existing `MatrixYield` alias. Any future covariance mode (DCC-GARCH, RMT-cleaned) that needs to carry auxiliary state alongside the covariance matrix can extend `MatrixBundle` with new fields without touching the method signature. `MatrixBundle` is re-exported from `basanos.math.__init__`. The risk from entry #13 is closed at the architecture level.
+
+- **conda-forge recipe** (`recipe/meta.yaml`, PR #407): A complete conda-forge recipe is committed. The `noarch: python` build covers Python ≥ 3.11, all runtime dependencies are pinned consistently with `pyproject.toml` (numpy `>=2.4,<3`, polars `>=1.37.1`, scipy `>=1.17.0,<2`, pydantic `>=2.12.5,<3`, plotly `>=6.6.0,<7`). README gains a `conda install -c conda-forge basanos` install section. This is a meaningful distribution milestone: it enables users in scientific Python environments to install basanos without pip, expanding the addressable audience.
+
+### Weaknesses
+
+- **`ewm_corr` API flip introduced a broken state**: `edad633` promoted `ewm_corr` to a proper public function and exported it from `basanos.math.__init__`. `8554b9a` immediately re-privatized it without updating `book/marimo/notebooks/ewm_benchmark.py`, leaving the notebook with a broken import (`_ewm_corr_numpy` does not exist). This required a third commit (`a34a29e`) to fix the notebook. The two-commit reversal sequence — promotion followed by re-privatization within the same session — suggests the public API decision was not settled before the first commit landed. The final state (private) is correct given there is no documented external use case, but the churn left a broken intermediate state in the repository.
+
+- **Four notebook test suites still validate execution, not semantics**: `test_demo_notebook.py`, `test_ewm_benchmark_notebook.py`, `test_factor_model_notebook.py`, and `test_shrinkage_notebook.py` each run `app.run()` and assert on exit codes, but do not validate computed values. Semantic drift (a notebook cell producing a wrong position or a silently changed parameter) passes all four suites. Only `test_diagnostics_notebook.py` asserts on actual computed values. This weakness carries forward from entry #13.
+
+- **conda-forge recipe version is pinned to 0.5.0 in-tree**: `recipe/meta.yaml` hardcodes `version: 0.5.0` and the corresponding PyPI SHA256. There is no automation to keep this in sync with `pyproject.toml` on version bumps. As-is, every release requires a manual update to `recipe/meta.yaml` or the recipe drifts.
+
+### Risks / Technical Debt
+
+- **Polars upper bound absent from conda recipe**: `pyproject.toml` specifies `polars>=1.37.1,<2` but `recipe/meta.yaml` specifies only `polars >=1.37.1` (no upper bound). The conda and pip install paths will resolve different version ranges. If polars 2.x ships with breaking changes, conda users hit them silently while pip users are protected. The two specs should be kept in sync.
+
+### Score
+
+**9/10** — Unchanged
+
+**Rationale**: `MatrixBundle` is a clean, forward-looking design move that directly addresses the risk raised in entry #13. The conda-forge recipe is a genuine distribution milestone. Removing `plan.md` closes the one cosmetic weakness from that entry. The score does not advance because the `ewm_corr` API flip exposed a gap in how API stability decisions are validated before merging — a reversal within the same session that left the repository in a broken intermediate state — and the four notebook test suites still lack semantic assertions. The recipe version drift and Polars upper-bound inconsistency are new, low-severity risks that add to the ongoing maintenance surface.
+
+---
+
 ## 2026-03-21 — Analysis Entry #13
 
 ### Summary
