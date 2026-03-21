@@ -29,7 +29,7 @@ with app.setup:
     import polars as pl
     from plotly.subplots import make_subplots
 
-    from basanos.math import ewm_corr as ewm_corr_numpy
+    from basanos.math._ewm_corr import _ewm_corr_numpy as ewm_corr_numpy
 
     def ewm_corr_pandas(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
         """Original EWM correlation via pandas (pre-migration implementation).
