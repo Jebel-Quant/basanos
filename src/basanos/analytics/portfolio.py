@@ -546,7 +546,7 @@ class Portfolio:
             [0.0, 2.0, 3.0]
         """
         assets = [c for c in self.cashposition.columns if c != "date" and self.cashposition[c].dtype.is_numeric()]
-        abs_position_changes = pl.sum_horizontal(pl.col(c).diff().abs().fill_null(0.0) for c in assets)
+        abs_position_changes = pl.sum_horizontal(pl.col(c).diff().abs().fill_null(0.0).fill_nan(0.0) for c in assets)
         daily_cost = (abs_position_changes * self.cost_per_unit).alias("cost")
         cols: list[str | pl.Expr] = []
         if "date" in self.cashposition.columns:
