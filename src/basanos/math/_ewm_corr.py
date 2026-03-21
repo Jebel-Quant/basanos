@@ -181,3 +181,12 @@ def _ewm_corr_numpy(
     """
     result, _ = _ewm_corr_with_final_state(data, com, min_periods, min_corr_denom)
     return result
+
+
+#: Public alias for :func:`_ewm_corr_numpy`.
+#:
+#: Exported from :mod:`basanos.math` so callers can import without reaching
+#: into private sub-modules:
+#:
+#:     >>> from basanos.math import ewm_corr  # doctest: +SKIP
+ewm_corr = _ewm_corr_numpy
