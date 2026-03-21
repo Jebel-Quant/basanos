@@ -627,9 +627,7 @@ class BasanosStream:
         # In both modes all accumulators are still updated during warmup so that
         # the state is ready the moment the warmup period ends.
         _warmup_thresh = (
-            cast(SlidingWindowConfig, cfg.covariance_config).window
-            if isinstance(cfg.covariance_config, SlidingWindowConfig)
-            else cfg.corr
+            cfg.covariance_config.window if isinstance(cfg.covariance_config, SlidingWindowConfig) else cfg.corr
         )
         in_warmup: bool = state.step_count < _warmup_thresh
 
@@ -774,7 +772,7 @@ class BasanosStream:
 
         if isinstance(cfg.covariance_config, SlidingWindowConfig):
             # ── SW path: FactorModel solve via Woodbury identity ─────────────
-            sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
+            sw_config = cfg.covariance_config
             if not mask.any():
                 status = SolveStatus.DEGENERATE
             else:

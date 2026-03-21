@@ -151,7 +151,7 @@ class _SolveMixin:
                     profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
             if pos is not None:
                 risk_pos_np[i, mask] = pos / profit_variance
-                cash_pos_np[i, mask] = self._scale_to_cash(pos, profit_variance, vola_np[i, mask])
+                cash_pos_np[i, mask] = _SolveMixin._scale_to_cash(pos, profit_variance, vola_np[i, mask])
         return profit_variance
 
     def _iter_matrices(self: _EngineProtocol):
@@ -277,11 +277,11 @@ class _SolveMixin:
         if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
             cor = self.cor
             for i, t in enumerate(dates):
-                mask = self._compute_mask(prices_num[i])
+                mask = _SolveMixin._compute_mask(prices_num[i])
                 if not mask.any():
                     yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
                     continue
-                sig_status = self._check_signal(mu_np[i], mask)
+                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
                 expected_mu = np.nan_to_num(mu_np[i][mask])
                 if sig_status is not None:
                     yield i, t, mask, np.zeros_like(expected_mu), sig_status
@@ -321,7 +321,7 @@ class _SolveMixin:
             win_k: int = sw_config.n_factors
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
             for i, t in enumerate(dates):
-                mask = self._compute_mask(prices_num[i])
+                mask = _SolveMixin._compute_mask(prices_num[i])
                 if not mask.any():
                     yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
                     continue
@@ -338,7 +338,7 @@ class _SolveMixin:
                     _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
                     yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
                     continue
-                sig_status = self._check_signal(mu_np[i], mask)
+                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
                 expected_mu = np.nan_to_num(mu_np[i][mask])
                 if sig_status is not None:
                     yield i, t, mask, np.zeros(n_sub), sig_status
@@ -428,7 +428,7 @@ class _SolveMixin:
         else:
             iir_state = None
 
-        profit_variance = self._replay_profit_variance(risk_pos_np, cash_pos_np, vola_np, returns_num)
+        profit_variance = _SolveMixin._replay_profit_variance(self, risk_pos_np, cash_pos_np, vola_np, returns_num)
         prev_cash_pos = cash_pos_np[-1].copy()
         return WarmupState(
             profit_variance=profit_variance,
