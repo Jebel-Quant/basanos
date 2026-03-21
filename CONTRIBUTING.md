@@ -160,3 +160,45 @@ make test
 
 Please make sure that your change doesn't cause any
 of the unit tests to fail.
+
+## Engine mixin pattern
+
+The `BasanosEngine` class is composed from several private mixins
+(`_SolveMixin`, `_DiagnosticsMixin`, `_SignalEvaluatorMixin`).  Each mixin
+method uses an explicit `self: _EngineProtocol` annotation rather than the
+plain `self` convention:
+
+```python
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ._engine_protocol import _EngineProtocol
+
+
+class _MyNewMixin:
+    def my_method(self: _EngineProtocol) -> float:
+        # self.assets, self.cfg, etc. are fully typed and verified
+        return float(self.cfg.shrink) * len(self.assets)
+```
+
+**Why this pattern?**
+
+- `_EngineProtocol` is a `typing.Protocol` that declares every attribute and
+  method the mixin host (`BasanosEngine`) must expose.  Annotating `self` with
+  it lets `ty`/`mypy`/`pyright` verify all attribute accesses inside the
+  method at type-check time, before any tests run.
+- Annotation-only class variables on the mixin (`class _MyMixin: assets:
+  list[str]`) are insufficient: they are invisible to the type checker on
+  `self` inside methods and do not create the attribute at runtime, so errors
+  surface only when the attribute is first accessed.
+
+**Adding a new mixin**
+
+1. Check whether your method's required attributes are already declared on
+   `_EngineProtocol` (`src/basanos/math/_engine_protocol.py`).  If not, add
+   them there first.
+2. Write the mixin class with `self: _EngineProtocol` on every method that
+   accesses engine attributes (imported under `TYPE_CHECKING` to avoid circular
+   imports at runtime).
+3. Inherit the new mixin in `BasanosEngine` alongside the existing ones.
