@@ -115,6 +115,94 @@ class _SolveMixin:
         with np.errstate(invalid="ignore"):
             return risk_pos / vola_active
 
+    @staticmethod
+    def _prepare_mu(mu_row: np.ndarray, mask: np.ndarray) -> tuple[np.ndarray, SolveStatus | None]:
+        """Return ``(expected_mu, sig_status)`` for the active-asset subset.
+
+        Combines :meth:`_check_signal` and ``nan_to_num`` extraction so both
+        branches of :meth:`_iter_solve` avoid repeating the same two lines.
+
+        Returns:
+            tuple: ``(expected_mu, sig_status)`` — NaN-filled expected returns
+            restricted to active assets, and :attr:`SolveStatus.ZERO_SIGNAL`
+            when all active returns are zero (``None`` otherwise).
+        """
+        sig_status = _SolveMixin._check_signal(mu_row, mask)
+        return np.nan_to_num(mu_row[mask]), sig_status
+
+    @staticmethod
+    def _solve_ewma_step(
+        expected_mu: np.ndarray,
+        matrix: np.ndarray,
+        t: object,
+        denom_tol: float,
+    ) -> tuple[np.ndarray, SolveStatus]:
+        """Run the EWMA linear solve for one timestamp.
+
+        Computes the normalisation denominator via
+        :func:`~basanos.math._linalg.inv_a_norm`, validates it against
+        *denom_tol*, then solves via :func:`~basanos.math._linalg.solve`.
+
+        Returns:
+            tuple: ``(pos, status)`` — raw position vector before
+            ``profit_variance`` scaling.  All failure paths return a zero
+            vector with :attr:`SolveStatus.DEGENERATE`.
+        """
+        try:
+            denom = inv_a_norm(expected_mu, matrix)
+        except SingularMatrixError:
+            denom = float("nan")
+        if not np.isfinite(denom) or denom <= denom_tol:
+            _logger.warning(
+                "Positions zeroed at t=%s: normalisation denominator is degenerate "
+                "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
+                t,
+                denom,
+                denom_tol,
+                extra={"context": {"t": str(t), "denom": denom, "denom_tol": denom_tol}},
+            )
+            return np.zeros_like(expected_mu), SolveStatus.DEGENERATE
+        try:
+            pos = solve(matrix, expected_mu) / denom
+        except SingularMatrixError:
+            _logger.warning("EWMA linear solve failed at t=%s: singular matrix.", t)
+            return np.zeros_like(expected_mu), SolveStatus.DEGENERATE
+        return pos, SolveStatus.VALID
+
+    @staticmethod
+    def _solve_sw_step(
+        expected_mu: np.ndarray,
+        fm: FactorModel,
+        t: object,
+        denom_tol: float,
+    ) -> tuple[np.ndarray, SolveStatus]:
+        """Run the sliding-window Woodbury solve for one timestamp.
+
+        Solves via :meth:`~basanos.math._factor_model.FactorModel.solve`,
+        derives the normalisation denominator, validates it, and normalises.
+
+        Returns:
+            tuple: ``(pos, status)`` — raw position vector before
+            ``profit_variance`` scaling.  All failure paths return a zero
+            vector with :attr:`SolveStatus.DEGENERATE`.
+        """
+        try:
+            x = fm.solve(expected_mu)
+            denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
+        except (np.linalg.LinAlgError, ValueError) as exc:
+            _logger.warning("Woodbury solve failed at t=%s: %s", t, exc)
+            return np.zeros_like(expected_mu), SolveStatus.DEGENERATE
+        if not np.isfinite(denom) or denom <= denom_tol:
+            _logger.warning(
+                "Positions zeroed at t=%s (sliding_window): normalisation "
+                "denominator is degenerate (denom=%s, denom_tol=%s).",
+                t,
+                denom,
+                denom_tol,
+            )
+            return np.zeros_like(expected_mu), SolveStatus.DEGENERATE
+        return x / denom, SolveStatus.VALID
+
     def _replay_profit_variance(
         self: _EngineProtocol,
         risk_pos_np: np.ndarray,
@@ -124,9 +212,23 @@ class _SolveMixin:
     ) -> float:
         """Replay the profit-variance EMA across all rows, filling position arrays.
 
-        Iterates :meth:`_iter_solve`, writes risk and cash positions into the
-        provided pre-allocated arrays, and returns the final
-        ``profit_variance`` scalar.  Both arrays are mutated **in-place**.
+        Iterates :meth:`_iter_solve` row-by-row, updating *profit_variance* and
+        writing scaled positions into the pre-allocated arrays **in place**.
+
+        Mutation contract:
+
+        * ``risk_pos_np[i, mask] = pos / profit_variance`` for every solved
+          row.  ``WARMUP`` rows (``pos is None``) are never written; those
+          cells retain their initial ``NaN``.
+        * ``cash_pos_np`` is updated in two passes per row.  At row *i* the
+          masked positions are set via :meth:`_scale_to_cash`.  On the *next*
+          iteration the full previous row is overwritten as
+          ``cash_pos_np[i] = risk_pos_np[i] / vola_np[i]`` to obtain
+          PnL-consistent cash positions for the profit update.  Rows
+          ``0 … T-2`` therefore reflect this full-row overwrite; only
+          ``cash_pos_np[T-1]`` retains the masked write.  Callers that read
+          only ``cash_pos_np[-1]`` (e.g. :meth:`warmup_state`) are not
+          affected by this distinction.
 
         Args:
             risk_pos_np: Pre-allocated ``(T, N)`` array for risk positions.
@@ -190,7 +292,7 @@ class _SolveMixin:
         if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
             cor = self.cor
             for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
+                mask = _SolveMixin._compute_mask(prices_num[i])
                 if not mask.any():
                     yield i, t, mask, None
                     continue
@@ -203,8 +305,9 @@ class _SolveMixin:
             win_k: int = sw_config.n_factors
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
             for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
-                if not mask.any() or i + 1 < win_w:
+                mask = _SolveMixin._compute_mask(prices_num[i])
+                in_warmup = i + 1 < win_w
+                if not mask.any() or in_warmup:
                     yield i, t, mask, None
                     continue
                 window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
@@ -281,40 +384,14 @@ class _SolveMixin:
                 if not mask.any():
                     yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
                     continue
-                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
-                expected_mu = np.nan_to_num(mu_np[i][mask])
+                expected_mu, sig_status = _SolveMixin._prepare_mu(mu_np[i], mask)
                 if sig_status is not None:
                     yield i, t, mask, np.zeros_like(expected_mu), sig_status
                     continue
                 corr_n = cor[t]
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-                try:
-                    denom = inv_a_norm(expected_mu, matrix)
-                except SingularMatrixError:
-                    denom = float("nan")
-                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                    _logger.warning(
-                        "Positions zeroed at t=%s: normalisation denominator is degenerate "
-                        "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
-                        t,
-                        denom,
-                        self.cfg.denom_tol,
-                        extra={
-                            "context": {
-                                "t": str(t),
-                                "denom": denom,
-                                "denom_tol": self.cfg.denom_tol,
-                            }
-                        },
-                    )
-                    yield i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
-                    continue
-                try:
-                    pos = solve(matrix, expected_mu) / denom
-                except SingularMatrixError:
-                    yield i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
-                    continue
-                yield i, t, mask, pos, SolveStatus.VALID
+                pos, status = _SolveMixin._solve_ewma_step(expected_mu, matrix, t, self.cfg.denom_tol)
+                yield i, t, mask, pos, status
         else:
             sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
             win_w: int = sw_config.window
@@ -325,7 +402,8 @@ class _SolveMixin:
                 if not mask.any():
                     yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
                     continue
-                if i + 1 < win_w:
+                in_warmup = i + 1 < win_w
+                if in_warmup:
                     yield i, t, mask, None, SolveStatus.WARMUP
                     continue
                 window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
@@ -335,32 +413,15 @@ class _SolveMixin:
                 try:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
                 except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
+                    _logger.warning("Sliding window SVD failed at t=%s: %s", t, exc)
                     yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
                     continue
-                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
-                expected_mu = np.nan_to_num(mu_np[i][mask])
+                expected_mu, sig_status = _SolveMixin._prepare_mu(mu_np[i], mask)
                 if sig_status is not None:
-                    yield i, t, mask, np.zeros(n_sub), sig_status
+                    yield i, t, mask, np.zeros_like(expected_mu), sig_status
                     continue
-                try:
-                    x = fm.solve(expected_mu)
-                    denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
-                except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.warning("Woodbury solve failed at t=%s: %s", t, exc)
-                    yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
-                    continue
-                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                    _logger.warning(
-                        "Positions zeroed at t=%s (sliding_window): normalisation "
-                        "denominator is degenerate (denom=%s, denom_tol=%s).",
-                        t,
-                        denom,
-                        self.cfg.denom_tol,
-                    )
-                    yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
-                    continue
-                yield i, t, mask, x / denom, SolveStatus.VALID
+                pos, status = _SolveMixin._solve_sw_step(expected_mu, fm, t, self.cfg.denom_tol)
+                yield i, t, mask, pos, status
 
     def warmup_state(self: _EngineProtocol) -> WarmupState:
         """Return the final :class:`WarmupState` after replaying the full batch.
