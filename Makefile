@@ -1,6 +1,10 @@
 ## Makefile (repo-owned)
 # Keep this file small. It can be edited without breaking template sync.
 
+# Enable parallel test execution for regular test and hypothesis runs only.
+# Benchmarks must run single-process (xdist disables pytest-benchmark).
+test hypothesis-test stress: export PYTEST_ADDOPTS := -n auto
+
 DOCFORMAT=google
 DEFAULT_AI_MODEL=claude-sonnet-4.5
 LOGO_FILE=.rhiza/assets/rhiza-logo.svg
