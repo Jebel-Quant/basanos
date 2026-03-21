@@ -18,6 +18,10 @@ include .rhiza/rhiza.mk
 # on every push and pull_request to main/master.
 post-validate:: typecheck ## run type checking as part of make validate
 
+# CI equivalent: .github/workflows/notebooks.yml runs `make marimo-validate`
+# on every push and pull_request that touches book/marimo/notebooks/.
+post-validate:: marimo-validate ## validate Marimo notebooks as part of make validate
+
 ## Custom targets
 
 ##@ Paper
