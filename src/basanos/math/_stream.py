@@ -268,6 +268,70 @@ def _ewm_std_from_state(
 
 
 # ---------------------------------------------------------------------------
+# Helper: batch EWMA volatility accumulators from a returns matrix
+# ---------------------------------------------------------------------------
+
+
+def _ewm_vol_accumulators_from_batch(
+    returns: np.ndarray,
+    beta: float,
+    beta_sq: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    r"""Compute final EWMA volatility accumulators from a batch of returns.
+
+    Implements the same IIR recurrence as :meth:`BasanosStream.step` but
+    vectorised over *T* timesteps using ``scipy.signal.lfilter``.  The five
+    returned arrays are identical to the accumulators that would result from
+    feeding each row of *returns* through the scalar step-by-step recurrence::
+
+        s_x[t]  = beta   * s_x[t-1]  + (x[t] if finite else 0)
+        s_x2[t] = beta   * s_x2[t-1] + (x[t]^2 if finite else 0)
+        s_w[t]  = beta   * s_w[t-1]  + (1 if finite else 0)
+        s_w2[t] = beta^2 * s_w2[t-1] + (1 if finite else 0)
+
+    Parameters
+    ----------
+
+    Returns:
+        Float array of shape ``(T, N)``.  NaN entries are treated as missing
+        observations — they contribute nothing to the numerator sums and do
+        not increment the weight accumulators.
+    beta:
+        EWM decay factor for ``s_x``, ``s_x2``, and ``s_w``
+        (``beta = (com) / (1 + com)`` for ``com = cfg.vola - 1``).
+    beta_sq:
+        Squared decay factor used for ``s_w2``.  Must equal ``beta ** 2``.
+
+    Returns:
+    -------
+    s_x, s_x2, s_w, s_w2 : np.ndarray of shape ``(N,)``
+        Final EWMA running accumulators after processing all *T* rows.
+    count : np.ndarray of shape ``(N,)`` dtype int
+        Number of finite observations per asset.
+
+    Notes:
+    -----
+    This function is the shared implementation used by
+    :meth:`BasanosStream.from_warmup` for both the log-return (``vola_*``)
+    and pct-return (``pct_*``) accumulators.  Keeping a single implementation
+    here guarantees that the batch and incremental paths stay in sync when the
+    recurrence definition changes.
+    """
+    fin = np.isfinite(returns).astype(np.float64)  # (T, N)
+    x_z = np.where(fin.astype(bool), returns, 0.0)  # (T, N)
+    filt_a = np.array([1.0, -beta])
+    filt_a2 = np.array([1.0, -beta_sq])
+
+    s_x: np.ndarray = lfilter([1.0], filt_a, x_z, axis=0)[-1]
+    s_x2: np.ndarray = lfilter([1.0], filt_a, x_z**2, axis=0)[-1]
+    s_w: np.ndarray = lfilter([1.0], filt_a, fin, axis=0)[-1]
+    s_w2: np.ndarray = lfilter([1.0], filt_a2, fin, axis=0)[-1]
+    count: np.ndarray = fin.sum(axis=0).astype(int)
+
+    return s_x, s_x2, s_w, s_w2, count
+
+
+# ---------------------------------------------------------------------------
 # BasanosStream
 # ---------------------------------------------------------------------------
 
@@ -438,6 +502,9 @@ class BasanosStream:
         # rows and the weight accumulator (s_w) only increments for finite
         # observations, matching Polars' effective behaviour for a
         # leading-NaN series.
+        #
+        # Delegate to the shared helper _ewm_vol_accumulators_from_batch so
+        # that the batch and incremental recurrences share a single definition.
         beta_vola: float = (cfg.vola - 1) / cfg.vola
         beta_vola_sq: float = beta_vola**2
 
@@ -448,28 +515,12 @@ class BasanosStream:
                 log_ret[1:] = np.log(prices_np[1:] / prices_np[:-1])
                 pct_ret[1:] = prices_np[1:] / prices_np[:-1] - 1.0
 
-        fin_log = np.isfinite(log_ret).astype(np.float64)  # (n_rows, n_assets)
-        log_ret_z = np.where(fin_log.astype(bool), log_ret, 0.0)
-
-        fin_pct = np.isfinite(pct_ret).astype(np.float64)  # (n_rows, n_assets)
-        pct_ret_z = np.where(fin_pct.astype(bool), pct_ret, 0.0)
-
-        filt_vola_a = np.array([1.0, -beta_vola])
-        filt_vola2_a = np.array([1.0, -beta_vola_sq])
-
-        vola_s_x: np.ndarray = lfilter([1.0], filt_vola_a, log_ret_z, axis=0)[-1]
-        vola_s_x2: np.ndarray = lfilter([1.0], filt_vola_a, log_ret_z**2, axis=0)[-1]
-        # s_w/s_w2 increment only for finite obs (same as ignore_nulls=True for
-        # leading-NaN data, which covers all typical price series)
-        vola_s_w: np.ndarray = lfilter([1.0], filt_vola_a, fin_log, axis=0)[-1]
-        vola_s_w2: np.ndarray = lfilter([1.0], filt_vola2_a, fin_log, axis=0)[-1]
-        vola_count: np.ndarray = fin_log.sum(axis=0).astype(int)
-
-        pct_s_x: np.ndarray = lfilter([1.0], filt_vola_a, pct_ret_z, axis=0)[-1]
-        pct_s_x2: np.ndarray = lfilter([1.0], filt_vola_a, pct_ret_z**2, axis=0)[-1]
-        pct_s_w: np.ndarray = lfilter([1.0], filt_vola_a, fin_pct, axis=0)[-1]
-        pct_s_w2: np.ndarray = lfilter([1.0], filt_vola2_a, fin_pct, axis=0)[-1]
-        pct_count: np.ndarray = fin_pct.sum(axis=0).astype(int)
+        vola_s_x, vola_s_x2, vola_s_w, vola_s_w2, vola_count = _ewm_vol_accumulators_from_batch(
+            log_ret, beta_vola, beta_vola_sq
+        )
+        pct_s_x, pct_s_x2, pct_s_w, pct_s_w2, pct_count = _ewm_vol_accumulators_from_batch(
+            pct_ret, beta_vola, beta_vola_sq
+        )
 
         # 5. Replay profit_variance -----------------------------------------
         # Delegate to BasanosEngine.warmup_state() to obtain the final
