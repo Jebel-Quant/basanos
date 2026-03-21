@@ -282,6 +282,11 @@ class _SolveMixin:
         provided pre-allocated arrays, and returns the final
         ``profit_variance`` scalar.  Both arrays are mutated **in-place**.
 
+        When :attr:`BasanosConfig.max_turnover` is set, the L1 norm of the
+        position change ``sum(|x_t - x_{t-1}|)`` is capped at that value by
+        proportionally scaling the delta toward the previous position before
+        writing to ``cash_pos_np``.
+
         Args:
             risk_pos_np: Pre-allocated ``(T, N)`` array for risk positions.
             cash_pos_np: Pre-allocated ``(T, N)`` array for cash positions.
@@ -293,6 +298,7 @@ class _SolveMixin:
         """
         profit_variance: float = self.cfg.profit_variance_init
         lamb = self.cfg.profit_variance_decay
+        max_to: float | None = self.cfg.max_turnover
         for i, _t, mask, pos, _status in self._iter_solve():
             if i > 0:
                 ret_mask = np.isfinite(returns_num[i]) & mask
@@ -304,8 +310,17 @@ class _SolveMixin:
                     profit = float(lhs @ rhs)
                     profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
             if pos is not None:
-                risk_pos_np[i, mask] = pos / profit_variance
-                cash_pos_np[i, mask] = _SolveMixin._scale_to_cash(pos, profit_variance, vola_np[i, mask])
+                new_cash = _SolveMixin._scale_to_cash(pos, profit_variance, vola_np[i, mask])
+                if max_to is not None and i > 0:
+                    prev = np.nan_to_num(cash_pos_np[i - 1, mask], nan=0.0)
+                    curr = np.nan_to_num(new_cash, nan=0.0)
+                    delta = curr - prev
+                    total_delta = float(np.sum(np.abs(delta)))
+                    if total_delta > max_to:
+                        scale = max_to / total_delta
+                        new_cash = prev + delta * scale
+                risk_pos_np[i, mask] = new_cash * vola_np[i, mask]
+                cash_pos_np[i, mask] = new_cash
         return profit_variance
 
     def _iter_matrices(self: _EngineProtocol) -> Generator[MatrixYield, None, None]:

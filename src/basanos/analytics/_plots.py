@@ -92,6 +92,10 @@ class Plots:
     def snapshot(self, log_scale: bool = False) -> go.Figure:
         """Return a snapshot dashboard of NAV and drawdown.
 
+        When the portfolio has a non-zero ``cost_per_unit``, an additional
+        ``"Net-of-Cost NAV"`` trace is overlaid on the NAV panel showing the
+        realised NAV path after deducting position-delta trading costs.
+
         Args:
             log_scale (bool, optional): If True, display NAV on a log scale. Defaults to False.
 
@@ -145,6 +149,23 @@ class Plots:
             row=1,
             col=1,
         )
+
+        # Net-of-cost NAV overlay (only when a cost model is active)
+        if self.portfolio.cost_per_unit > 0:
+            net_nav_df = self.portfolio.net_cost_nav
+            x_dates = net_nav_df["date"] if "date" in net_nav_df.columns else None
+            fig.add_trace(
+                go.Scatter(
+                    x=x_dates,
+                    y=net_nav_df["NAV_accumulated_net"],
+                    mode="lines",
+                    name="Net-of-Cost NAV",
+                    line={"dash": "dash"},
+                    showlegend=True,
+                ),
+                row=1,
+                col=1,
+            )
 
         fig.add_trace(
             go.Scatter(

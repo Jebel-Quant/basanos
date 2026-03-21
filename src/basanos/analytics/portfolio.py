@@ -69,6 +69,7 @@ class Portfolio:
     cashposition: pl.DataFrame
     prices: pl.DataFrame
     aum: float = 1e8
+    cost_per_unit: float = 0.0
     _data: ClassVar[PortfolioData]
 
     def __post_init__(self) -> None:
@@ -84,7 +85,7 @@ class Portfolio:
     # ── Factory classmethods ──────────────────────────────────────────────────
 
     @classmethod
-    def _from_portfolio_data(cls, pd: PortfolioData) -> Self:
+    def _from_portfolio_data(cls, pd: PortfolioData, *, cost_per_unit: float = 0.0) -> Self:
         """Construct a Portfolio directly from an already-validated PortfolioData.
 
         Bypasses ``__post_init__`` to avoid constructing a second
@@ -95,6 +96,8 @@ class Portfolio:
 
         Args:
             pd: A fully constructed and validated :class:`PortfolioData` instance.
+            cost_per_unit: One-way trading cost per unit of position change.
+                Defaults to 0.0 (no cost).
 
         Returns:
             A new Portfolio instance backed by *pd*.
@@ -103,6 +106,7 @@ class Portfolio:
         object.__setattr__(obj, "cashposition", pd.cashposition)
         object.__setattr__(obj, "prices", pd.prices)
         object.__setattr__(obj, "aum", pd.aum)
+        object.__setattr__(obj, "cost_per_unit", cost_per_unit)
         object.__setattr__(obj, "_data", pd)
         return obj
 
@@ -129,19 +133,23 @@ class Portfolio:
         return cls._from_portfolio_data(pd)
 
     @classmethod
-    def from_cash_position(cls, prices: pl.DataFrame, cash_position: pl.DataFrame, aum: float = 1e8) -> Self:
+    def from_cash_position(
+        cls, prices: pl.DataFrame, cash_position: pl.DataFrame, aum: float = 1e8, cost_per_unit: float = 0.0
+    ) -> Self:
         """Create a Portfolio directly from cash positions aligned with prices.
 
         Args:
             prices: Price levels per asset over time (may include a date column).
             cash_position: Cash exposure per asset over time.
             aum: Assets under management used as the base NAV offset.
+            cost_per_unit: One-way trading cost per unit of position change.
+                Defaults to 0.0 (no cost).
 
         Returns:
             A Portfolio instance with the provided cash positions.
         """
         pd = PortfolioData.from_cash_position(prices=prices, cash_position=cash_position, aum=aum)
-        return cls._from_portfolio_data(pd)
+        return cls._from_portfolio_data(pd, cost_per_unit=cost_per_unit)
 
     # ── PortfolioData proxy properties ────────────────────────────────────────
 
@@ -509,6 +517,77 @@ class Portfolio:
         )
 
     # ── Cost analysis ──────────────────────────────────────────────────────────
+
+    @property
+    def position_delta_costs(self) -> pl.DataFrame:
+        """Daily trading cost using the position-delta model.
+
+        Computes the per-period cost as::
+
+            cost_t = sum_i( |x_{i,t} - x_{i,t-1}| ) * cost_per_unit
+
+        where ``x_{i,t}`` is the cash position in asset *i* at time *t* and
+        ``cost_per_unit`` is the one-way cost per unit of traded notional.
+        The first row is always zero because there is no prior position to
+        form a difference against.
+
+        Returns:
+            pl.DataFrame: Frame with an optional ``'date'`` column and a
+            ``'cost'`` column (absolute cash cost per period).
+
+        Examples:
+            >>> import polars as pl
+            >>> from datetime import date
+            >>> _d = [date(2020, 1, 1), date(2020, 1, 2), date(2020, 1, 3)]
+            >>> prices = pl.DataFrame({"date": _d, "A": [100.0, 110.0, 121.0]})
+            >>> pos = pl.DataFrame({"date": _d, "A": [1000.0, 1200.0, 900.0]})
+            >>> pf = Portfolio(prices=prices, cashposition=pos, aum=1e5, cost_per_unit=0.01)
+            >>> pf.position_delta_costs["cost"].to_list()
+            [0.0, 2.0, 3.0]
+        """
+        assets = [c for c in self.cashposition.columns if c != "date" and self.cashposition[c].dtype.is_numeric()]
+        daily_cost = (
+            pl.sum_horizontal(pl.col(c).diff().abs().fill_null(0.0) for c in assets) * self.cost_per_unit
+        ).alias("cost")
+        cols: list[str | pl.Expr] = []
+        if "date" in self.cashposition.columns:
+            cols.append("date")
+        cols.append(daily_cost)
+        return self.cashposition.select(cols)
+
+    @property
+    def net_cost_nav(self) -> pl.DataFrame:
+        """Net-of-cost cumulative additive NAV using the position-delta cost model.
+
+        Deducts :attr:`position_delta_costs` from daily portfolio profit and
+        computes the running cumulative sum offset by AUM.  The result
+        represents the realised NAV path a strategy would achieve after paying
+        ``cost_per_unit`` on every unit of position change.
+
+        When ``cost_per_unit`` is zero the result equals :attr:`nav_accumulated`.
+
+        Returns:
+            pl.DataFrame: Frame with an optional ``'date'`` column,
+            ``'profit'``, ``'cost'``, and ``'NAV_accumulated_net'`` columns.
+
+        Examples:
+            >>> import polars as pl
+            >>> from datetime import date
+            >>> _d = [date(2020, 1, 1), date(2020, 1, 2), date(2020, 1, 3)]
+            >>> prices = pl.DataFrame({"date": _d, "A": [100.0, 110.0, 121.0]})
+            >>> pos = pl.DataFrame({"date": _d, "A": [1000.0, 1200.0, 900.0]})
+            >>> pf = Portfolio(prices=prices, cashposition=pos, aum=1e5, cost_per_unit=0.0)
+            >>> net = pf.net_cost_nav
+            >>> list(net.columns)
+            ['date', 'profit', 'cost', 'NAV_accumulated_net']
+        """
+        profit_df = self.profit
+        cost_df = self.position_delta_costs
+        if "date" in profit_df.columns:
+            df = profit_df.join(cost_df, on="date", how="left")
+        else:
+            df = profit_df.hstack(cost_df.select(["cost"]))
+        return df.with_columns(((pl.col("profit") - pl.col("cost")).cum_sum() + self.aum).alias("NAV_accumulated_net"))
 
     def cost_adjusted_returns(self, cost_bps: float) -> pl.DataFrame:
         """Return daily portfolio returns net of estimated one-way trading costs.
