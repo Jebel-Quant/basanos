@@ -2126,6 +2126,21 @@ class TestBasanosConfigSlidingWindow:
         with pytest.raises(ValueError, match=r"greater than 0"):
             SlidingWindowConfig(window=40, n_factors=0)
 
+    def test_max_components_defaults_to_none(self):
+        """max_components must default to None when not supplied."""
+        cfg = SlidingWindowConfig(window=40, n_factors=5)
+        assert cfg.max_components is None
+
+    def test_max_components_accepts_valid_value(self):
+        """max_components must be accepted when a positive integer is supplied."""
+        cfg = SlidingWindowConfig(window=40, n_factors=10, max_components=3)
+        assert cfg.max_components == 3
+
+    def test_rejects_max_components_le_zero(self):
+        """max_components must be strictly positive when provided."""
+        with pytest.raises(ValueError, match=r"greater than 0"):
+            SlidingWindowConfig(window=40, n_factors=5, max_components=0)
+
     def test_ewma_shrink_does_not_require_window_or_n_factors(self):
         """Default ewma_shrink mode should work without window / n_factors."""
         cfg = BasanosConfig(**self._base)  # should not raise

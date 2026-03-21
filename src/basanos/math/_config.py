@@ -84,6 +84,21 @@ class SlidingWindowConfig(BaseModel):
     Requires both ``window`` (rolling window length) and ``n_factors`` (number
     of latent factors for the truncated SVD factor model).
 
+    **Effective component count** — at each streaming step the number of SVD
+    components actually used is
+
+    .. math::
+
+        k_{\text{eff}} = \min(k,\; W,\; n_{\text{valid}},\; k_{\text{max}})
+
+    where :math:`k` = ``n_factors``, :math:`W` = ``window``,
+    :math:`n_{\text{valid}}` is the number of assets with finite prices at that
+    step, and :math:`k_{\text{max}}` = ``max_components`` (or :math:`+\infty`
+    when unset).  This ensures the truncated SVD remains well-posed even when
+    assets temporarily drop out of the universe.  Setting ``max_components``
+    explicitly caps computational cost in large universes without changing the
+    desired factor count used in batch mode.
+
     Args:
         window: Rolling window length :math:`W \\geq 1`.
             Rule of thumb: :math:`W \\geq 2n` keeps the sample covariance
@@ -92,6 +107,12 @@ class SlidingWindowConfig(BaseModel):
             :math:`k = 1` recovers the single market-factor model; larger
             :math:`k` captures finer correlation structure at the cost of
             higher estimation noise.
+        max_components: Optional hard cap on the number of SVD components used
+            per streaming step.  When set, the effective component count is
+            :math:`\\min(k_{\\text{eff}},\\, \\texttt{max\\_components})`.
+            Useful for large universes where only a few factors dominate and
+            you want to limit SVD cost below ``n_factors``.  Must be
+            :math:`\\geq 1` when provided.  Defaults to ``None`` (no extra cap).
 
     Examples:
         >>> cfg = SlidingWindowConfig(window=60, n_factors=3)
@@ -100,6 +121,11 @@ class SlidingWindowConfig(BaseModel):
         >>> cfg.window
         60
         >>> cfg.n_factors
+        3
+        >>> cfg.max_components is None
+        True
+        >>> cfg2 = SlidingWindowConfig(window=60, n_factors=10, max_components=3)
+        >>> cfg2.max_components
         3
     """
 
@@ -121,7 +147,22 @@ class SlidingWindowConfig(BaseModel):
         description=(
             "Number of latent factors k for the sliding window factor model. "
             "k=1 recovers the single market-factor model; larger k captures finer correlation "
-            "structure at the cost of higher estimation noise."
+            "structure at the cost of higher estimation noise. "
+            "At each streaming step the actual number of components used is "
+            "min(n_factors, window, n_valid_assets[, max_components]), so the effective "
+            "rank may be lower than n_factors when the number of valid assets or the "
+            "window length is the binding constraint."
+        ),
+    )
+    max_components: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional hard cap on the number of SVD components used per streaming step. "
+            "When set, the effective component count is "
+            "min(n_factors, window, n_valid_assets, max_components). "
+            "Useful for large universes where only a few factors dominate and you want to "
+            "limit SVD cost below n_factors. Must be >= 1 when provided. Defaults to None."
         ),
     )
 
