@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+from enum import StrEnum
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -25,6 +26,29 @@ if TYPE_CHECKING:
     from ._engine_protocol import _EngineProtocol
 
 _logger = logging.getLogger(__name__)
+
+
+class SolveStatus(StrEnum):
+    """Solver outcome labels for each timestamp.
+
+    Since :class:`SolveStatus` inherits from :class:`str` via ``StrEnum``,
+    values compare equal to their string equivalents (e.g.
+    ``SolveStatus.VALID == "valid"``), preserving backward compatibility
+    with code that matches on string literals.
+
+    Attributes:
+        WARMUP: Insufficient history for the sliding-window covariance mode.
+        ZERO_SIGNAL: The expected-return vector was all-zero; positions zeroed.
+        DEGENERATE: Normalisation denominator was non-finite, solve failed, or
+            no asset had a finite price; positions zeroed for safety.
+        VALID: Linear system solved successfully; positions are non-trivially
+            non-zero.
+    """
+
+    WARMUP = "warmup"
+    ZERO_SIGNAL = "zero_signal"
+    DEGENERATE = "degenerate"
+    VALID = "valid"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,6 +85,74 @@ class _SolveMixin:
     ``self.assets``, ``self.prices``, ``self.mu``, ``self.cfg``, ``self.cor``,
     and ``self.ret_adj`` are all available.
     """
+
+    @staticmethod
+    def _compute_mask(prices_row: np.ndarray) -> np.ndarray:
+        """Return boolean mask indicating which assets have finite prices in the given row."""
+        return np.isfinite(prices_row)
+
+    @staticmethod
+    def _check_signal(mu: np.ndarray, mask: np.ndarray) -> SolveStatus | None:
+        """Return ``ZERO_SIGNAL`` when the masked expected-return vector is all-zero.
+
+        Returns ``None`` when the signal is non-trivially non-zero, indicating
+        that the caller should proceed to the linear solve.
+        """
+        if np.allclose(np.nan_to_num(mu[mask]), 0.0):
+            return SolveStatus.ZERO_SIGNAL
+        return None
+
+    @staticmethod
+    def _scale_to_cash(pos: np.ndarray, profit_variance: float, vola_active: np.ndarray) -> np.ndarray:
+        """Convert raw solver positions to cash-adjusted positions.
+
+        Divides *pos* by *profit_variance* to get risk positions, then divides
+        by *vola_active* (volatility for the active asset subset) to get cash
+        positions.  ``np.errstate(invalid="ignore")`` is applied internally so
+        NaN volatility values propagate quietly.
+        """
+        risk_pos = pos / profit_variance
+        with np.errstate(invalid="ignore"):
+            return risk_pos / vola_active
+
+    def _replay_profit_variance(
+        self: _EngineProtocol,
+        risk_pos_np: np.ndarray,
+        cash_pos_np: np.ndarray,
+        vola_np: np.ndarray,
+        returns_num: np.ndarray,
+    ) -> float:
+        """Replay the profit-variance EMA across all rows, filling position arrays.
+
+        Iterates :meth:`_iter_solve`, writes risk and cash positions into the
+        provided pre-allocated arrays, and returns the final
+        ``profit_variance`` scalar.  Both arrays are mutated **in-place**.
+
+        Args:
+            risk_pos_np: Pre-allocated ``(T, N)`` array for risk positions.
+            cash_pos_np: Pre-allocated ``(T, N)`` array for cash positions.
+            vola_np: ``(T, N)`` EWMA volatility array.
+            returns_num: ``(T, N)`` percentage-return array (row 0 is zeros).
+
+        Returns:
+            float: Final EWMA profit-variance scalar after processing all rows.
+        """
+        profit_variance: float = self.cfg.profit_variance_init
+        lamb = self.cfg.profit_variance_decay
+        for i, _t, mask, pos, _status in self._iter_solve():
+            if i > 0:
+                ret_mask = np.isfinite(returns_num[i]) & mask
+                if ret_mask.any():
+                    with np.errstate(invalid="ignore"):
+                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
+                    lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
+                    rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
+                    profit = float(lhs @ rhs)
+                    profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
+            if pos is not None:
+                risk_pos_np[i, mask] = pos / profit_variance
+                cash_pos_np[i, mask] = _SolveMixin._scale_to_cash(pos, profit_variance, vola_np[i, mask])
+        return profit_variance
 
     def _iter_matrices(self: _EngineProtocol):
         r"""Yield ``(i, t, mask, matrix)`` for every timestamp.
@@ -185,16 +277,17 @@ class _SolveMixin:
         if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
             cor = self.cor
             for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
+                mask = _SolveMixin._compute_mask(prices_num[i])
                 if not mask.any():
-                    yield i, t, mask, np.zeros(0), "degenerate"
+                    yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
+                    continue
+                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
+                expected_mu = np.nan_to_num(mu_np[i][mask])
+                if sig_status is not None:
+                    yield i, t, mask, np.zeros_like(expected_mu), sig_status
                     continue
                 corr_n = cor[t]
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-                expected_mu = np.nan_to_num(mu_np[i][mask])
-                if np.allclose(expected_mu, 0.0):
-                    yield i, t, mask, np.zeros_like(expected_mu), "zero_signal"
-                    continue
                 try:
                     denom = inv_a_norm(expected_mu, matrix)
                 except SingularMatrixError:
@@ -214,26 +307,26 @@ class _SolveMixin:
                             }
                         },
                     )
-                    yield i, t, mask, np.zeros_like(expected_mu), "degenerate"
+                    yield i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
                     continue
                 try:
                     pos = solve(matrix, expected_mu) / denom
                 except SingularMatrixError:
-                    yield i, t, mask, np.zeros_like(expected_mu), "degenerate"
+                    yield i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
                     continue
-                yield i, t, mask, pos, "valid"
+                yield i, t, mask, pos, SolveStatus.VALID
         else:
             sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
             win_w: int = sw_config.window
             win_k: int = sw_config.n_factors
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
             for i, t in enumerate(dates):
-                mask = np.isfinite(prices_num[i])
+                mask = _SolveMixin._compute_mask(prices_num[i])
                 if not mask.any():
-                    yield i, t, mask, np.zeros(0), "degenerate"
+                    yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
                     continue
                 if i + 1 < win_w:
-                    yield i, t, mask, None, "warmup"
+                    yield i, t, mask, None, SolveStatus.WARMUP
                     continue
                 window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
                 window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
@@ -243,18 +336,19 @@ class _SolveMixin:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
                 except (np.linalg.LinAlgError, ValueError) as exc:
                     _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
-                    yield i, t, mask, np.zeros(n_sub), "degenerate"
+                    yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
                     continue
+                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
                 expected_mu = np.nan_to_num(mu_np[i][mask])
-                if np.allclose(expected_mu, 0.0):
-                    yield i, t, mask, np.zeros(n_sub), "zero_signal"
+                if sig_status is not None:
+                    yield i, t, mask, np.zeros(n_sub), sig_status
                     continue
                 try:
                     x = fm.solve(expected_mu)
                     denom = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
                 except (np.linalg.LinAlgError, ValueError) as exc:
                     _logger.warning("Woodbury solve failed at t=%s: %s", t, exc)
-                    yield i, t, mask, np.zeros(n_sub), "degenerate"
+                    yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
                     continue
                 if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
                     _logger.warning(
@@ -264,9 +358,9 @@ class _SolveMixin:
                         denom,
                         self.cfg.denom_tol,
                     )
-                    yield i, t, mask, np.zeros(n_sub), "degenerate"
+                    yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
                     continue
-                yield i, t, mask, x / denom, "valid"
+                yield i, t, mask, x / denom, SolveStatus.VALID
 
     def warmup_state(self: _EngineProtocol) -> WarmupState:
         """Return the final :class:`WarmupState` after replaying the full batch.
@@ -312,89 +406,29 @@ class _SolveMixin:
         n_rows = self.prices.height
         prices_np = self.prices.select(assets).to_numpy()
         vola_np = self.vola.select(assets).to_numpy()
-        mu_np = self.mu.select(assets).to_numpy()
-        dates = self.prices["date"].to_list()
 
         returns_num = np.zeros((n_rows, n_assets), dtype=float)
         if n_rows > 1:
             returns_num[1:] = prices_np[1:] / prices_np[:-1] - 1.0
 
-        profit_variance: float = self.cfg.profit_variance_init
-        lamb: float = self.cfg.profit_variance_decay
-
         risk_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
         cash_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
 
         if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
-            # Single pass: compute correlation tensor and capture final IIR state
-            # together, so from_warmup() can read the IIR state without a second
-            # sweep over the warmup data.
+            # Compute the IIR filter state in a single pass over the warmup data
+            # so BasanosStream.from_warmup() can seed the incremental lfilter
+            # without a second sweep.
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            tensor, iir_state = _ewm_corr_with_final_state(
+            _, iir_state = _ewm_corr_with_final_state(
                 ret_adj_np,
                 com=self.cfg.corr,
                 min_periods=self.cfg.corr,
                 min_corr_denom=self.cfg.min_corr_denom,
             )
-            cor = {dates[t]: tensor[t] for t in range(n_rows)}
-
-            for i, t in enumerate(dates):
-                mask = np.isfinite(prices_np[i])
-                if i > 0:
-                    ret_mask = np.isfinite(returns_num[i]) & mask
-                    if ret_mask.any():
-                        with np.errstate(invalid="ignore"):
-                            cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
-                        lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
-                        rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
-                        profit = float(lhs @ rhs)
-                        profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
-                if not mask.any():
-                    continue
-                corr_n = cor[t]
-                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-                expected_mu = np.nan_to_num(mu_np[i][mask])
-                if np.allclose(expected_mu, 0.0):
-                    risk_pos_np[i, mask] = 0.0
-                    with np.errstate(invalid="ignore"):
-                        cash_pos_np[i, mask] = 0.0
-                    continue
-                try:
-                    denom = inv_a_norm(expected_mu, matrix)
-                except SingularMatrixError:
-                    denom = float("nan")
-                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                    risk_pos_np[i, mask] = 0.0
-                    with np.errstate(invalid="ignore"):
-                        cash_pos_np[i, mask] = 0.0
-                    continue
-                try:
-                    pos = solve(matrix, expected_mu) / denom
-                except SingularMatrixError:
-                    risk_pos_np[i, mask] = 0.0
-                    with np.errstate(invalid="ignore"):
-                        cash_pos_np[i, mask] = 0.0
-                    continue
-                risk_pos_np[i, mask] = pos / profit_variance
-                with np.errstate(invalid="ignore"):
-                    cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
         else:
             iir_state = None
-            for i, _t, mask, pos, _status in self._iter_solve():
-                if i > 0:
-                    ret_mask = np.isfinite(returns_num[i]) & mask
-                    if ret_mask.any():
-                        with np.errstate(invalid="ignore"):
-                            cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
-                        lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
-                        rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
-                        profit = float(lhs @ rhs)
-                        profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
-                if pos is not None:
-                    risk_pos_np[i, mask] = pos / profit_variance
-                    with np.errstate(invalid="ignore"):
-                        cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
 
+        profit_variance = _SolveMixin._replay_profit_variance(self, risk_pos_np, cash_pos_np, vola_np, returns_num)
         prev_cash_pos = cash_pos_np[-1].copy()
         return WarmupState(
             profit_variance=profit_variance,
