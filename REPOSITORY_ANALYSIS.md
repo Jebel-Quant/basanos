@@ -560,3 +560,47 @@ Nineteen commits since entry #12 close all three weaknesses and the single risk 
 **Rationale**: All three structural gaps from entry #12 are resolved. The `_iter_solve` refactor and `_compute_position` extraction complete a multi-PR deduplication campaign that began in entry #12 and produce the cleanest version of the core solve loop to date. The numerical stability suite closes a meaningful testing gap: previously, ill-conditioned matrix behavior was exercised only incidentally through integration tests; now it is tested directly with documented boundary conditions. The score does not advance to 10 because `plan.md` is noise at the repository root, the four newly added notebook suites validate execution but not semantics (a pattern that will mask silent regressions), and `ewm_corr_batch` is now a public symbol with no documented stability guarantee. The codebase is in its strongest state across all 13 entries.
 
 ---
+
+## 2026-03-22 — Analysis Entry #15
+
+### Summary
+
+Six commits since entry #14 deliver four distinct improvements: (1) all remaining upper-bound dependency pins are removed and a weekly pip-audit CI gate is added (PR #426); (2) `BasanosEngine` is refactored from a three-mixin inheritance chain to a single flat class via direct `__dict__` descriptor assignment, eliminating MRO complexity without changing the public API (PR #427); (3) a position-delta cost model (`cost_per_unit`) and turnover budget constraint (`max_turnover`) are added to `BasanosConfig`, with corresponding `Portfolio` analytics (`position_delta_costs`, `net_cost_nav`) and a turnover-capping helper in `_SolveMixin` (PR #428); (4) the EwmaShrink solve path is vectorised via batched `numpy.linalg.solve` grouped by active-asset mask pattern (PR #429); (5) golden-file regression tests against analytical solutions are added (`test_numerical_regression.py`, PR #423); and (6) an end-to-end worked-example Marimo notebook is added (602 lines) and a NaN-in-turnover bug during EWMA warmup is fixed (PR #430). Test count reaches 939 (+39 from entry #14's ~900). All 939 tests pass.
+
+### Strengths
+
+- **All remaining upper bounds removed** (`pyproject.toml`, PR #426): numpy, plotly, pydantic, scipy, hypothesis, marimo, pandas, pyarrow, and pytest-xdist now have lower-bounds only. Combined with the Polars and Jinja2 ceiling removals in prior entries, every runtime and dev dependency is now open-ended. A weekly `pip_audit.yml` CI workflow provides a complementary CVE-detection safety net.
+
+- **Flat class consolidation eliminates MRO complexity** (`optimizer.py:221`, PR #427): `BasanosEngine` no longer inherits from `_DiagnosticsMixin`, `_SignalEvaluatorMixin`, or `_SolveMixin`. Methods are assigned directly from each mixin's `__dict__` in clearly delimited named sections. The `_EngineProtocol` structural contract is fully preserved — all `self: _EngineProtocol` annotations in the helper modules continue to work. `CONTRIBUTING.md` is updated to document the assignment pattern. For a frozen dataclass with no state inheritance, explicit composition over implicit MRO is the right call.
+
+- **EwmaShrink batched solve is a material algorithmic improvement** (`_engine_solve.py:417–525`, PR #429): `_iter_solve_ewma_batched` groups rows by `mask.tobytes()` and dispatches a single `numpy.linalg.solve((G, n, n), (G, n, 1))` call per unique mask pattern via LAPACK's batched dgesv routine. The denominator is derived algebraically as `sqrt(mu·pos)` rather than a second `inv_a_norm` call. Per-group fallback on `LinAlgError` is correct and scoped — a singular batch does not abort the entire frame. For a stable asset universe (constant mask), the entire T×N³ solve collapses to one LAPACK dispatch. Golden-file tolerance was correctly relaxed to `rtol=1e-12, atol=1e-11` to accommodate ULP-level rounding differences from the batched path.
+
+- **Cost model and turnover constraint are well-integrated** (`_config.py`, `_engine_solve.py`, `analytics/portfolio.py`, PR #428): `cost_per_unit` (non-negative, default 0.0) and `max_turnover` (optional, positive) are validated Pydantic fields. `_apply_turnover_constraint()` is a focused static method with `nan_to_num` guards on both the new and previous positions. `position_delta_costs` and `net_cost_nav` are pure Polars expressions — no Python loops. 43 new tests cover zero-cost, nonzero-cost, constraint active, and constraint inactive cases.
+
+- **Golden-file regression tests close a precision gap** (`test_numerical_regression.py`, PR #423): `.npy` golden outputs for the 2-asset analytical case and the EWMA warmup NaN pattern provide a byte-level regression guard against floating-point changes in the solve path. The EWMA warmup golden file directly proved the NaN-in-turnover bug was real and bounded (PR #430 fix).
+
+- **NaN turnover bug found and fixed** (`portfolio.py:446`, PR #430): `turnover` property chains `.fill_null(0.0).fill_nan(0.0)` — the `fill_nan` handles NaN cash positions produced during the EWMA warmup window, which `fill_null` alone does not cover in Polars (null and NaN are distinct types). The fix is correct and was surfaced by the new golden-file tests.
+
+### Weaknesses
+
+- **`position_delta_costs` has the same NaN bug just fixed in `turnover`** (`portfolio.py:546`): The new `position_delta_costs` property (added in PR #428) uses `pl.col(c).diff().abs().fill_null(0.0)` without the `fill_nan(0.0)` that PR #430 added to `turnover`. When `cost_per_unit > 0` and the portfolio has EWMA warmup NaN positions, `position_delta_costs["cost"]` and consequently `net_cost_nav` will contain NaN values. This is the sibling bug of the one fixed in #430, missed because `position_delta_costs` was written before the NaN issue was discovered.
+
+- **`max_turnover` constraint is absent from `BasanosStream.step()`**: `_apply_turnover_constraint` is invoked inside `_replay_profit_variance` (the batch path only). `BasanosStream.step()` computes positions via a separate code path that does not call `_replay_profit_variance`. A user who initialises `BasanosStream.from_warmup()` with a `cfg` that has `max_turnover` set will silently receive unconstrained positions. The constraint is semantically incomplete across the public API surface.
+
+- **Flat class `__dict__` assignment breaks IDE "Go to Definition"**: `BasanosEngine.condition_number = _DiagnosticsMixin.__dict__["condition_number"]` works at runtime and satisfies type checkers via `_EngineProtocol`, but PyCharm and VS Code cannot resolve `engine.condition_number` back to `_engine_diagnostics.py` via Go to Definition. The static analysis tools see an opaque descriptor assignment, not a method. This is a developer-experience regression for the ~22 methods migrated off the inheritance chain.
+
+- **`end_to_end.py` notebook has no pytest API contract test**: The 602-line end-to-end notebook is picked up by `rhiza_marimo.yml` for execution-level validation, but has no `test_end_to_end_notebook.py` counterpart asserting computed values. The pattern established for `diagnostics.py` in entry #12 is not extended here. Semantic drift in the notebook (wrong position values, silently changed parameters) will pass CI.
+
+### Risks / Technical Debt
+
+- **Weekly pip-audit without upper bounds**: All upper bounds are now removed, meaning a breaking major-version release of any dependency (e.g., pydantic v3, scipy v2, numpy v3) will break the install the next time a fresh environment is resolved. The pip-audit workflow detects CVEs but not API breakage. CI uses a pinned `uv.lock`, so day-to-day runs are stable — but the protection gap is: `uv.lock` is updated manually or by Renovate, and between a breaking release and the next lockfile update there is no automated signal.
+
+- **EwmaShrink / SlidingWindow solve path divergence**: `_iter_solve` now dispatches to two fundamentally different implementations: batched vectorised solver for EwmaShrink, sequential `_compute_position` for SlidingWindow. This is correct and documented, but any future change to the solve semantics (new edge case, new status code) must be applied in both branches. The abstraction that was built with `_compute_position` in entry #13 is partially bypassed by the batched path.
+
+### Score
+
+**9/10** — Unchanged; algorithmic improvement delivered, two unresolved bugs in new code
+
+**Rationale**: The vectorised batch solve is the most impactful algorithmic improvement since the streaming API closed the incremental-computation gap. The flat class consolidation is a defensible simplification: removing MRO from a frozen dataclass makes method origins explicit without changing any runtime behaviour. The cost model is well-tested and cleanly integrated. The score does not advance to 10 because `position_delta_costs` ships with the same NaN bug that was identified and fixed in `turnover` in the same PR session — a missed sibling fix on a feature introduced two commits earlier — and `max_turnover` is not applied in `BasanosStream.step()`, making the constraint semantically incomplete across the public API. Both are targeted, one-to-two-line fixes that should be addressed before `cost_per_unit` or `max_turnover` are used in production.
+
+---
