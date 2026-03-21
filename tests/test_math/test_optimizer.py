@@ -2917,3 +2917,189 @@ class TestPositionStatusConsistencyGuaranteed:
             assert all(_is_nan_value(v) or _is_zero_value(v) for v in values), (
                 f"Row {i} is labelled 'degenerate' but has non-zero finite positions: {values}"
             )
+
+
+# ── cost_per_unit and max_turnover in BasanosConfig ───────────────────────────
+
+
+class TestCostPerUnitConfig:
+    """Tests for BasanosConfig.cost_per_unit and max_turnover fields."""
+
+    _base: dict = {"vola": 10, "corr": 20, "clip": 3.0, "shrink": 0.5, "aum": 1e6}
+
+    def test_cost_per_unit_defaults_to_zero(self):
+        """cost_per_unit must default to 0.0."""
+        cfg = BasanosConfig(**self._base)
+        assert cfg.cost_per_unit == 0.0
+
+    def test_cost_per_unit_accepts_positive_value(self):
+        """cost_per_unit must accept positive float."""
+        cfg = BasanosConfig(**self._base, cost_per_unit=0.001)
+        assert cfg.cost_per_unit == pytest.approx(0.001)
+
+    def test_cost_per_unit_accepts_zero(self):
+        """cost_per_unit must accept 0.0 (no cost)."""
+        cfg = BasanosConfig(**self._base, cost_per_unit=0.0)
+        assert cfg.cost_per_unit == 0.0
+
+    def test_cost_per_unit_rejects_negative(self):
+        """cost_per_unit must reject negative values."""
+        with pytest.raises(ValueError, match=r".*"):
+            BasanosConfig(**self._base, cost_per_unit=-0.001)
+
+    def test_max_turnover_defaults_to_none(self):
+        """max_turnover must default to None (no constraint)."""
+        cfg = BasanosConfig(**self._base)
+        assert cfg.max_turnover is None
+
+    def test_max_turnover_accepts_positive_value(self):
+        """max_turnover must accept a positive float."""
+        cfg = BasanosConfig(**self._base, max_turnover=5e5)
+        assert cfg.max_turnover == pytest.approx(5e5)
+
+    def test_max_turnover_rejects_zero_or_negative(self):
+        """max_turnover must reject zero and negative values."""
+        with pytest.raises(ValueError, match=r".*"):
+            BasanosConfig(**self._base, max_turnover=0.0)
+        with pytest.raises(ValueError, match=r".*"):
+            BasanosConfig(**self._base, max_turnover=-1.0)
+
+    def test_replace_cost_per_unit(self):
+        """replace(cost_per_unit=...) must update cost_per_unit and keep other fields."""
+        cfg = BasanosConfig(**self._base)
+        cfg2 = cfg.replace(cost_per_unit=0.005)
+        assert cfg2.cost_per_unit == pytest.approx(0.005)
+        assert cfg2.vola == cfg.vola
+        assert cfg2.shrink == cfg.shrink
+
+    def test_replace_max_turnover(self):
+        """replace(max_turnover=...) must update max_turnover."""
+        cfg = BasanosConfig(**self._base)
+        cfg2 = cfg.replace(max_turnover=1e5)
+        assert cfg2.max_turnover == pytest.approx(1e5)
+
+    def test_replace_max_turnover_clear_with_none(self):
+        """replace(max_turnover=None) must clear an existing max_turnover constraint."""
+        cfg = BasanosConfig(**self._base, max_turnover=1e5)
+        cfg2 = cfg.replace(max_turnover=None)
+        assert cfg2.max_turnover is None
+
+    def test_replace_without_max_turnover_preserves_existing(self):
+        """replace() without max_turnover argument must preserve the existing value."""
+        cfg = BasanosConfig(**self._base, max_turnover=2e4)
+        cfg2 = cfg.replace(shrink=0.8)
+        assert cfg2.max_turnover == pytest.approx(2e4)
+
+
+# ── BasanosEngine.portfolio cost_per_unit propagation ────────────────────────
+
+
+def _make_engine_for_cost_tests(n: int = 30, seed: int = 0) -> BasanosEngine:
+    """Build a minimal engine for cost model tests."""
+    rng = np.random.default_rng(seed)
+    start = date(2021, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+    prices = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(np.cumprod(1 + rng.normal(0.001, 0.02, n)) * 100.0),
+            "B": pl.Series(np.cumprod(1 + rng.normal(0.001, 0.02, n)) * 150.0),
+        }
+    )
+    mu = pl.DataFrame(
+        {
+            "date": dates,
+            "A": pl.Series(rng.normal(0, 0.5, n)),
+            "B": pl.Series(rng.normal(0, 0.5, n)),
+        }
+    )
+    return prices, mu
+
+
+class TestEnginePortfolioCostPropagation:
+    """BasanosEngine.portfolio must propagate cost_per_unit from cfg."""
+
+    def test_portfolio_has_zero_cost_per_unit_by_default(self):
+        """engine.portfolio must have cost_per_unit=0.0 when cfg has default cost."""
+        prices, mu = _make_engine_for_cost_tests()
+        cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        assert engine.portfolio.cost_per_unit == 0.0
+
+    def test_portfolio_inherits_cost_per_unit_from_cfg(self):
+        """engine.portfolio.cost_per_unit must equal cfg.cost_per_unit."""
+        prices, mu = _make_engine_for_cost_tests()
+        cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6, cost_per_unit=0.002)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        assert engine.portfolio.cost_per_unit == pytest.approx(0.002)
+
+    def test_net_cost_nav_accessible_from_engine_portfolio(self):
+        """engine.portfolio.net_cost_nav must be a valid DataFrame when cost_per_unit > 0."""
+        prices, mu = _make_engine_for_cost_tests()
+        cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6, cost_per_unit=0.001)
+        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        net_nav = engine.portfolio.net_cost_nav
+        assert "NAV_accumulated_net" in net_nav.columns
+        assert net_nav.height == len(prices)
+
+
+# ── Turnover budget constraint (max_turnover) ─────────────────────────────────
+
+
+class TestMaxTurnoverConstraint:
+    """max_turnover in BasanosConfig limits the L1 norm of position changes per step."""
+
+    def _build_engine(self, n: int = 50, max_turnover: float | None = None, seed: int = 1) -> BasanosEngine:
+        prices, mu = _make_engine_for_cost_tests(n=n, seed=seed)
+        cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6, max_turnover=max_turnover)
+        return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+    def test_max_turnover_none_does_not_change_positions(self):
+        """max_turnover=None (default) must produce identical positions to a config without it."""
+        prices, mu = _make_engine_for_cost_tests(n=50, seed=2)
+        cfg_none = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6)
+        cfg_explicit_none = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6, max_turnover=None)
+        pos_none = BasanosEngine(prices=prices, mu=mu, cfg=cfg_none).cash_position
+        pos_explicit = BasanosEngine(prices=prices, mu=mu, cfg=cfg_explicit_none).cash_position
+        assets = [c for c in pos_none.columns if c != "date"]
+        for a in assets:
+            np.testing.assert_array_almost_equal(
+                pos_none[a].fill_nan(0.0).to_numpy(),
+                pos_explicit[a].fill_nan(0.0).to_numpy(),
+                decimal=10,
+            )
+
+    def test_max_turnover_constrains_l1_position_change(self):
+        """With max_turnover set, sum(|Δx_t|) must not exceed max_turnover after warm-up."""
+        engine = self._build_engine(n=60, max_turnover=1e4)
+        cp = engine.cash_position
+        assets = [c for c in cp.columns if c != "date"]
+        pos = cp.select(assets).to_numpy()
+        for i in range(1, len(pos)):
+            prev = np.nan_to_num(pos[i - 1], nan=0.0)
+            curr = np.nan_to_num(pos[i], nan=0.0)
+            delta_l1 = float(np.sum(np.abs(curr - prev)))
+            assert delta_l1 <= 1e4 + 1e-6, f"Turnover at row {i} ({delta_l1:.2f}) exceeds max_turnover (1e4)"
+
+    def test_tight_max_turnover_reduces_position_changes(self):
+        """A tighter max_turnover must produce smaller or equal total L1 position changes."""
+        prices, mu = _make_engine_for_cost_tests(n=60, seed=3)
+        cfg_base = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6)
+        cfg_tight = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6, max_turnover=5e3)
+
+        def total_turnover(engine: BasanosEngine) -> float:
+            cp = engine.cash_position
+            assets = [c for c in cp.columns if c != "date"]
+            pos = cp.select(assets).to_numpy()
+            total = 0.0
+            for i in range(1, len(pos)):
+                prev = np.nan_to_num(pos[i - 1], nan=0.0)
+                curr = np.nan_to_num(pos[i], nan=0.0)
+                total += float(np.sum(np.abs(curr - prev)))
+            return total
+
+        to_base = total_turnover(BasanosEngine(prices=prices, mu=mu, cfg=cfg_base))
+        to_tight = total_turnover(BasanosEngine(prices=prices, mu=mu, cfg=cfg_tight))
+        assert to_tight <= to_base + 1e-6, (
+            f"Tight max_turnover ({to_tight:.2f}) produced more turnover than unconstrained ({to_base:.2f})"
+        )

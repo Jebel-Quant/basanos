@@ -579,7 +579,10 @@ class BasanosEngine:
         """Construct a Portfolio from the optimized cash positions.
 
         Converts the computed cash positions into a Portfolio using the
-        configured AUM.
+        configured AUM.  The ``cost_per_unit`` from :attr:`cfg` is forwarded
+        so that :attr:`~basanos.analytics.Portfolio.net_cost_nav` and
+        :attr:`~basanos.analytics.Portfolio.position_delta_costs` work out
+        of the box without any further configuration.
 
         Returns:
             Portfolio: Instance built from cash positions with AUM scaling.
@@ -587,7 +590,7 @@ class BasanosEngine:
         cp = self.cash_position
         assets = [c for c in cp.columns if c != "date" and cp[c].dtype.is_numeric()]
         scaled = cp.with_columns(pl.col(a) * self.cfg.position_scale for a in assets)
-        return Portfolio.from_cash_position(self.prices, scaled, aum=self.cfg.aum)
+        return Portfolio.from_cash_position(self.prices, scaled, aum=self.cfg.aum, cost_per_unit=self.cfg.cost_per_unit)
 
     def sharpe_at_shrink(self, shrink: float) -> float:
         r"""Return the annualised portfolio Sharpe ratio for the given shrinkage weight.
