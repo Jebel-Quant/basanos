@@ -23,7 +23,7 @@ with app.setup:
     import polars as pl
     from plotly.subplots import make_subplots
 
-    from basanos.math import BasanosConfig, BasanosEngine
+    from basanos.math import BasanosConfig, BasanosEngine, SlidingWindowConfig
 
 
 @app.cell
@@ -77,8 +77,12 @@ def cell_03():
         The dataset is crafted to contain three distinct edge cases that exercise every
         diagnostic code path:
 
-        * **Warm-up period** (rows 0–49): the first 50 rows are always in `warmup` state
-          because the EWMA correlations need time to stabilise.
+        * **Early EWMA period** (rows 0–~60): the EWMA correlation estimator has not
+          yet accumulated enough history so the correlation matrix is near-zero / NaN.
+          With low shrinkage (λ = 0.99), the normalisation denominator is degenerate,
+          producing `degenerate` rows.  Once the EWMA converges, rows become `valid`.
+          > **Note:** `'warmup'` is a *Sliding Window*-only status code.  EWMA mode
+          > emits `'degenerate'` during its convergence period, not `'warmup'`.
         * **Zero-signal period** (rows 100–149): the expected-return vector μ is forced
           to zero for all assets — the optimizer short-circuits without solving, producing
           `zero_signal` rows.
@@ -518,6 +522,139 @@ def cell_20():
 
 
 @app.cell
+def cell_sw_01():
+    """Introduce the Sliding Window mode section."""
+    mo.md(
+        r"""
+        ## 🪟 Sliding Window Mode Diagnostics
+
+        The same five diagnostic properties are available when the engine is configured
+        with :class:`~basanos.math.SlidingWindowConfig` (``covariance_mode = 'sliding_window'``).
+        This mode fits a low-rank factor model over a rolling window of returns instead of
+        maintaining an EWMA correlation matrix.
+
+        **Key behavioural difference**: in sliding window mode the ``'warmup'`` status code
+        is emitted explicitly for the first ``window - 1`` rows — there is simply not enough
+        history to fill the window yet.  EWMA mode never emits ``'warmup'``; its convergence
+        period appears as ``'degenerate'`` rows instead.
+
+        Below we run the same dataset through a sliding-window engine
+        (``window = 80``, ``n_factors = 3``) so you can compare the diagnostic output
+        side-by-side with the EWMA results above.
+        """
+    )
+
+
+@app.cell
+def cell_sw_02(mu, prices):
+    """Build a sliding-window BasanosEngine and extract its diagnostic properties."""
+    _sw_cfg = BasanosConfig(
+        vola=16,
+        corr=64,
+        clip=3.5,
+        shrink=0.5,
+        aum=1_000_000,
+        covariance_config=SlidingWindowConfig(window=80, n_factors=3),
+    )
+    sw_engine = BasanosEngine(prices=prices, mu=mu, cfg=_sw_cfg)
+
+    sw_pos_status = sw_engine.position_status
+    sw_cond_num = sw_engine.condition_number
+    sw_eff_rank = sw_engine.effective_rank
+    sw_solv_res = sw_engine.solver_residual
+    sw_sig_util = sw_engine.signal_utilisation
+
+    _sw_counts = sw_pos_status.group_by("status").len().sort("status")
+    _sw_rows = [f"| `{r['status']}` | {r['len']} |" for r in _sw_counts.iter_rows(named=True)]
+
+    mo.callout(
+        mo.md(
+            f"""
+            **Sliding Window config**: window = 80, n_factors = 3, shrink = 0.5
+
+            **Position status breakdown** ({prices.height} rows total):
+
+            | Status | Count |
+            |---|---|
+            {"".join(_sw_rows)}
+
+            > The first **79 rows** carry `'warmup'` status — the window cannot
+            > be filled until row 80.  Compare with EWMA mode above, where the
+            > early rows appear as `'degenerate'` rather than `'warmup'`.
+            """
+        ),
+        kind="neutral",
+    )
+    return sw_cond_num, sw_eff_rank, sw_engine, sw_pos_status, sw_sig_util, sw_solv_res
+
+
+@app.cell
+def cell_sw_03(sw_cond_num, sw_eff_rank, sw_pos_status):
+    """Render SW position-status and condition-number charts side by side."""
+    from plotly.subplots import make_subplots as _make_subplots
+
+    # ── Position-status stacked bar ──────────────────────────────────────────
+    _bucket_size = 10
+    _df_sw = sw_pos_status.with_columns((pl.arange(0, sw_pos_status.height) // _bucket_size).alias("bucket"))
+    _buckets_sw = sorted(_df_sw["bucket"].unique().to_list())
+    _statuses_sw = ["warmup", "zero_signal", "degenerate", "valid"]
+    _colors_sw = {
+        "warmup": "#3498db",
+        "zero_signal": "#e67e22",
+        "degenerate": "#e74c3c",
+        "valid": "#27ae60",
+    }
+    _counts_sw: dict[str, list[int]] = {s: [] for s in _statuses_sw}
+    _labels_sw: list[str] = []
+    for _b in _buckets_sw:
+        _slice = _df_sw.filter(pl.col("bucket") == _b)
+        _start_row = int(_b * _bucket_size)
+        _labels_sw.append(f"Row {_start_row}")
+        _vc = {r[0]: r[1] for r in _slice.group_by("status").len().iter_rows()}
+        for _s in _statuses_sw:
+            _counts_sw[_s].append(_vc.get(_s, 0))
+
+    _fig_sw = _make_subplots(
+        rows=1,
+        cols=2,
+        subplot_titles=("Position Status (SW, 10-row buckets)", "Condition Number κ (SW, log)"),
+        horizontal_spacing=0.12,
+    )
+
+    for _s in _statuses_sw:
+        _fig_sw.add_trace(
+            go.Bar(x=_labels_sw, y=_counts_sw[_s], name=_s, marker_color=_colors_sw[_s]),
+            row=1,
+            col=1,
+        )
+
+    # ── Condition number ─────────────────────────────────────────────────────
+    _fig_sw.add_trace(
+        go.Scatter(
+            x=list(range(sw_cond_num.height)),
+            y=sw_cond_num["condition_number"].to_list(),
+            mode="lines",
+            name="κ (SW)",
+            line={"color": "#8e44ad", "width": 1.5},
+            showlegend=True,
+        ),
+        row=1,
+        col=2,
+    )
+
+    _fig_sw.update_layout(
+        barmode="stack",
+        height=400,
+        title_text="Sliding Window Mode Diagnostics",
+        legend_title="Status / Series",
+    )
+    _fig_sw.update_yaxes(type="log", row=1, col=2)
+    _fig_sw.update_xaxes(tickangle=-45, row=1, col=1)
+    _fig_sw.update_xaxes(title_text="Row index", row=1, col=2)
+    _fig_sw
+
+
+@app.cell
 def cell_21():
     """Render closing remarks."""
     mo.md(
@@ -526,7 +663,7 @@ def cell_21():
 
         | Diagnostic | What to watch for | Action |
         |---|---|---|
-        | `position_status` | Persistent `degenerate` rows outside warm-up | Increase shrinkage (lower λ) |
+        | `position_status` | `degenerate` (EWMA) or `warmup` (SW) persist | Increase shrinkage / window |
         | `condition_number` | κ > 500 in sustained periods | Reduce λ or switch to `sliding_window` mode |
         | `effective_rank` | Effective rank ≪ n_assets | Correlation is concentrated; few factors dominate |
         | `solver_residual` | Residuals > 10⁻⁶ | Numerical concern — inspect κ at those timestamps |
@@ -535,6 +672,13 @@ def cell_21():
         All five properties are available on every :class:`~basanos.math.BasanosEngine`
         instance and are computed lazily (each property runs its own pass through
         the stored price and signal data).
+
+        Both **EWMA-shrink** and **Sliding Window** covariance modes expose the same
+        diagnostic API — but their ``position_status`` codes differ during the
+        convergence / warmup period:
+
+        * **EWMA mode**: early rows appear as ``'degenerate'`` (NaN matrix → solve fails).
+        * **SW mode**: first ``window - 1`` rows appear as ``'warmup'`` (explicit guard).
         """
     )
 
