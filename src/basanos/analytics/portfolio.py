@@ -11,10 +11,10 @@ analytics, transforms, and attribution tools:
 - Cost analysis — :meth:`cost_adjusted_returns`, :meth:`trading_cost_impact`
 - Utility — :meth:`correlation`
 
-The raw data layer (inputs, derived P&L series) is held in a
-:class:`~basanos.analytics._portfolio_data.PortfolioData` instance, accessible
-via the :attr:`data` property.  All :class:`PortfolioData` properties are
-delegated transparently so that the public API remains unchanged.
+The raw data layer (inputs, derived P&L series) is held internally in a
+:class:`~basanos.analytics._portfolio_data.PortfolioData` instance.  All of
+its properties are delegated transparently so that the public API remains
+unchanged.
 """
 
 import dataclasses
@@ -49,9 +49,6 @@ class Portfolio:
       :meth:`trading_cost_impact`
     - Utility: :meth:`correlation`
 
-    The underlying :class:`PortfolioData` instance is available via the
-    :attr:`data` property.
-
     Attributes:
         cashposition: Polars DataFrame of positions per asset over time
             (includes date column if present).
@@ -84,14 +81,30 @@ class Portfolio:
         pd = PortfolioData(prices=self.prices, cashposition=self.cashposition, aum=self.aum)
         object.__setattr__(self, "_data", pd)
 
-    # ── Internal PortfolioData access ─────────────────────────────────────────
-
-    @property
-    def data(self) -> PortfolioData:
-        """The underlying :class:`PortfolioData` instance used for data delegation."""
-        return self._data
-
     # ── Factory classmethods ──────────────────────────────────────────────────
+
+    @classmethod
+    def _from_portfolio_data(cls, pd: PortfolioData) -> Self:
+        """Construct a Portfolio directly from an already-validated PortfolioData.
+
+        Bypasses ``__post_init__`` to avoid constructing a second
+        :class:`PortfolioData` instance when one has already been built by a
+        factory method.  All public fields and the internal ``_data`` cache are
+        set via :func:`object.__setattr__` to satisfy the frozen dataclass
+        constraint.
+
+        Args:
+            pd: A fully constructed and validated :class:`PortfolioData` instance.
+
+        Returns:
+            A new Portfolio instance backed by *pd*.
+        """
+        obj = cls.__new__(cls)
+        object.__setattr__(obj, "cashposition", pd.cashposition)
+        object.__setattr__(obj, "prices", pd.prices)
+        object.__setattr__(obj, "aum", pd.aum)
+        object.__setattr__(obj, "_data", pd)
+        return obj
 
     @classmethod
     def from_risk_position(
@@ -113,7 +126,7 @@ class Portfolio:
             divided by EWMA volatility.
         """
         pd = PortfolioData.from_risk_position(prices=prices, risk_position=risk_position, vola=vola, aum=aum)
-        return cls(prices=pd.prices, cashposition=pd.cashposition, aum=pd.aum)
+        return cls._from_portfolio_data(pd)
 
     @classmethod
     def from_cash_position(cls, prices: pl.DataFrame, cash_position: pl.DataFrame, aum: float = 1e8) -> Self:
@@ -127,59 +140,60 @@ class Portfolio:
         Returns:
             A Portfolio instance with the provided cash positions.
         """
-        return cls(prices=prices, cashposition=cash_position, aum=aum)
+        pd = PortfolioData.from_cash_position(prices=prices, cash_position=cash_position, aum=aum)
+        return cls._from_portfolio_data(pd)
 
     # ── PortfolioData proxy properties ────────────────────────────────────────
 
     @property
     def assets(self) -> list[str]:
         """List the asset column names from prices (numeric columns)."""
-        return self.data.assets
+        return self._data.assets
 
     @property
     def profits(self) -> pl.DataFrame:
         """Per-asset daily cash profits, preserving non-numeric columns."""
-        return self.data.profits
+        return self._data.profits
 
     @property
     def profit(self) -> pl.DataFrame:
         """Total daily portfolio profit including the ``'date'`` column."""
-        return self.data.profit
+        return self._data.profit
 
     @property
     def nav_accumulated(self) -> pl.DataFrame:
         """Cumulative additive NAV of the portfolio, preserving ``'date'``."""
-        return self.data.nav_accumulated
+        return self._data.nav_accumulated
 
     @property
     def returns(self) -> pl.DataFrame:
         """Daily returns as profit scaled by AUM, preserving ``'date'``."""
-        return self.data.returns
+        return self._data.returns
 
     @property
     def monthly(self) -> pl.DataFrame:
         """Monthly compounded returns and calendar columns."""
-        return self.data.monthly
+        return self._data.monthly
 
     @property
     def nav_compounded(self) -> pl.DataFrame:
         """Compounded NAV from returns (profit/AUM), preserving ``'date'``."""
-        return self.data.nav_compounded
+        return self._data.nav_compounded
 
     @property
     def highwater(self) -> pl.DataFrame:
         """Cumulative maximum of NAV as the high-water mark series."""
-        return self.data.highwater
+        return self._data.highwater
 
     @property
     def drawdown(self) -> pl.DataFrame:
         """Drawdown as the distance from high-water mark to current NAV."""
-        return self.data.drawdown
+        return self._data.drawdown
 
     @property
     def all(self) -> pl.DataFrame:
         """Merged view of drawdown and compounded NAV."""
-        return self.data.all
+        return self._data.all
 
     # ── Lazy composition accessors ─────────────────────────────────────────────
 
