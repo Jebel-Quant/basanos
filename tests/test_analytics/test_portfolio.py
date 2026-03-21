@@ -1033,6 +1033,38 @@ def test_position_delta_costs_without_date_column():
     assert costs[2] == pytest.approx(0.3, rel=1e-9)
 
 
+def test_position_delta_costs_nan_warmup_rows_produce_zero_cost():
+    """NaN positions (e.g. EWMA warmup rows) must not propagate NaN into cost.
+
+    fill_null(0.0) only clears Polars null; fill_nan(0.0) is also required to
+    clear IEEE-754 NaN values that arise during EWMA warmup.
+
+    Positions: [NaN, NaN, 1000, 1200, 900]
+    diff:       [null, NaN-NaN=NaN, 1000-NaN=NaN, 200, -300]
+    After fill_null+fill_nan: [0, 0, 0, 200, 300]
+    cost (* 0.01): [0, 0, 0, 2, 3]
+    """
+    n = 5
+    start = date(2021, 6, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True).cast(pl.Date)
+    # First two rows are NaN (simulating EWMA warmup), rest are finite.
+    positions = [float("nan"), float("nan"), 1000.0, 1200.0, 900.0]
+    pf = Portfolio(
+        prices=pl.DataFrame({"date": dates, "A": [100.0] * n}),
+        cashposition=pl.DataFrame({"date": dates, "A": pl.Series(positions, dtype=pl.Float64)}),
+        aum=1e5,
+        cost_per_unit=0.01,
+    )
+    costs = pf.position_delta_costs["cost"].to_list()
+    # No cost should be NaN — warmup NaNs must be treated as zero.
+    assert all(c == c for c in costs), "NaN found in cost column"  # NaN != NaN
+    assert costs[0] == pytest.approx(0.0, abs=1e-12)
+    assert costs[1] == pytest.approx(0.0, abs=1e-12)
+    assert costs[2] == pytest.approx(0.0, abs=1e-12)  # 1000 - NaN → NaN → 0
+    assert costs[3] == pytest.approx(2.0, rel=1e-9)  # |1200 - 1000| * 0.01
+    assert costs[4] == pytest.approx(3.0, rel=1e-9)  # |900 - 1200| * 0.01
+
+
 # ── net_cost_nav ─────────────────────────────────────────────────────────────
 
 
