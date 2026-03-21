@@ -604,3 +604,35 @@ Six commits since entry #14 deliver four distinct improvements: (1) all remainin
 **Rationale**: The vectorised batch solve is the most impactful algorithmic improvement since the streaming API closed the incremental-computation gap. The flat class consolidation is a defensible simplification: removing MRO from a frozen dataclass makes method origins explicit without changing any runtime behaviour. The cost model is well-tested and cleanly integrated. The score does not advance to 10 because `position_delta_costs` ships with the same NaN bug that was identified and fixed in `turnover` in the same PR session — a missed sibling fix on a feature introduced two commits earlier — and `max_turnover` is not applied in `BasanosStream.step()`, making the constraint semantically incomplete across the public API. Both are targeted, one-to-two-line fixes that should be addressed before `cost_per_unit` or `max_turnover` are used in production.
 
 ---
+
+## 2026-03-22 — Analysis Entry #16
+
+### Summary
+
+Two targeted bug-fix commits close both bugs filed in entry #15 within minutes of the issues being raised. PR #435 adds `fill_nan(0.0)` to `position_delta_costs` (the sibling of the `turnover` fix from PR #430), and PR #436 applies `_apply_turnover_constraint` inside `BasanosStream.step()` for `VALID` rows when `cfg.max_turnover` is set. Test count grows from 939 to 943 (+4). Both fixes are minimal and correct. Four Copilot branches remain in flight for the remaining issues (#437, #439, #440, #443).
+
+### Strengths
+
+- **`position_delta_costs` NaN bug fixed in one commit** (`portfolio.py`, PR #435, commit `e1e642b`): The fix is a single-character change — `.fill_null(0.0)` → `.fill_null(0.0).fill_nan(0.0)` — matching exactly what PR #430 did for `turnover`. Two new tests in `test_portfolio.py` verify that cost values are zero (not NaN) for warmup rows. Turnaround from issue filing to merge: under 5 minutes.
+
+- **`max_turnover` now applied in streaming path** (`_stream.py`, PR #436, commit `32c42eb`): `BasanosStream.step()` now calls `_SolveMixin._apply_turnover_constraint(new_cash_pos[mask], state.prev_cash_pos[mask], cfg.max_turnover)` immediately after solving, gated on `status == SolveStatus.VALID`. The guard is correct: applying the constraint only on `VALID` rows (not `DEGENERATE` or `ZERO_SIGNAL`) matches the batch-path semantics in `_replay_profit_variance`. 82 lines of new streaming tests cover constraint-active, constraint-inactive, and constraint-with-warmup cases.
+
+- **Batch and streaming paths are now semantically consistent**: Both `_replay_profit_variance` (batch) and `BasanosStream.step()` (streaming) apply `_apply_turnover_constraint` via the same shared static method with the same guard conditions. A user switching from batch to streaming with an identical `cfg` will now receive identical position sequences (within numerical tolerance of the incremental IIR vs. batch EWM).
+
+### Weaknesses
+
+- **`step()` turnover constraint only fires for `SolveStatus.VALID`**: The batch path in `_replay_profit_variance` applies the constraint inside the `if pos is not None:` block, which is also effectively `VALID`-only (warmup rows have `pos is None`). The behaviour is consistent, but the docstring for `_apply_turnover_constraint` does not explicitly state that it is only meaningful on non-degenerate rows. A future contributor adding a new status code might omit the guard.
+
+- **Four issues (#437, #439, #440, #443) still open with in-flight Copilot branches**: IDE navigation regression, missing `end_to_end` notebook test, CI signal for breaking dependency releases, and EwmaShrink/SlidingWindow path divergence documentation are all unresolved. Their branches exist but are not yet merged.
+
+### Risks / Technical Debt
+
+- **No cross-path consistency test for `max_turnover`**: The new streaming tests exercise the constraint independently, but there is no test asserting that `BasanosEngine.cash_position` with `max_turnover` set produces the same sequence as `BasanosStream.step()` called with the same config. The shared `_apply_turnover_constraint` static method provides structural consistency, but a divergence in how `prev_cash_pos` is tracked (batch vs. streaming state) could produce different results silently.
+
+### Score
+
+**9/10** — Unchanged; the two entry #15 bugs are fully resolved within the session
+
+**Rationale**: Both bugs identified in entry #15 are closed with minimal, correct fixes and adequate test coverage. The turnaround is exemplary. The score does not advance because the four remaining open issues — IDE navigation, notebook test coverage, dependency safety net, and solve-path documentation — are unresolved, and there is no cross-path numerical consistency test for the `max_turnover` constraint. The codebase is in its cleanest state to date.
+
+---
