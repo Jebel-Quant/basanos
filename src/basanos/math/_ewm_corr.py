@@ -1,6 +1,6 @@
 """Pure-NumPy exponentially weighted moving correlation.
 
-This private module contains :func:`_ewm_corr_numpy`, the vectorised
+This module contains :func:`ewm_corr`, the vectorised
 IIR-filter implementation of per-row EWM correlation matrices.  It is
 separated from :mod:`basanos.math.optimizer` so that the algorithm can
 be read, tested, and profiled in isolation without loading the full
@@ -52,11 +52,11 @@ def _ewm_corr_with_final_state(
 ) -> tuple[np.ndarray, _EwmCorrState]:
     """Compute per-row EWM correlation matrices and return the final IIR state.
 
-    Identical to :func:`_ewm_corr_numpy` but also returns the final filter
+    Identical to :func:`ewm_corr` but also returns the final filter
     memory as an :class:`_EwmCorrState`.  Callers that need both the
     correlation tensor *and* the IIR state (e.g.
     :meth:`BasanosEngine.warmup_state`) should call this function once rather
-    than calling :func:`_ewm_corr_numpy` and rerunning ``lfilter`` separately
+    than calling :func:`ewm_corr` and rerunning ``lfilter`` separately
     to extract the state.
 
     Args:
@@ -69,7 +69,7 @@ def _ewm_corr_with_final_state(
 
     Returns:
         tuple: ``(result, state)`` where ``result`` has shape ``(T, N, N)``
-        (see :func:`_ewm_corr_numpy`) and ``state`` is the final
+        (see :func:`ewm_corr`) and ``state`` is the final
         :class:`_EwmCorrState`.
     """
     _t_len, n_assets = data.shape
@@ -129,7 +129,7 @@ def _ewm_corr_with_final_state(
     return result, iir_state
 
 
-def _ewm_corr_numpy(
+def ewm_corr(
     data: np.ndarray,
     com: int,
     min_periods: int,
@@ -181,12 +181,3 @@ def _ewm_corr_numpy(
     """
     result, _ = _ewm_corr_with_final_state(data, com, min_periods, min_corr_denom)
     return result
-
-
-#: Public alias for :func:`_ewm_corr_numpy`.
-#:
-#: Exported from :mod:`basanos.math` so callers can import without reaching
-#: into private sub-modules:
-#:
-#:     >>> from basanos.math import ewm_corr  # doctest: +SKIP
-ewm_corr = _ewm_corr_numpy

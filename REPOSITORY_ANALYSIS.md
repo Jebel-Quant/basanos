@@ -475,3 +475,54 @@ Six commits since entry #11 close all three weaknesses and both risks from that 
 **Rationale**: The Marimo notebook CI gap, noted in every entry from #9 through #11 without resolution, is now closed. The `_SAVE_FORMAT_VERSION` guard eliminates the last operational hazard in the streaming serialization path. The `max_components` cross-field validator is an example of a weakness being caught and fixed in the same session it was introduced — exactly the right engineering discipline. The score does not advance to 10 because the benchmark baseline hardware mismatch is a methodology concern that will produce CI friction, `test_diagnostics_notebook.py` mirrors rather than executes the notebook (a subtle but real coupling gap), and the four remaining notebooks lack API-level test gates. The codebase is in its best state across all 12 entries.
 
 ---
+
+## 2026-03-21 — Analysis Entry #13
+
+### Summary
+
+Nineteen commits since entry #12 close all three weaknesses and the single risk from that session, then shift focus to internal code quality and test coverage. The benchmark baseline is recaptured on the GitHub Actions Ubuntu runner itself (`9cb8fee`, PR #371), eliminating the hardware-mismatch false-positive risk. The CI threshold is widened to 200% (`faedc28`, PR #381) as a complementary guard. `test_diagnostics_notebook.py` is rewritten to drive the notebook via `app.run()` rather than mirroring constants (`65eb866`, closes #379). Direct `app.run()` execution gates are added to all five notebook test files (`a5a6963`, closes #373), and the four remaining notebooks gain full pytest-based API contract suites (`3cb17b9`, closes #370). On the internals side: magic status strings are replaced by a `SolveStatus` StrEnum exported from the public API (`8f2e2b7`, PR #384); three static helpers (`_compute_mask`, `_check_signal`, `_scale_to_cash`) are extracted from `_SolveMixin`; `MatrixYield`/`SolveYield` type aliases annotate generator return types (`e9f6b63`, PR #386); `_compute_mask` calls are deduplicated across `_iter_solve` and `_iter_matrices` (`bb39d77`, PR #393); mask/signal/denom boilerplate is eliminated from `_iter_solve` (`0d4205b`, PR #391); and finally `_iter_solve` is refactored to delegate to `_iter_matrices`, with a new `_compute_position` static method holding the shared solve step (`a8b7b35`, PR #401). A 423-line numerical stability test suite is added covering near-singular matrices, `min_corr_denom` boundary semantics, ill-conditioned covariance, the `IllConditionedMatrixWarning` threshold, and a Hypothesis property on solver residuals (`bc20ee9`, PR #405). License compliance CI gates against copyleft dependencies (`a60209a`, PR #388). Semgrep replaces the retired `p/numpy` registry with a local `.semgrep.yml` (`180c947`, PR #395). GitHub issue templates and a PR checklist template are added (`77af5ed`, `181162b`). Test count reaches 900 (+112 from 788 in entry #12).
+
+### Strengths
+
+- **All three entry #12 weaknesses closed in this session**:
+  - *Benchmark hardware mismatch*: `9cb8fee` recaptures the baseline on a GH Actions Ubuntu runner (x86, 4-core) — the exact environment where regression checks execute. `faedc28` widens the threshold from 150% to 200% as a complementary guard against CI scheduling jitter. The M4 Pro baseline that was producing systematically optimistic numbers is retired.
+  - *`test_diagnostics_notebook.py` mirroring*: `65eb866` replaces all hardcoded constants and re-implemented cell logic with a `notebook_defs` module-scoped fixture that calls `app.run()` on `diagnostics.py` directly. Engine and config objects are extracted from the live notebook execution; zero-signal indices and asset counts are derived from engine state rather than hardcoded. The coupling gap between test and notebook is closed.
+  - *Four remaining notebooks lacking API-level gates*: `3cb17b9` adds full pytest suites for `demo.py`, `ewm_benchmark.py`, `factor_model_guide.py`, and `shrinkage_guide.py` (705 lines, ~60 tests across four files). `a5a6963` adds a direct `app.run()` execution gate to every notebook test file, so the marimo runtime itself is exercised before any assertions run.
+
+- **`SolveStatus` StrEnum closes the stringly-typed API surface** (`_engine_solve.py:31–52`, PR #384): `SolveStatus(StrEnum)` with members `WARMUP`, `ZERO_SIGNAL`, `DEGENERATE`, `VALID` replaces all magic string literals. `StrEnum` membership means `SolveStatus.VALID == "valid"` — backward compatibility with existing callers is preserved without a deprecation cycle. `SolveStatus` is re-exported from `basanos.math.__init__` and imported directly in `test_numerical_stability.py`, confirming it is a first-class public symbol.
+
+- **`_iter_solve` delegates to `_iter_matrices`; `_compute_position` extracted** (`_engine_solve.py`, PR #401): `_iter_solve` is reduced from a 128-line method with duplicated covariance-dispatch logic to a ~25-line loop over `_iter_matrices`. The shared solve step — `inv_a_norm` denominator computation, `solve()` call, `SingularMatrixError` handling, delegation to `_denom_guard_yield` — is extracted into `_compute_position`, a static method with a full docstring and typed signature. Net change: 132 lines deleted, 69 added. Both covariance modes now reach the same code path; future changes to solve logic require a single edit.
+
+- **Numerical stability test suite** (`test_numerical_stability.py`, PR #405): 423 lines covering five targeted scenarios and one Hypothesis property:
+  1. Near-singular correlation matrices (condition number > 1e12) emit `IllConditionedMatrixWarning`.
+  2. `min_corr_denom` boundary: denominator ≤ 1e-14 yields NaN, not a silent incorrect value.
+  3. Ill-conditioned covariance with `shrink=1.0` and collinear assets: engine emits warning or returns `DEGENERATE`.
+  4. `IllConditionedMatrixWarning` fires at exactly the documented 1e12 threshold, not 1e11 or 1e13.
+  5. Singular correlation matrix returns `DEGENERATE` (not silent `NaN`).
+  6. Hypothesis property: for every `VALID` step, `‖C·x − μ‖₂` is finite and bounded below a conservative tolerance.
+
+- **License compliance CI gate** (`rhiza_licenses.yml`, PR #388): GitHub Actions workflow fails the build on any dependency with a GPL, LGPL, or AGPL license. `make licenses` target added for local replication. This is the first automated copyleft fence in the project.
+
+- **Local Semgrep rules replace retired registry** (`.semgrep.yml`, PR #395): The `p/numpy` ruleset was retired by Semgrep. A 59-line local `.semgrep.yml` encoding the same numpy-safety rules now runs in CI via `rhiza_semgrep.yml`. The `make semgrep` target is added for local replication.
+
+- **900 tests** — up from 788 in entry #12. The +112 delta is attributable to: four new full notebook suites (~60 tests), five new `app.run()` execution gates (5 tests), the numerical stability suite (~20 tests), and incidental additions from refactoring PRs. Growth is proportional to feature/coverage additions with no test churn.
+
+### Weaknesses
+
+- **`plan.md` committed to the repository** (commit `50a38e5`): A 348-line agent planning artifact is present at the repository root. This is not user-facing documentation, not referenced by any other file, and inconsistent with the project's documentation structure (ADRs, notebooks, `REPOSITORY_ANALYSIS.md`). It should either be moved to an `.ai/` or `docs/decisions/` directory or removed entirely.
+
+- **Four notebook test suites test execution, not API contracts**: `test_demo_notebook.py`, `test_ewm_benchmark_notebook.py`, `test_factor_model_notebook.py`, and `test_shrinkage_notebook.py` all run `app.run()` and assert on `app.run()` return codes, but they do not validate the values produced by notebook cells. Semantic drift — a notebook computing a wrong position or a silently changed parameter — will pass the suite. Only `test_diagnostics_notebook.py` asserts on actual computed values.
+
+- **`_ewm_corr_batch` is now an internal alias** (`_ewm_corr.py`, PR #376): `_ewm_corr_batch` was made public (`ewm_corr_batch`) and re-exported from `basanos.math.__init__` to fix a test import of a private symbol. The original private function is now a one-line wrapper. Exposing an internal computation helper as a public symbol expands the API surface without a documented use case or stability guarantee.
+
+### Risks / Technical Debt
+
+- **`_compute_position` is a static method calling instance-scoped dependencies via arguments**: The method takes `i, t, mask, expected_mu, matrix, denom_tol` explicitly and delegates to `_denom_guard_yield`, itself also static. The chain is clean for the current two-branch EWM/SW dispatch, but if a third covariance mode is added (e.g., DCC-GARCH), the argument list will grow unless the signature is reconsidered. This is a low-probability risk but worth noting as the architecture evolves.
+
+### Score
+
+**9/10** — Unchanged in number; all entry #12 weaknesses closed; internal quality meaningfully improved
+
+**Rationale**: All three structural gaps from entry #12 are resolved. The `_iter_solve` refactor and `_compute_position` extraction complete a multi-PR deduplication campaign that began in entry #12 and produce the cleanest version of the core solve loop to date. The numerical stability suite closes a meaningful testing gap: previously, ill-conditioned matrix behavior was exercised only incidentally through integration tests; now it is tested directly with documented boundary conditions. The score does not advance to 10 because `plan.md` is noise at the repository root, the four newly added notebook suites validate execution but not semantics (a pattern that will mask silent regressions), and `ewm_corr_batch` is now a public symbol with no documented stability guarantee. The codebase is in its strongest state across all 13 entries.
+
+---

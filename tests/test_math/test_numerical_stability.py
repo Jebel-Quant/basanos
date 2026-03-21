@@ -33,7 +33,7 @@ from hypothesis.extra import numpy as np_st
 
 from basanos.exceptions import IllConditionedMatrixWarning
 from basanos.math import BasanosConfig, BasanosEngine, SolveStatus
-from basanos.math._ewm_corr import _ewm_corr_numpy
+from basanos.math import ewm_corr as _ewm_corr_numpy
 from basanos.math._linalg import _DEFAULT_COND_THRESHOLD, solve
 
 # ---------------------------------------------------------------------------
