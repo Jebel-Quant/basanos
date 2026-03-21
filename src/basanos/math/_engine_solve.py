@@ -16,6 +16,7 @@ import numpy as np
 
 from ..exceptions import SingularMatrixError
 from ._config import EwmaShrinkConfig, SlidingWindowConfig
+from ._ewm_corr import CorrIirState, _ewm_corr_iir_zf
 from ._factor_model import FactorModel
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id
@@ -40,10 +41,15 @@ class WarmupState:
         prev_cash_pos: Cash positions at the last warmup row, shape
             ``(n_assets,)``.  ``NaN`` for assets that were still in their
             own warmup period.
+        corr_iir_state: Final IIR filter states for the four EWM correlation
+            accumulators, produced by :func:`~basanos.math._ewm_corr._ewm_corr_iir_zf`.
+            ``None`` when the engine uses :class:`~basanos.math.SlidingWindowConfig`
+            (streaming is only supported for :class:`~basanos.math.EwmaShrinkConfig`).
     """
 
     profit_variance: float
     prev_cash_pos: np.ndarray
+    corr_iir_state: CorrIirState | None = None
 
 
 class _SolveMixin:

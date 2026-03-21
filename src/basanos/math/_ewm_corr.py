@@ -7,8 +7,36 @@ be read, tested, and profiled in isolation without loading the full
 engine machinery.
 """
 
+import dataclasses
+
 import numpy as np
 from scipy.signal import lfilter
+
+
+@dataclasses.dataclass(frozen=True)
+class CorrIirState:
+    """Final IIR filter states from the EWM correlation computation.
+
+    Captures the four ``zf`` arrays produced by :func:`_ewm_corr_iir_zf`
+    (or the ``return_iir_state=True`` path of :func:`_ewm_corr_numpy`) so
+    that a :class:`~basanos.math.BasanosStream` can resume IIR filtering at
+    the next timestep without replaying the full warmup batch.
+
+    Attributes:
+        zi_x: Final state for the ``s_x`` accumulator, shape ``(1, N, N)``.
+        zi_x2: Final state for the ``s_x2`` accumulator, shape ``(1, N, N)``.
+        zi_xy: Final state for the ``s_xy`` accumulator, shape ``(1, N, N)``.
+        zi_w: Final state for the ``s_w`` (weight) accumulator,
+            shape ``(1, N, N)``.
+        count: Cumulative joint-finite observation count per asset pair,
+            shape ``(N, N)``, dtype ``int64``.
+    """
+
+    zi_x: np.ndarray
+    zi_x2: np.ndarray
+    zi_xy: np.ndarray
+    zi_w: np.ndarray
+    count: np.ndarray
 
 
 def _ewm_corr_numpy(
@@ -124,3 +152,47 @@ def _ewm_corr_numpy(
     result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
 
     return result
+
+
+def _ewm_corr_iir_zf(data: np.ndarray, com: int) -> CorrIirState:
+    """Return the final IIR filter states for the EWM correlation computation.
+
+    Runs the same four ``lfilter`` sweeps as :func:`_ewm_corr_numpy` but
+    discards the intermediate per-timestep outputs and returns only the
+    terminal ``zf`` arrays together with the cumulative joint-finite count.
+    This is used by :meth:`~basanos.math.BasanosEngine.warmup_state` to
+    populate :class:`~basanos.math._engine_solve.WarmupState` so that
+    :meth:`~basanos.math.BasanosStream.from_warmup` can resume streaming
+    without a second pass over the warmup data.
+
+    Args:
+        data: Float array of shape ``(T, N)`` — typically volatility-adjusted
+            log returns, matching the input to :func:`_ewm_corr_numpy`.
+        com: EWM centre-of-mass (``alpha = 1 / (1 + com)``).
+
+    Returns:
+        :class:`CorrIirState` with ``zi_x``, ``zi_x2``, ``zi_xy``, ``zi_w``
+        each of shape ``(1, N, N)`` and ``count`` of shape ``(N, N)``.
+    """
+    _t_len, n_assets = data.shape
+    beta = com / (1.0 + com)
+
+    fin = np.isfinite(data)
+    xt_f = np.where(fin, data, 0.0)
+    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
+
+    v_x = xt_f[:, :, np.newaxis] * joint_fin  # (T, N, N)
+    v_x2 = (xt_f * xt_f)[:, :, np.newaxis] * joint_fin  # (T, N, N)
+    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]  # (T, N, N)
+    v_w = joint_fin.astype(np.float64)  # (T, N, N)
+
+    filt_a = np.array([1.0, -beta])
+    zi0 = np.zeros((1, n_assets, n_assets))
+    _, zf_x = lfilter([1.0], filt_a, v_x, axis=0, zi=zi0)
+    _, zf_x2 = lfilter([1.0], filt_a, v_x2, axis=0, zi=zi0)
+    _, zf_xy = lfilter([1.0], filt_a, v_xy, axis=0, zi=zi0)
+    _, zf_w = lfilter([1.0], filt_a, v_w, axis=0, zi=zi0)
+
+    count = np.sum(joint_fin.astype(np.int64), axis=0)  # (N, N)
+
+    return CorrIirState(zi_x=zf_x, zi_x2=zf_x2, zi_xy=zf_xy, zi_w=zf_w, count=count)
