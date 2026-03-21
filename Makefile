@@ -10,6 +10,9 @@ DEFAULT_AI_MODEL=claude-sonnet-4.5
 LOGO_FILE=.rhiza/assets/rhiza-logo.svg
 GH_AW_ENGINE ?= copilot  # Default AI engine for gh-aw workflows (copilot, claude, or codex)
 
+# Raise the coverage floor from 90% (rhiza default) to 95%
+COVERAGE_FAIL_UNDER := 95
+
 # Always include the Rhiza API (template-managed)
 include .rhiza/rhiza.mk
 
@@ -35,6 +38,15 @@ semgrep: install ## run Semgrep static analysis (numpy rules)
 licenses: install ## run license compliance scan (fail on GPL, LGPL, AGPL)
 	@printf "${BLUE}[INFO] Running license compliance scan...${RESET}\n"
 	@${UV_BIN} run --with pip-licenses pip-licenses --fail-on="GPL;LGPL;AGPL"
+
+.PHONY: mutation-test
+mutation-test: install ## run cosmic-ray mutation testing against tests/test_math/
+	@printf "${BLUE}[INFO] Running cosmic-ray mutation testing...${RESET}\n"
+	@mkdir -p _tests/mutation
+	@${UV_BIN} run --with cosmic-ray cosmic-ray init cosmic-ray.toml _tests/mutation/session.sqlite
+	@${UV_BIN} run --with cosmic-ray cosmic-ray exec cosmic-ray.toml _tests/mutation/session.sqlite
+	@${UV_BIN} run --with cosmic-ray cr-report _tests/mutation/session.sqlite | tee _tests/mutation/report.txt
+	@printf "${GREEN}[INFO] Mutation testing complete. Report: _tests/mutation/report.txt${RESET}\n"
 
 ##@ Paper
 

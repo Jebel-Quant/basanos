@@ -43,7 +43,7 @@ packages = ["src/basanos"]
 package_module_name_map = { "jinja2" = "jinja2", "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "hypothesis" = "hypothesis", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow", "ty" = "ty" }
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 95
 exclude_also = [
     # TYPE_CHECKING blocks are never executed at runtime
     "if TYPE_CHECKING:",

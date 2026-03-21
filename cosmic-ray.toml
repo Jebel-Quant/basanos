@@ -1,0 +1,14 @@
+# Cosmic Ray mutation testing configuration
+# https://cosmic-ray.readthedocs.io/en/latest/configuration.html
+#
+# Mutation testing complements coverage by verifying that tests *assert*
+# on the code they execute — not just that lines are reached.
+
+[cosmic-ray]
+module-path = "src/basanos/math"
+python-version = ""
+timeout = 30.0
+test-command = "python -m pytest tests/test_math/ -x -q --no-header"
+
+[cosmic-ray.distributor]
+name = "local"
