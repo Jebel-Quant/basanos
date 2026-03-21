@@ -317,6 +317,10 @@ class BasanosStream:
         (2,)
     """
 
+    _cfg: BasanosConfig
+    _assets: list[str]
+    _state: _StreamState
+
     def __init__(self, cfg: BasanosConfig, assets: list[str], state: _StreamState) -> None:
         """Initialise from an explicit config, asset list, and state container."""
         object.__setattr__(self, "_cfg", cfg)
