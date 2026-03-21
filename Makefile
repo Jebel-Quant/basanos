@@ -27,9 +27,9 @@ post-validate:: typecheck ## run type checking as part of make validate
 ##@ Quality
 
 .PHONY: semgrep
-semgrep: install ## run Semgrep static analysis (p/numpy ruleset)
-	@printf "${BLUE}[INFO] Running Semgrep (p/numpy ruleset)...${RESET}\n"
-	@${UVX_BIN} semgrep --config p/numpy ${SOURCE_FOLDER}
+semgrep: install ## run Semgrep static analysis (numpy rules)
+	@printf "${BLUE}[INFO] Running Semgrep (numpy rules)...${RESET}\n"
+	@${UVX_BIN} semgrep --config .semgrep.yml ${SOURCE_FOLDER}
 
 .PHONY: licenses
 licenses: install ## run license compliance scan (fail on GPL, LGPL, AGPL)
