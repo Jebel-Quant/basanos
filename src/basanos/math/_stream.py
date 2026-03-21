@@ -611,6 +611,11 @@ class BasanosStream:
         else:
             new_m = np.asarray(new_mu, dtype=float).ravel()
 
+        if new_p.shape != (n_assets,):
+            raise ValueError(f"new_prices must have shape ({n_assets},); got {new_p.shape}")  # noqa: TRY003
+        if new_m.shape != (n_assets,):
+            raise ValueError(f"new_mu must have shape ({n_assets},); got {new_m.shape}")  # noqa: TRY003
+
         prev_p = state.prev_price
         beta_vola: float = (cfg.vola - 1) / cfg.vola
         beta_vola_sq: float = beta_vola**2
