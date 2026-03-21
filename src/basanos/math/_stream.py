@@ -64,7 +64,7 @@ from scipy.signal import lfilter
 
 from ..exceptions import MissingDateColumnError
 from ._config import BasanosConfig, EwmaShrinkConfig, SlidingWindowConfig
-from ._engine_solve import SolveStatus
+from ._engine_solve import SolveStatus, _SolveMixin
 from ._factor_model import FactorModel
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id
@@ -890,6 +890,14 @@ class BasanosStream:
                             with np.errstate(invalid="ignore"):
                                 new_cash_pos[mask] = risk_pos / vola_sub
                             status = SolveStatus.VALID
+
+        # ── Apply turnover constraint ─────────────────────────────────────────
+        if cfg.max_turnover is not None and status == SolveStatus.VALID:
+            new_cash_pos[mask] = _SolveMixin._apply_turnover_constraint(
+                new_cash_pos[mask],
+                state.prev_cash_pos[mask],
+                cfg.max_turnover,
+            )
 
         # ── Persist updated state ───────────────────────────────────────────
         state.corr_zi_x = corr_zi_x
