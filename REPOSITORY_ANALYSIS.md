@@ -442,3 +442,36 @@ Seven commits since entry #10 close all four weaknesses and one of two risks fro
 **Rationale**: All four weaknesses and one of two risks from entry #10 are closed within a single development session. Both covariance modes now have complete, tested, serialisable streaming implementations. The `from_warmup()` redundancy elimination is a concrete 2× speedup for the initialisation path, not just a code-quality fix. The codebase is now at its strongest state across all 11 journal entries: 758 tests, 100% coverage, two complete streaming modes, crash-recovery serialisation, and no unguarded public API boundaries. The score does not advance to 10 because the `save()`/`load()` format version gap is a latent operational hazard, the BENCHMARKS.md baseline is materially stale against the newly optimised code path, and the Marimo notebook CI gap has persisted across three consecutive entries without resolution.
 
 ---
+
+## 2026-03-21 — Analysis Entry #12
+
+### Summary
+
+Six commits since entry #11 close all three weaknesses and both risks from that session, and add one new targeted fix. `save()`/`load()` format versioning lands (`_SAVE_FORMAT_VERSION = 1`, PR #359). `max_components` is exposed on `SlidingWindowConfig` (PR #363) and immediately tightened with a cross-field validator (`max_components <= n_factors`, commit `e9f4945`, issue #369). SW NaN-padding warmup semantics are documented and tested (PR #364). BENCHMARKS.md is refreshed to v0.5.0 on Apple M4 Pro hardware with `from_warmup()` cases (PR #367). The longest-standing risk — Marimo notebook CI gap, open since entry #9 — is finally closed: `test_diagnostics_notebook.py` (350 lines, 36 tests) mirrors the `diagnostics.py` notebook's synthetic-data setup and exercises all five diagnostic properties across both covariance modes (PR #366). A `rhiza_marimo.yml` CI workflow independently discovers and executes all notebooks in `book/marimo/` via a dynamic matrix. Version is 0.5.0. Test count reaches 788.
+
+### Strengths
+
+- **Notebook CI gap closed on two levels** (PR #366, `da46f87`): `test_diagnostics_notebook.py` provides a pytest-integrated guard covering `position_status`, `condition_number`, `effective_rank`, `solver_residual`, and `signal_utilisation` for both EwmaShrink and SlidingWindow engines. Separately, `rhiza_marimo.yml` discovers and executes all `book/marimo/` notebooks in a GitHub Actions matrix. This two-layer approach means notebooks are validated as Marimo executables *and* their underlying API contracts are tested directly in the main pytest suite. The risk that has persisted across entries #9–#11 is now fully resolved at both layers.
+- **`_SAVE_FORMAT_VERSION` closes the save/load operational hazard** (`_stream.py:73`, PR #359): `load()` raises a clear `ValueError` before any deserialization if the archive is missing the version key or the version doesn't match. The guard is applied at the top of `load()`, before any numpy arrays are read. Three tests cover: version present and correct, missing key, wrong version.
+- **`max_components` exposed and immediately validated** (`_config.py`, PRs #363 + fix `e9f4945`): The field is added with a `gt=0` constraint and documented with the full `k_eff = min(n_factors, window, n_valid_assets[, max_components])` formula in LaTeX. Within the same session, a `model_validator(mode="after")` rejects `max_components > n_factors` at construction time — a misconfiguration that would otherwise be accepted silently and have no effect. Boundary case `max_components == n_factors` is accepted. Four tests cover all cases.
+- **SW NaN-padding warmup contract formally stated** (`_stream.py`, PR #364): `from_warmup()` gains a `Notes` section proving that `sw_ret_buf` contains only real data by the time the first non-warmup `step()` result is returned. `step()` gains an inline comment documenting the EWM and SW warmup extension paths side by side. Two new tests verify the warmup-to-transition sequence and `save()`/`load()` round-trip in mid-warmup state. Risk #2 from entry #11 is resolved.
+- **BENCHMARKS.md current against v0.5.0** (PR #367): Environment updated to Apple M4 Pro, version to 0.5.0. Five `from_warmup()` benchmark cases (EWM×3, SW×2) are regression-gated in CI. The prior baseline predated the 2× `from_warmup()` speedup; the new baseline makes that improvement visible.
+- **788 tests** — up from 758 in entry #11. The 30-test increase is attributable to `test_diagnostics_notebook.py` (36 new tests) plus the `max_components` validator tests (2 new), offset by minor removals elsewhere. Test count growth is coherent with feature addition.
+
+### Weaknesses
+
+- **Benchmark baseline hardware mismatch**: The new BENCHMARKS.md baseline was captured on a local Apple M4 Pro (14-core, macOS). CI benchmark regression runs execute on GitHub Actions Ubuntu runners (typically 2–4-core x86 VMs). The M4 Pro produces significantly lower wall times, meaning CI will always run 2–4× slower than the baseline. The regression threshold (150%) may be too tight for normal CI scheduling variance on slower hardware. This creates a risk of false-positive benchmark failures unrelated to actual regressions.
+- **`test_diagnostics_notebook.py` mirrors rather than imports notebook logic**: The test file re-implements the synthetic data generation constants and cell logic from `diagnostics.py` (same seed, same asset list, same mu construction). Any change to the notebook's data-generation cells that is not reflected in the test file will cause the gate to silently test a different scenario than the notebook runs. A `marimo run --output json` execution approach would test the notebook directly; the current approach tests the API the notebook uses.
+- **Four other Marimo notebooks have no equivalent test gate**: `factor_model_guide.py`, `ewm_benchmark.py`, `shrinkage_guide.py`, and `demo.py` are covered by `rhiza_marimo.yml` (execution check only) but have no pytest-based API contract tests. `diagnostics.py` is now the only notebook with deep test coverage.
+
+### Risks / Technical Debt
+
+- **`rhiza_marimo.yml` execution vs. API contract**: The workflow-level check (marimo execute) will catch import errors and crashes, but not semantic drift — if a notebook cell produces a wrong value, the workflow passes. The pytest gate in `test_diagnostics_notebook.py` provides the semantic layer for `diagnostics.py` only. Extending this pattern to the other four notebooks would complete the protection.
+
+### Score
+
+**9/10** — Unchanged in number; the last persistent structural risk is closed
+
+**Rationale**: The Marimo notebook CI gap, noted in every entry from #9 through #11 without resolution, is now closed. The `_SAVE_FORMAT_VERSION` guard eliminates the last operational hazard in the streaming serialization path. The `max_components` cross-field validator is an example of a weakness being caught and fixed in the same session it was introduced — exactly the right engineering discipline. The score does not advance to 10 because the benchmark baseline hardware mismatch is a methodology concern that will produce CI friction, `test_diagnostics_notebook.py` mirrors rather than executes the notebook (a subtle but real coupling gap), and the four remaining notebooks lack API-level test gates. The codebase is in its best state across all 12 entries.
+
+---
