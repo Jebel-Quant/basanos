@@ -173,8 +173,8 @@ class StepResult:
         cash_position: Optimised cash-position vector, shape ``(N,)``.
             Entries are ``NaN`` for assets that are still in the EWMA warmup
             period or that are otherwise inactive at this step.
-        status: Solver outcome label for this timestep.  One of
-            ``Literal["warmup", "zero_signal", "degenerate", "valid"]``:
+        status: Solver outcome label for this timestep (one of
+            ``"warmup"``, ``"zero_signal"``, ``"degenerate"``, or ``"valid"``):
 
             * ``'warmup'`` — fewer rows have been seen than the EWMA warmup
               requires; all positions are ``NaN``.
