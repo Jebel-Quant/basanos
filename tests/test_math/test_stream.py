@@ -17,11 +17,14 @@ Covers:
 """
 
 from __future__ import annotations
+
 import dataclasses
 
 import numpy as np
 import pytest
 
+from basanos.math import StepResult
+from basanos.math._stream import StepResult as StepResultDirect
 from basanos.math._stream import _StreamState
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -184,8 +187,7 @@ def test_field_count() -> None:
         "step_count",
     }
     assert fields == expected
-from basanos.math import StepResult
-from basanos.math._stream import StepResult as StepResultDirect
+
 
 # ─── construction & field access ─────────────────────────────────────────────
 
@@ -224,7 +226,7 @@ def test_frozen_raises_on_field_assignment():
         result.status = "warmup"  # type: ignore[misc]
 
 
-def test_is_dataclass():
+def test_step_result_is_dataclass():
     """StepResult must be recognised as a dataclass."""
     assert dataclasses.is_dataclass(StepResult)
 
