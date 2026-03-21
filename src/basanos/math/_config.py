@@ -16,6 +16,10 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
+# Sentinel used in BasanosConfig.replace() to distinguish "not provided"
+# (keep existing value) from "explicitly set to None" (clear the field).
+_SENTINEL: object = object()
+
 
 class CovarianceMode(enum.StrEnum):
     r"""Covariance estimation mode for the Basanos optimizer.
@@ -433,6 +437,27 @@ class BasanosConfig(BaseModel):
             "rolling-window factor model. See Section 4.4 of basanos.pdf."
         ),
     )
+    cost_per_unit: float = Field(
+        default=0.0,
+        ge=0.0,
+        description=(
+            "One-way trading cost per unit of position change. "
+            "At each period, the cost deduction is sum(|x_t - x_{t-1}|) * cost_per_unit "
+            "where x_t is the cash position vector. Defaults to 0.0 (no cost). "
+            "The resulting net-of-cost NAV is exposed via Portfolio.net_cost_nav."
+        ),
+    )
+    max_turnover: float | None = Field(
+        default=None,
+        gt=0.0,
+        description=(
+            "Optional turnover budget per period in cash-position units. "
+            "When set, the L1 norm of position changes sum(|x_t - x_{t-1}|) is capped "
+            "at this value at every solve step by proportionally scaling the position "
+            "delta toward the previous position. Must be strictly positive when provided. "
+            "Defaults to None (no turnover constraint)."
+        ),
+    )
 
     model_config = {"frozen": True, "extra": "forbid"}
 
@@ -489,6 +514,8 @@ class BasanosConfig(BaseModel):
         min_corr_denom: float | None = None,
         max_nan_fraction: float | None = None,
         covariance_config: "CovarianceConfig | None" = None,
+        cost_per_unit: float | None = None,
+        max_turnover: float | None = _SENTINEL,  # type: ignore[assignment]
     ) -> "BasanosConfig":
         """Return a new :class:`BasanosConfig` with selected fields replaced.
 
@@ -513,6 +540,9 @@ class BasanosConfig(BaseModel):
             min_corr_denom: Guard threshold for the EWMA correlation denominator.
             max_nan_fraction: Maximum tolerated null fraction per price column.
             covariance_config: Covariance estimation configuration.
+            cost_per_unit: One-way trading cost per unit of position change.
+            max_turnover: Optional turnover budget per period in cash-position
+                units.  Pass ``None`` explicitly to clear an existing budget.
 
         Returns:
             A new :class:`BasanosConfig` with the specified fields replaced and
@@ -525,7 +555,13 @@ class BasanosConfig(BaseModel):
             0.8
             >>> cfg2.vola == cfg.vola
             True
+            >>> cfg3 = cfg.replace(cost_per_unit=0.001, max_turnover=1e5)
+            >>> cfg3.cost_per_unit
+            0.001
+            >>> cfg3.max_turnover
+            100000.0
         """
+        new_max_turnover: float | None = self.max_turnover if max_turnover is _SENTINEL else max_turnover
         return BasanosConfig(
             vola=self.vola if vola is None else vola,
             corr=self.corr if corr is None else corr,
@@ -541,6 +577,8 @@ class BasanosConfig(BaseModel):
             min_corr_denom=self.min_corr_denom if min_corr_denom is None else min_corr_denom,
             max_nan_fraction=self.max_nan_fraction if max_nan_fraction is None else max_nan_fraction,
             covariance_config=self.covariance_config if covariance_config is None else covariance_config,
+            cost_per_unit=self.cost_per_unit if cost_per_unit is None else cost_per_unit,
+            max_turnover=new_max_turnover,
         )
 
     @property
