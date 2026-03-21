@@ -161,44 +161,58 @@ make test
 Please make sure that your change doesn't cause any
 of the unit tests to fail.
 
-## Engine mixin pattern
+## Engine architecture
 
-The `BasanosEngine` class is composed from several private mixins
-(`_SolveMixin`, `_DiagnosticsMixin`, `_SignalEvaluatorMixin`).  Each mixin
-method uses an explicit `self: _EngineProtocol` annotation rather than the
-plain `self` convention:
+`BasanosEngine` is a single, flat `@dataclasses.dataclass(frozen=True)` class.
+All public methods are defined directly in the class body — there is no
+multiple-inheritance mixin chain.  The class is organised into clearly
+delimited sections:
 
-```python
-from __future__ import annotations
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from ._engine_protocol import _EngineProtocol
-
-
-class _MyNewMixin:
-    def my_method(self: _EngineProtocol) -> float:
-        # self.assets, self.cfg, etc. are fully typed and verified
-        return float(self.cfg.shrink) * len(self.assets)
+```
+BasanosEngine
+├── Core data access      (assets, ret_adj, vola, cor, cor_tensor)
+├── Solve helpers         (_compute_mask, _iter_matrices, _iter_solve,
+│                          warmup_state, …)
+├── Position properties   (cash_position, position_status, risk_position,
+│                          position_leverage)
+├── Portfolio / perf.     (portfolio, sharpe_at_shrink, naive_sharpe, …)
+├── Matrix diagnostics    (condition_number, effective_rank,
+│                          solver_residual, signal_utilisation)
+├── Signal evaluation     (ic, rank_ic, icir, ic_mean, …)
+└── Reporting             (config_report)
 ```
 
-**Why this pattern?**
+The private modules (`_engine_solve`, `_engine_diagnostics`, `_engine_ic`)
+still hold the implementation code.  Each method is *assigned* directly into
+`BasanosEngine` using its original function/descriptor object:
 
-- `_EngineProtocol` is a `typing.Protocol` that declares every attribute and
-  method the mixin host (`BasanosEngine`) must expose.  Annotating `self` with
-  it lets `ty`/`mypy`/`pyright` verify all attribute accesses inside the
-  method at type-check time, before any tests run.
-- Annotation-only class variables on the mixin (`class _MyMixin: assets:
-  list[str]`) are insufficient: they are invisible to the type checker on
-  `self` inside methods and do not create the attribute at runtime, so errors
-  surface only when the attribute is first accessed.
+```python
+# In optimizer.py, inside the BasanosEngine class body:
+condition_number = _DiagnosticsMixin.__dict__["condition_number"]
+```
 
-**Adding a new mixin**
+This technique preserves the method's original `__globals__` reference (the
+`_engine_diagnostics` module's namespace), so patches like
+`patch("basanos.math._engine_diagnostics.solve", …)` continue to work in
+tests even though `condition_number` now lives directly on `BasanosEngine`.
 
-1. Check whether your method's required attributes are already declared on
-   `_EngineProtocol` (`src/basanos/math/_engine_protocol.py`).  If not, add
-   them there first.
-2. Write the mixin class with `self: _EngineProtocol` on every method that
-   accesses engine attributes (imported under `TYPE_CHECKING` to avoid circular
+**Adding a new engine method**
+
+1. Add the implementation to the appropriate private module
+   (`_engine_solve.py`, `_engine_diagnostics.py`, or `_engine_ic.py`).
+   Use `self: _EngineProtocol` as the type annotation on methods that
+   access engine attributes (import under `TYPE_CHECKING` to avoid circular
    imports at runtime).
-3. Inherit the new mixin in `BasanosEngine` alongside the existing ones.
+2. Check whether any new required attributes need to be declared on
+   `_EngineProtocol` (`src/basanos/math/_engine_protocol.py`).
+3. Assign the new descriptor directly in `BasanosEngine` under the matching
+   section:
+
+```python
+# In the BasanosEngine class body, in the appropriate section:
+my_new_property = _DiagnosticsMixin.__dict__["my_new_property"]
+```
+
+The `_EngineProtocol` in `_engine_protocol.py` remains the single source of
+truth for the attributes that private-module implementations may access on
+`self`.
