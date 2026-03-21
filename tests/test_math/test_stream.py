@@ -23,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import time
 from datetime import date, timedelta
+from unittest.mock import patch
 
 import numpy as np
 import polars as pl
@@ -585,6 +586,68 @@ def test_stream_warmup_skips_solve_state_unchanged():
         ), "prev_cash_pos changed during warmup; solve block may not be short-circuited"
 
 
+def test_stream_warmup_step_skips_shrink2id():
+    """Warmup step() must short-circuit before calling shrink2id.
+
+    Patch ``shrink2id`` in ``basanos.math._stream`` and assert it is **not**
+    called during warmup steps (step_count < cfg.corr) but **is** called
+    during post-warmup steps (step_count >= cfg.corr).  This verifies the
+    early-return guard at the source level without any wallclock dependency.
+    """
+    n_assets = 5
+    n_steps = 3
+
+    cfg = BasanosConfig(vola=5, corr=60, clip=3.0, shrink=0.5, aum=1e6)
+    short_warmup = 10  # step_count = 10 < cfg.corr = 60  →  all steps are warmup
+    long_warmup = 60  # step_count = 60 = cfg.corr  →  all steps are real solves
+    n_total = long_warmup + n_steps
+    rng = np.random.default_rng(7)
+    start = date(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n_total - 1), interval="1d", eager=True)
+    asset_names = [chr(ord("A") + i) for i in range(n_assets)]
+
+    price_data: dict[str, object] = {"date": dates}
+    mu_data: dict[str, object] = {"date": dates}
+    for a in asset_names:
+        base = 100.0 + rng.uniform(0, 100)
+        t = np.arange(n_total, dtype=float)
+        price_data[a] = np.abs(base + np.cumsum(rng.normal(0, 0.5, n_total)) + 5 * np.sin(t * 0.3)) + 1.0
+        mu_data[a] = rng.normal(0, 0.5, n_total)
+
+    prices = pl.DataFrame(price_data)
+    mu = pl.DataFrame(mu_data)
+    prices_np = prices.select(asset_names).to_numpy()
+    mu_np = mu.select(asset_names).to_numpy()
+
+    warmup_stream = BasanosStream.from_warmup(prices.head(short_warmup), mu.head(short_warmup), cfg)
+    assert warmup_stream._state.step_count < cfg.corr, "fixture: stream must start in warmup"
+
+    full_stream = BasanosStream.from_warmup(prices.head(long_warmup), mu.head(long_warmup), cfg)
+    assert full_stream._state.step_count >= cfg.corr, "fixture: stream must be past warmup"
+
+    # shrink2id must NOT be called during warmup steps
+    with patch("basanos.math._stream.shrink2id", wraps=None) as mock_shrink:
+        for i in range(n_steps):
+            warmup_stream.step(prices_np[short_warmup + i], mu_np[short_warmup + i])
+        assert mock_shrink.call_count == 0, (
+            f"shrink2id was called {mock_shrink.call_count} time(s) during warmup; "
+            "the early-return guard may be missing or broken"
+        )
+
+    # shrink2id must be called for every post-warmup step
+    import basanos.math._stream as _stream_mod
+
+    real_shrink2id = _stream_mod.shrink2id
+    with patch("basanos.math._stream.shrink2id", wraps=real_shrink2id) as mock_shrink:
+        for i in range(n_steps):
+            full_stream.step(prices_np[long_warmup + i], mu_np[long_warmup + i])
+        assert mock_shrink.call_count == n_steps, (
+            f"shrink2id called {mock_shrink.call_count} time(s) but expected {n_steps} "
+            "for post-warmup steps; the solve block may not be reached"
+        )
+
+
+@pytest.mark.slow
 def test_stream_warmup_step_faster_than_full_solve():
     """Warmup step() must short-circuit before the O(N**2) matrix solve.
 
@@ -593,6 +656,11 @@ def test_stream_warmup_step_faster_than_full_solve():
     inputs.  Warmup steps must be at least 1.5x faster because the
     correlation-matrix reconstruction and Cholesky solve are skipped.
     The 1.5x threshold provides tolerance for system-load variation in CI.
+
+    Note: this test is marked ``@pytest.mark.slow`` and skipped in normal CI
+    runs because wallclock measurements are susceptible to scheduling noise on
+    shared runners.  The behavioural guard is covered by
+    ``test_stream_warmup_step_skips_shrink2id``.
     """
     n_assets = 20  # large enough that O(N²) work is measurable
     n_steps = 30
