@@ -2,12 +2,12 @@
 
 This module mirrors the correctness-check cells from
 ``book/marimo/notebooks/ewm_benchmark.py`` so that any change to the
-``ewm_corr`` implementation or its import path is caught by
+``_ewm_corr_numpy`` implementation or its import path is caught by
 ``make test`` before it can silently corrupt the notebook.
 
 The notebook compares two EWM correlation implementations:
 - Original: ``pandas.DataFrame.ewm().corr()``
-- Current: ``ewm_corr`` (scipy.signal.lfilter-based)
+- Current: ``_ewm_corr_numpy`` (scipy.signal.lfilter-based)
 
 Both must agree to within 1e-10 (absolute) on all finite entries, and
 NaN patterns must be identical.
@@ -26,7 +26,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from basanos.math import ewm_corr as ewm_corr_numpy
+# _ewm_corr_numpy is imported directly from the private module because this
+# test validates the internal implementation that the ewm_benchmark notebook
+# also uses.  Tests are permitted to access private internals; making the
+# symbol public solely to satisfy a test import is what the issue warns against.
+from basanos.math._ewm_corr import ewm_corr as ewm_corr_numpy
 
 _NOTEBOOK = Path(__file__).parents[2] / "book/marimo/notebooks/ewm_benchmark.py"
 
@@ -49,7 +53,7 @@ def _ewm_corr_pandas(data: np.ndarray, com: int, min_periods: int) -> np.ndarray
 
 
 class TestEwmCorrNumpyImportPath:
-    """The notebook imports ewm_corr from basanos.math."""
+    """The notebook imports _ewm_corr_numpy from basanos.math._ewm_corr."""
 
     def test_import_is_callable(self) -> None:
         assert callable(ewm_corr_numpy)

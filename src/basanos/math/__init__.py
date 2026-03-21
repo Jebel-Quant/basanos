@@ -29,7 +29,6 @@ Notes:
 from ._engine_solve import MatrixBundle as MatrixBundle
 from ._engine_solve import SolveStatus as SolveStatus
 from ._engine_solve import WarmupState as WarmupState
-from ._ewm_corr import ewm_corr as ewm_corr
 from ._factor_model import FactorModel as FactorModel
 from ._stream import BasanosStream as BasanosStream
 from ._stream import StepResult as StepResult
