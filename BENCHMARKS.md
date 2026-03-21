@@ -7,7 +7,7 @@ change is introduced.
 
 > **Regression detection** is automated in CI via the
 > [`rhiza_benchmarks.yml`](.github/workflows/rhiza_benchmarks.yml) workflow,
-> which alerts when any benchmark degrades by more than 150 % relative to the
+> which alerts when any benchmark degrades by more than 200 % relative to the
 > stored baseline.
 
 ---
@@ -147,8 +147,16 @@ The [`rhiza_benchmarks.yml`](.github/workflows/rhiza_benchmarks.yml) workflow:
 
 - Runs on every push to `main` / `master` and on pull requests.
 - Stores benchmark history in the `gh-pages` branch under `/benchmarks/`.
-- **Posts a PR comment** when any benchmark regresses by more than 150 %.
+- **Posts a PR comment** when any benchmark regresses by more than 200 %.
 - **Fails the workflow** on pushes to `main` when a regression is detected.
 
-The regression threshold can be adjusted via the `alert-threshold` key in the
-workflow file.
+The regression threshold is set to **200 %** (2 × baseline) to absorb normal
+GitHub Actions scheduling variance (~20–30 %) while still catching genuine
+regressions.  The baseline was captured on the same runner class (Ubuntu,
+AMD EPYC 7763, 4 vCPUs) as CI, so there is no hardware-skew component in the
+budget — the extra headroom guards against transient load spikes on shared
+CI infrastructure.
+
+The threshold can be adjusted via the `alert-threshold` key in the workflow
+file.  If the baseline is ever re-captured on different hardware, update both
+the `baseline.json` file and the environment table above.
