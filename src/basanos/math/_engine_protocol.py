@@ -1,8 +1,9 @@
-"""Structural protocol defining the attribute contract for BasanosEngine mixins.
+"""Structural protocol defining the attribute contract for BasanosEngine helpers.
 
 :class:`_EngineProtocol` is the single source of truth for the attributes and
-methods that :class:`_DiagnosticsMixin`, :class:`_SignalEvaluatorMixin`, and
-:class:`_SolveMixin` expect to be provided by the concrete consuming class
+methods that the private helper modules (:mod:`basanos.math._engine_diagnostics`,
+:mod:`basanos.math._engine_ic`, and :mod:`basanos.math._engine_solve`) expect to
+be provided by the concrete consuming class
 (:class:`~basanos.math.optimizer.BasanosEngine`).
 
 Using a :class:`~typing.Protocol` instead of annotation-only class variables
@@ -15,14 +16,14 @@ is :class:`~basanos.math.optimizer.BasanosEngine`.
 
 ----
 
-**Contributor guide: the ``self: _EngineProtocol`` mixin pattern**
+**Contributor guide: the ``self: _EngineProtocol`` helper pattern**
 
-All engine mixin methods use an explicit ``self`` type annotation instead of
-the plain ``self`` convention:
+Methods in the private helper modules use an explicit ``self`` type annotation
+instead of the plain ``self`` convention:
 
 .. code-block:: python
 
-    class _MyNewMixin:
+    class _MyHelpers:
         def my_method(self: _EngineProtocol) -> ...:
             # self.assets, self.cfg, etc. are now fully typed
             ...
@@ -36,26 +37,27 @@ Why this pattern?
    protocol definition — missing attributes become type errors rather than
    silent runtime failures.
 
-2. **Why annotation-only class variables on the mixin are not enough.**
-   A pattern like ``class _MyMixin: assets: list[str]`` creates a *class-level
+2. **Why annotation-only class variables are not enough.**
+   A pattern like ``class _MyHelper: assets: list[str]`` creates a *class-level
    annotation* but no actual attribute.  The annotation is invisible to the
    type checker on ``self`` inside methods, and the attribute does not exist
    at runtime unless the concrete subclass initialises it.  Using
    :class:`_EngineProtocol` as the ``self`` type avoids both problems:
-   the protocol is the single, authoritative declaration of what the mixin
-   host must provide.
+   the protocol is the single, authoritative declaration of what the host
+   class must provide.
 
-3. **How to add a new mixin.**
+3. **How to add new engine methods.**
    a. Check whether all attributes your method needs are already declared on
       :class:`_EngineProtocol`.  If not, add them there.
-   b. Write the mixin method with ``self: _EngineProtocol`` (imported under
-      ``TYPE_CHECKING`` to avoid a circular import at runtime).
-   c. Inherit the mixin in :class:`~basanos.math.optimizer.BasanosEngine`
-      alongside the existing mixins.
+   b. Write the method in the appropriate helper module with
+      ``self: _EngineProtocol`` (imported under ``TYPE_CHECKING`` to avoid a
+      circular import at runtime).
+   c. Assign the descriptor directly in :class:`~basanos.math.optimizer.BasanosEngine`
+      under the matching section — see ``CONTRIBUTING.md`` for details.
 
    .. code-block:: python
 
-       # your_new_mixin.py
+       # your_helper_module.py
        from __future__ import annotations
        from typing import TYPE_CHECKING
 
@@ -63,7 +65,7 @@ Why this pattern?
            from ._engine_protocol import _EngineProtocol
 
 
-       class _MyNewMixin:
+       class _MyHelpers:
            def compute_something(self: _EngineProtocol) -> float:
                return float(self.cfg.shrink) * len(self.assets)
 
@@ -87,11 +89,11 @@ if TYPE_CHECKING:
 
 
 class _EngineProtocol(Protocol):
-    """Structural contract for classes that consume the engine mixins.
+    """Structural contract for classes that consume the engine helper modules.
 
     Any class that satisfies this protocol by providing the listed attributes
-    and methods can safely inherit from :class:`_DiagnosticsMixin` and
-    :class:`_SignalEvaluatorMixin`.
+    and methods can safely use methods from :class:`_DiagnosticsMixin`,
+    :class:`_SignalEvaluatorMixin`, and :class:`_SolveMixin`.
     """
 
     assets: list[str]
