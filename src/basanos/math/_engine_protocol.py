@@ -85,6 +85,9 @@ from ._config import BasanosConfig
 # (i, t, mask, matrix) — see BasanosEngine._iter_matrices for details.
 _MatrixRow = tuple[int, Any, np.ndarray, np.ndarray | None]
 
+# (i, t, mask, pos_or_none, status) — see BasanosEngine._iter_solve for details.
+_SolveRow = tuple[int, Any, np.ndarray, np.ndarray | None, str]
+
 
 class _EngineProtocol(Protocol):
     """Structural contract for classes that consume the engine mixins.
@@ -100,9 +103,14 @@ class _EngineProtocol(Protocol):
     cfg: BasanosConfig
     cor: dict[datetime.date, np.ndarray]
     ret_adj: pl.DataFrame
+    vola: pl.DataFrame
 
     def _iter_matrices(self) -> Generator[_MatrixRow, None, None]:
         """Yield ``(i, t, mask, matrix)`` tuples over all timestamps."""
+        ...
+
+    def _iter_solve(self) -> Generator[_SolveRow, None, None]:
+        """Yield ``(i, t, mask, pos_or_none, status)`` tuples over all timestamps."""
         ...
 
     def _ic_series(self, use_rank: bool) -> pl.DataFrame:
