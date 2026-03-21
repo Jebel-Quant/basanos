@@ -14,7 +14,7 @@ import pytest
 
 from basanos.analytics import Portfolio
 from basanos.analytics._stats import Stats
-from basanos.math import SlidingWindowConfig
+from basanos.math import BasanosStream, SlidingWindowConfig
 from basanos.math.optimizer import BasanosConfig, BasanosEngine
 
 # ─── Data factories ──────────────────────────────────────────────────────────
@@ -451,3 +451,74 @@ class TestSlidingWindowBenchmarks:
         """Benchmark sliding-window cash_position: T=1260, N=5, W=60, k=3."""
         result = benchmark(lambda: sw_engine_1260_5_60_3.cash_position)
         assert result.shape == sw_engine_1260_5_60_3.prices.shape
+
+
+# ─── BasanosStream.from_warmup benchmarks ────────────────────────────────────
+
+
+def _make_stream_inputs(n: int, n_assets: int, seed: int = 42) -> tuple[pl.DataFrame, pl.DataFrame, BasanosConfig]:
+    """Return (prices, mu, cfg) for BasanosStream.from_warmup benchmarks."""
+    rng = np.random.default_rng(seed)
+    start = date(2015, 1, 1)
+    end = start + timedelta(days=n - 1)
+    dates = pl.date_range(start=start, end=end, interval="1d", eager=True).cast(pl.Date)
+    assets = [f"A{i}" for i in range(n_assets)]
+    prices_data: dict[str, pl.Series] = {"date": dates}
+    mu_data: dict[str, pl.Series] = {"date": dates}
+    for asset in assets:
+        log_ret = rng.normal(0.0, 0.01, size=n)
+        prices_data[asset] = pl.Series((100.0 * np.exp(np.cumsum(log_ret))).tolist())
+        mu_data[asset] = pl.Series(rng.normal(0, 1, size=n).tolist())
+    cfg = BasanosConfig(vola=32, corr=64, clip=3.0, shrink=0.5, aum=1e8)
+    return pl.DataFrame(prices_data), pl.DataFrame(mu_data), cfg
+
+
+def _make_sw_stream_inputs(
+    n: int, n_assets: int, window: int, n_factors: int, seed: int = 42
+) -> tuple[pl.DataFrame, pl.DataFrame, BasanosConfig]:
+    """Return (prices, mu, cfg) for BasanosStream.from_warmup SW benchmarks."""
+    prices, mu, base_cfg = _make_stream_inputs(n, n_assets, seed)
+    cfg = base_cfg.replace(covariance_config=SlidingWindowConfig(window=window, n_factors=n_factors))
+    return prices, mu, cfg
+
+
+class TestBasanosStreamBenchmarks:
+    """Benchmark BasanosStream.from_warmup initialisation for EWM and SW modes.
+
+    Each case measures the one-time cost of building an incremental stream from
+    a historical batch — the O(T·N²) IIR-filter pass plus IIR-state extraction.
+    These benchmarks document the 2× speedup achieved in PR #349, which
+    eliminated the redundant lfilter sweeps in from_warmup().
+
+    Naming: ``from_warmup_[sw_]<T>_<N>[_<W>_<k>]``
+    """
+
+    def test_from_warmup_252_5(self, benchmark):
+        """Benchmark EWM from_warmup: T=252, N=5."""
+        prices, mu, cfg = _make_stream_inputs(252, 5)
+        result = benchmark(lambda: BasanosStream.from_warmup(prices, mu, cfg))
+        assert len(result.assets) == 5
+
+    def test_from_warmup_1260_5(self, benchmark):
+        """Benchmark EWM from_warmup: T=1260, N=5."""
+        prices, mu, cfg = _make_stream_inputs(1260, 5)
+        result = benchmark(lambda: BasanosStream.from_warmup(prices, mu, cfg))
+        assert len(result.assets) == 5
+
+    def test_from_warmup_252_20(self, benchmark):
+        """Benchmark EWM from_warmup: T=252, N=20."""
+        prices, mu, cfg = _make_stream_inputs(252, 20)
+        result = benchmark(lambda: BasanosStream.from_warmup(prices, mu, cfg))
+        assert len(result.assets) == 20
+
+    def test_from_warmup_sw_252_5_60_3(self, benchmark):
+        """Benchmark SW from_warmup: T=252, N=5, W=60, k=3."""
+        prices, mu, cfg = _make_sw_stream_inputs(252, 5, window=60, n_factors=3)
+        result = benchmark(lambda: BasanosStream.from_warmup(prices, mu, cfg))
+        assert len(result.assets) == 5
+
+    def test_from_warmup_sw_1260_5_60_3(self, benchmark):
+        """Benchmark SW from_warmup: T=1260, N=5, W=60, k=3."""
+        prices, mu, cfg = _make_sw_stream_inputs(1260, 5, window=60, n_factors=3)
+        result = benchmark(lambda: BasanosStream.from_warmup(prices, mu, cfg))
+        assert len(result.assets) == 5
