@@ -29,7 +29,6 @@ Notes:
 from ._factor_model import FactorModel as FactorModel
 from ._stream import BasanosStream as BasanosStream
 from ._stream import StepResult as StepResult
-from ._stream import _StreamState as _StreamState
 from .optimizer import BasanosConfig as BasanosConfig
 from .optimizer import BasanosEngine as BasanosEngine
 from .optimizer import CovarianceConfig as CovarianceConfig

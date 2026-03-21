@@ -1,21 +1,58 @@
 """Incremental (streaming) API for BasanosEngine.
 
-This private module provides:
+This private module defines three public symbols:
 
+* :class:`_StreamState` — mutable dataclass that persists all O(N²) IIR
+  filter and EWMA accumulator state between consecutive
+  :meth:`BasanosStream.step` calls.  Kept separate from the engine so the
+  state layout can be read and tested in isolation.
 * :class:`StepResult` — frozen dataclass returned by each
   :meth:`BasanosStream.step` call.
-* :class:`_StreamState` — mutable dataclass capturing all IIR filter state
-  needed to advance the optimiser by one row without re-processing history.
 * :class:`BasanosStream` — incremental façade with a
   :meth:`~BasanosStream.from_warmup` classmethod and a
   :meth:`~BasanosStream.step` method.
+
+IIR state model
+---------------
+The EWM recurrence ``s[t] = beta·s[t-1] + v[t]`` is a causal, single-pole IIR
+filter.  When the full history is available, ``scipy.signal.lfilter`` solves
+all N² pairs in one vectorised call and discards the intermediate array.
+
+In the *incremental* setting there is no history — only the current sample
+arrives at each ``step()``.  To continue the same recurrence across calls we
+need the *filter memory*, i.e. the value of the accumulator at the end of the
+previous call.
+
+``scipy.signal.lfilter`` exposes this directly: when called as::
+
+    y, zf = lfilter(b, a, x, zi=zi)
+
+``zi`` is the initial state (shape ``(max(len(a), len(b)) - 1, …)`` = ``(1, …)``
+for our first-order filter) and ``zf`` is the *final* state after processing
+``x``.  Passing the returned ``zf`` back as ``zi`` in the next call is
+mathematically equivalent to having run ``lfilter`` over the concatenated
+input, so the incremental and batch paths produce bit-for-bit identical
+results.
+
+The four correlation accumulators (``corr_zi_x``, ``corr_zi_x2``,
+``corr_zi_xy``, ``corr_zi_w``) follow exactly this pattern.  Each has shape
+``(1, N, N)`` — the leading 1 is the IIR filter order required by
+``lfilter``'s ``zi`` argument.
+
+The volatility accumulators (``vola_*``, ``pct_*``) use a simpler scalar
+recurrence and store the running sums directly as ``(N,)`` arrays.
+
+Memory
+------
+Total incremental state is 4x(1,N,N) + (N,N) + 8x(N,) + O(1) scalars,
+giving **O(N^2)** memory independent of the number of timesteps processed.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -26,10 +63,97 @@ from ._config import BasanosConfig, EwmaShrinkConfig
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id
 
-if TYPE_CHECKING:
-    pass
-
 _logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class _StreamState:
+    """Mutable state carrier for one :class:`BasanosStream` instance.
+
+    All arrays are updated in-place (or replaced) by ``BasanosStream.step()``.
+    The class is intentionally *not* frozen so that the step method can modify
+    fields directly without creating a new object on every tick.
+
+    IIR filter state (correlation)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    The four ``corr_zi_*`` fields are the *final conditions* (``zf``) returned
+    by ``scipy.signal.lfilter`` after the previous step.  They are passed back
+    as the ``zi`` argument on the next step so that the incremental filter
+    produces the same numerical result as a single batch call over all history.
+    See the module docstring for the full derivation.
+
+    ``beta_corr = cfg.corr / (1 + cfg.corr)``  (from ``com = cfg.corr``)
+
+    EWM accumulator state (volatility)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ``vola_*`` and ``pct_*`` accumulate the running weighted sums needed to
+    compute exponentially-weighted standard deviations:
+
+    * ``s_x``  — EWM sum of x (numerator of the mean)
+    * ``s_x2`` — EWM sum of x² (numerator of the second moment)
+    * ``s_w``  — EWM sum of weights (denominator)
+    * ``s_w2`` — EWM sum of squared weights (for bias correction)
+
+    ``beta_vola = (cfg.vola - 1) / cfg.vola``  (from ``com = cfg.vola - 1``)
+
+    Attributes:
+        corr_zi_x:  IIR filter state for the x-accumulator of the EWM
+            correlation; shape ``(1, N, N)``.
+        corr_zi_x2: IIR filter state for the x²-accumulator; shape
+            ``(1, N, N)``.
+        corr_zi_xy: IIR filter state for the xy-accumulator; shape
+            ``(1, N, N)``.
+        corr_zi_w:  IIR filter state for the weight-accumulator; shape
+            ``(1, N, N)``.
+        corr_count: Cumulative joint-finite observation count per asset pair;
+            shape ``(N, N)`` dtype int.
+        vola_s_x:   EWM sum of volatility-adjusted log-returns; shape ``(N,)``.
+        vola_s_x2:  EWM sum of squared vol-adj log-returns; shape ``(N,)``.
+        vola_s_w:   EWM weight sum for vol accumulators; shape ``(N,)``.
+        vola_s_w2:  EWM squared-weight sum for vol accumulators; shape ``(N,)``.
+        vola_count: Cumulative finite observation count for vol; shape ``(N,)``
+            dtype int.
+        pct_s_x:    EWM sum of pct-returns; shape ``(N,)``.
+        pct_s_x2:   EWM sum of squared pct-returns; shape ``(N,)``.
+        pct_s_w:    EWM weight sum for pct accumulators; shape ``(N,)``.
+        pct_s_w2:   EWM squared-weight sum for pct accumulators; shape ``(N,)``.
+        pct_count:  Cumulative finite observation count for pct-return vol;
+            shape ``(N,)`` dtype int.
+        profit_variance: EMA of squared realised profit; initialised to
+            ``cfg.profit_variance_init``.
+        prev_price:    Last price row seen, used to compute returns on the next
+            step; shape ``(N,)``.
+        prev_cash_pos: Last cash position, used to compute profit on the next
+            step; shape ``(N,)``.
+        step_count: Number of steps processed so far (0 before first step).
+    """
+
+    # ── IIR filter state for EWM correlation — shape (1, N, N) each ──────────
+    corr_zi_x: np.ndarray  # (1, N, N)
+    corr_zi_x2: np.ndarray  # (1, N, N)
+    corr_zi_xy: np.ndarray  # (1, N, N)
+    corr_zi_w: np.ndarray  # (1, N, N)
+    corr_count: np.ndarray  # (N, N) int — cumulative joint-finite observation count
+
+    # ── EWMA accumulators for vol_adj (log-return std; com=vola-1, min_samples=1) ──
+    vola_s_x: np.ndarray  # (N,)
+    vola_s_x2: np.ndarray  # (N,)
+    vola_s_w: np.ndarray  # (N,)
+    vola_s_w2: np.ndarray  # (N,)
+    vola_count: np.ndarray  # (N,) int
+
+    # ── EWMA accumulators for vola (pct-return std; com=vola-1, min_samples=vola) ──
+    pct_s_x: np.ndarray  # (N,)
+    pct_s_x2: np.ndarray  # (N,)
+    pct_s_w: np.ndarray  # (N,)
+    pct_s_w2: np.ndarray  # (N,)
+    pct_count: np.ndarray  # (N,) int
+
+    # ── Scalars ───────────────────────────────────────────────────────────────
+    profit_variance: float  # EMA of squared profit; initialised to cfg.profit_variance_init
+    prev_price: np.ndarray  # (N,) last price row (to compute returns at next step)
+    prev_cash_pos: np.ndarray  # (N,) last cash position (to compute profit at next step)
+    step_count: int
 
 
 @dataclasses.dataclass(frozen=True)
@@ -85,106 +209,15 @@ class StepResult:
 
 
 # ---------------------------------------------------------------------------
-# Internal state container
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass
-class _StreamState:
-    """All IIR filter and accumulator state needed for :meth:`BasanosStream.step`.
-
-    This dataclass is an implementation detail of :class:`BasanosStream` and
-    is not part of the public API.  Fields are intentionally mutable so that
-    :meth:`BasanosStream.step` can update them in-place after each step.
-
-    Shape conventions
-    -----------------
-    *N* denotes the number of assets.
-
-    Attributes:
-        cfg: Immutable engine configuration.
-        assets: Ordered list of asset column names.
-
-        corr_s_x: ``(N, N)`` — last IIR filter state for the EWM sum of
-            ``x_i`` (volatility-adjusted return of asset *i*) for each pair
-            ``(i, j)`` that is jointly finite.
-        corr_s_x2: ``(N, N)`` — last IIR state for EWM sum of ``x_i²``.
-        corr_s_xy: ``(N, N)`` — last IIR state for EWM sum of ``x_i · x_j``.
-        corr_s_w: ``(N, N)`` — last IIR state for the joint-finite weight sum.
-        corr_count: ``(N, N)`` int — cumulative count of joint-finite
-            observations for each asset pair; used for the ``min_periods``
-            check.
-
-        log_s: ``(N,)`` — EWM running sum of log-returns (for vol-adjusted
-            return normalisation).
-        log_s2: ``(N,)`` — EWM running sum of squared log-returns.
-        log_sw: ``(N,)`` — EWM running weight sum (increments only for finite
-            observations, matching Polars ``ignore_nulls=False`` semantics for
-            a leading-NaN series).
-        log_sw2: ``(N,)`` — EWM running sum of squared weights (uses ``β²``
-            decay; required for the unbiased Bessel correction).
-        log_count: ``(N,)`` int — count of finite log-return observations seen
-            so far.
-
-        pct_s: ``(N,)`` — same as ``log_s`` but for percentage returns (used
-            for the :attr:`~BasanosEngine.vola` scaling factor).
-        pct_s2: ``(N,)`` — EWM running sum of squared pct-returns.
-        pct_sw: ``(N,)`` — EWM weight sum for pct-returns.
-        pct_sw2: ``(N,)`` — EWM squared-weight sum for pct-returns.
-        pct_count: ``(N,)`` int — count of finite pct-return observations.
-
-        prev_prices: ``(N,)`` — price vector from the most recent step (or
-            from the last row of the warmup batch).  Used to compute returns
-            at the next :meth:`~BasanosStream.step` call.
-        prev_cash_pos: ``(N,)`` — cash-position vector from the previous step;
-            used to evaluate the portfolio profit that feeds the profit-variance
-            EMA update.
-        profit_variance: Scalar float — current value of the exponentially
-            weighted moving average of squared portfolio profit.  Initialised
-            from :attr:`BasanosConfig.profit_variance_init` and updated on
-            every step where at least one asset has a finite return.
-    """
-
-    cfg: BasanosConfig
-    assets: list[str]
-
-    # IIR filter state for EWM correlation (shape: (N, N))
-    corr_s_x: np.ndarray
-    corr_s_x2: np.ndarray
-    corr_s_xy: np.ndarray
-    corr_s_w: np.ndarray
-    corr_count: np.ndarray  # int64
-
-    # EWMA std accumulators for log-returns
-    log_s: np.ndarray
-    log_s2: np.ndarray
-    log_sw: np.ndarray
-    log_sw2: np.ndarray
-    log_count: np.ndarray  # int
-
-    # EWMA std accumulators for pct-returns
-    pct_s: np.ndarray
-    pct_s2: np.ndarray
-    pct_sw: np.ndarray
-    pct_sw2: np.ndarray
-    pct_count: np.ndarray  # int
-
-    # Previous-row anchors
-    prev_prices: np.ndarray
-    prev_cash_pos: np.ndarray
-    profit_variance: float
-
-
-# ---------------------------------------------------------------------------
-# Helper: unbiased EWMA std from running state
+# Helper: unbiased EWMA std from running accumulators
 # ---------------------------------------------------------------------------
 
 
 def _ewm_std_from_state(
-    s: np.ndarray,
-    s2: np.ndarray,
-    sw: np.ndarray,
-    sw2: np.ndarray,
+    s_x: np.ndarray,
+    s_x2: np.ndarray,
+    s_w: np.ndarray,
+    s_w2: np.ndarray,
     count: np.ndarray,
     min_samples: int,
 ) -> np.ndarray:
@@ -193,16 +226,16 @@ def _ewm_std_from_state(
     Implements the same Bessel-corrected formula used by
     ``polars.Expr.ewm_std(adjust=True)``::
 
-        var_biased  = s2/sw - (s/sw)^2
-        correction  = sw^2 / (sw^2 - sw2)      # Bessel correction
+        var_biased  = s_x2/s_w - (s_x/s_w)^2
+        correction  = s_w^2 / (s_w^2 - s_w2)      # Bessel correction
         var_unbiased = var_biased * correction
         std          = sqrt(max(0, var_unbiased))
 
-    where ``sw2 = sum(wi^2)`` is the sum of squared EWM weights.
+    where ``s_w2 = sum(wi^2)`` is the sum of squared EWM weights.
 
     Parameters
     ----------
-    s, s2, sw, sw2:
+    s_x, s_x2, s_w, s_w2:
         Running accumulators, each of shape ``(N,)``.
     count:
         Integer count of finite observations per asset, shape ``(N,)``.
@@ -215,23 +248,22 @@ def _ewm_std_from_state(
     np.ndarray of shape ``(N,)`` with per-asset standard deviations.
     NaN is returned for assets where ``count < min_samples``.
     """
-    n = len(s)
+    n = len(s_x)
     result = np.full(n, np.nan, dtype=float)
     ok = count >= min_samples
     if not ok.any():
         return result
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        mean = np.where(sw > 0, s / sw, 0.0)
-        mean_sq = np.where(sw > 0, s2 / sw, 0.0)
+        mean = np.where(s_w > 0, s_x / s_w, 0.0)
+        mean_sq = np.where(s_w > 0, s_x2 / s_w, 0.0)
         var_biased = np.maximum(mean_sq - mean**2, 0.0)
-        denom_corr = sw**2 - sw2
+        denom_corr = s_w**2 - s_w2
         # denom_corr > 0 iff count >= 2; equals 0 when count == 1
-        var_unbiased = np.where(denom_corr > 0, var_biased * sw**2 / denom_corr, 0.0)
+        var_unbiased = np.where(denom_corr > 0, var_biased * s_w**2 / denom_corr, 0.0)
         std = np.sqrt(var_unbiased)
 
-    result = np.where(ok, std, np.nan)
-    return result
+    return np.where(ok, std, np.nan)
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +276,7 @@ class BasanosStream:
 
     After warming up on a historical batch via :meth:`from_warmup`, each call
     to :meth:`step` advances the internal state by exactly one row in
-    :math:`O(N^2)` time — without revisiting the full warmup history.
+    O(N^2) time — without revisiting the full warmup history.
 
     Attributes:
         assets: Ordered list of asset column names (read-only).
@@ -285,13 +317,16 @@ class BasanosStream:
         (2,)
     """
 
-    def __init__(self, state: _StreamState) -> None:
+    def __init__(self, cfg: BasanosConfig, assets: list[str], state: _StreamState) -> None:
+        """Initialise from an explicit config, asset list, and state container."""
+        self._cfg = cfg
+        self._assets = assets
         self._state = state
 
     @property
     def assets(self) -> list[str]:
         """Ordered list of asset column names."""
-        return self._state.assets
+        return self._assets
 
     # ------------------------------------------------------------------
     # from_warmup
@@ -309,8 +344,8 @@ class BasanosStream:
         Runs :class:`~basanos.math.BasanosEngine` on the full warmup batch
         exactly once and extracts the minimal IIR-filter state required for
         subsequent :meth:`step` calls.  After this call, each :meth:`step`
-        advances the optimiser in :math:`O(N^2)` time without touching the
-        warmup data again.
+        advances the optimiser in O(N^2) time without touching the warmup
+        data again.
 
         Parameters
         ----------
@@ -363,6 +398,7 @@ class BasanosStream:
 
         # 3. Extract IIR filter state for EWM correlation -------------------
         # This mirrors the internals of _ewm_corr_numpy exactly.
+        # The lfilter zi format requires shape (1, N, N) for a first-order filter.
         beta_corr: float = cfg.corr / (1.0 + cfg.corr)
         ret_adj_np: np.ndarray = engine.ret_adj.select(assets).to_numpy()  # (n_rows, n_assets)
 
@@ -377,18 +413,20 @@ class BasanosStream:
         v_w = joint_fin.astype(np.float64)  # (n_rows, n_assets, n_assets)
 
         filt_a_corr = np.array([1.0, -beta_corr])
-        # lfilter([1], [1, -beta], v, axis=0)[-1] == zf[0] when zi=zeros((1,...))
-        corr_s_x: np.ndarray = lfilter([1.0], filt_a_corr, v_x, axis=0)[-1]
-        corr_s_x2: np.ndarray = lfilter([1.0], filt_a_corr, v_x2, axis=0)[-1]
-        corr_s_xy: np.ndarray = lfilter([1.0], filt_a_corr, v_xy, axis=0)[-1]
-        corr_s_w: np.ndarray = lfilter([1.0], filt_a_corr, v_w, axis=0)[-1]
+        zi0 = np.zeros((1, n_assets, n_assets))
+        # lfilter returns (y, zf); zf has shape (1, n_assets, n_assets) and is
+        # the final filter state — pass back as zi on the next step.
+        _, corr_zi_x = lfilter([1.0], filt_a_corr, v_x, axis=0, zi=zi0)
+        _, corr_zi_x2 = lfilter([1.0], filt_a_corr, v_x2, axis=0, zi=zi0)
+        _, corr_zi_xy = lfilter([1.0], filt_a_corr, v_xy, axis=0, zi=zi0)
+        _, corr_zi_w = lfilter([1.0], filt_a_corr, v_w, axis=0, zi=zi0)
         corr_count: np.ndarray = np.sum(joint_fin.astype(np.int64), axis=0)  # (n_assets, n_assets)
 
         # 4. Derive EWMA volatility accumulators (vectorised) ---------------
         # Both log-return (for vol_adj) and pct-return (for vola) use the
         # same beta = (vola-1)/vola.  NaN observations (leading NaN at row 0
         # from diff/pct_change) are skipped — the filter input is 0 for NaN
-        # rows and the weight accumulator (sw) only increments for finite
+        # rows and the weight accumulator (s_w) only increments for finite
         # observations, matching Polars' effective behaviour for a
         # leading-NaN series.
         beta_vola: float = (cfg.vola - 1) / cfg.vola
@@ -410,18 +448,18 @@ class BasanosStream:
         filt_vola_a = np.array([1.0, -beta_vola])
         filt_vola2_a = np.array([1.0, -beta_vola_sq])
 
-        log_s: np.ndarray = lfilter([1.0], filt_vola_a, log_ret_z, axis=0)[-1]
-        log_s2: np.ndarray = lfilter([1.0], filt_vola_a, log_ret_z**2, axis=0)[-1]
-        # sw/sw2 increment only for finite obs (same as ignore_nulls=True for
+        vola_s_x: np.ndarray = lfilter([1.0], filt_vola_a, log_ret_z, axis=0)[-1]
+        vola_s_x2: np.ndarray = lfilter([1.0], filt_vola_a, log_ret_z**2, axis=0)[-1]
+        # s_w/s_w2 increment only for finite obs (same as ignore_nulls=True for
         # leading-NaN data, which covers all typical price series)
-        log_sw: np.ndarray = lfilter([1.0], filt_vola_a, fin_log, axis=0)[-1]
-        log_sw2: np.ndarray = lfilter([1.0], filt_vola2_a, fin_log, axis=0)[-1]
-        log_count: np.ndarray = fin_log.sum(axis=0).astype(int)
+        vola_s_w: np.ndarray = lfilter([1.0], filt_vola_a, fin_log, axis=0)[-1]
+        vola_s_w2: np.ndarray = lfilter([1.0], filt_vola2_a, fin_log, axis=0)[-1]
+        vola_count: np.ndarray = fin_log.sum(axis=0).astype(int)
 
-        pct_s: np.ndarray = lfilter([1.0], filt_vola_a, pct_ret_z, axis=0)[-1]
-        pct_s2: np.ndarray = lfilter([1.0], filt_vola_a, pct_ret_z**2, axis=0)[-1]
-        pct_sw: np.ndarray = lfilter([1.0], filt_vola_a, fin_pct, axis=0)[-1]
-        pct_sw2: np.ndarray = lfilter([1.0], filt_vola2_a, fin_pct, axis=0)[-1]
+        pct_s_x: np.ndarray = lfilter([1.0], filt_vola_a, pct_ret_z, axis=0)[-1]
+        pct_s_x2: np.ndarray = lfilter([1.0], filt_vola_a, pct_ret_z**2, axis=0)[-1]
+        pct_s_w: np.ndarray = lfilter([1.0], filt_vola_a, fin_pct, axis=0)[-1]
+        pct_s_w2: np.ndarray = lfilter([1.0], filt_vola2_a, fin_pct, axis=0)[-1]
         pct_count: np.ndarray = fin_pct.sum(axis=0).astype(int)
 
         # 5. Replay profit_variance -----------------------------------------
@@ -455,32 +493,31 @@ class BasanosStream:
                     cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
 
         prev_cash_pos: np.ndarray = cash_pos_np[-1].copy()
-        prev_prices: np.ndarray = prices_np[-1].copy()
+        prev_price: np.ndarray = prices_np[-1].copy()
 
         # 6. Construct _StreamState and return ------------------------------
         state = _StreamState(
-            cfg=cfg,
-            assets=assets,
-            corr_s_x=corr_s_x,
-            corr_s_x2=corr_s_x2,
-            corr_s_xy=corr_s_xy,
-            corr_s_w=corr_s_w,
+            corr_zi_x=corr_zi_x,
+            corr_zi_x2=corr_zi_x2,
+            corr_zi_xy=corr_zi_xy,
+            corr_zi_w=corr_zi_w,
             corr_count=corr_count,
-            log_s=log_s,
-            log_s2=log_s2,
-            log_sw=log_sw,
-            log_sw2=log_sw2,
-            log_count=log_count,
-            pct_s=pct_s,
-            pct_s2=pct_s2,
-            pct_sw=pct_sw,
-            pct_sw2=pct_sw2,
+            vola_s_x=vola_s_x,
+            vola_s_x2=vola_s_x2,
+            vola_s_w=vola_s_w,
+            vola_s_w2=vola_s_w2,
+            vola_count=vola_count,
+            pct_s_x=pct_s_x,
+            pct_s_x2=pct_s_x2,
+            pct_s_w=pct_s_w,
+            pct_s_w2=pct_s_w2,
             pct_count=pct_count,
-            prev_prices=prev_prices,
-            prev_cash_pos=prev_cash_pos,
             profit_variance=profit_variance,
+            prev_price=prev_price,
+            prev_cash_pos=prev_cash_pos,
+            step_count=0,
         )
-        return cls(state)
+        return cls(cfg=cfg, assets=assets, state=state)
 
     # ------------------------------------------------------------------
     # step
@@ -514,9 +551,9 @@ class BasanosStream:
         """
         from ..exceptions import SingularMatrixError
 
+        cfg = self._cfg
+        assets = self._assets
         state = self._state
-        cfg = state.cfg
-        assets = state.assets
         n_assets = len(assets)
 
         # ── Resolve inputs to (N,) float64 arrays ──────────────────────────
@@ -530,7 +567,7 @@ class BasanosStream:
         else:
             new_m = np.asarray(new_mu, dtype=float).ravel()
 
-        prev_p = state.prev_prices
+        prev_p = state.prev_price
         beta_vola: float = (cfg.vola - 1) / cfg.vola
         beta_vola_sq: float = beta_vola**2
         beta_corr: float = cfg.corr / (1.0 + cfg.corr)
@@ -547,22 +584,22 @@ class BasanosStream:
 
         # ── Update log-return EWMA accumulators ────────────────────────────
         fin_log = np.isfinite(log_ret)
-        log_s = beta_vola * state.log_s + np.where(fin_log, log_ret, 0.0)
-        log_s2 = beta_vola * state.log_s2 + np.where(fin_log, log_ret**2, 0.0)
-        log_sw = beta_vola * state.log_sw + fin_log.astype(float)
-        log_sw2 = beta_vola_sq * state.log_sw2 + fin_log.astype(float)
-        log_count = state.log_count + fin_log.astype(int)
+        vola_s_x = beta_vola * state.vola_s_x + np.where(fin_log, log_ret, 0.0)
+        vola_s_x2 = beta_vola * state.vola_s_x2 + np.where(fin_log, log_ret**2, 0.0)
+        vola_s_w = beta_vola * state.vola_s_w + fin_log.astype(float)
+        vola_s_w2 = beta_vola_sq * state.vola_s_w2 + fin_log.astype(float)
+        vola_count = state.vola_count + fin_log.astype(int)
 
         # ── Update pct-return EWMA accumulators ────────────────────────────
         fin_pct = np.isfinite(pct_ret)
-        pct_s = beta_vola * state.pct_s + np.where(fin_pct, pct_ret, 0.0)
-        pct_s2 = beta_vola * state.pct_s2 + np.where(fin_pct, pct_ret**2, 0.0)
-        pct_sw = beta_vola * state.pct_sw + fin_pct.astype(float)
-        pct_sw2 = beta_vola_sq * state.pct_sw2 + fin_pct.astype(float)
+        pct_s_x = beta_vola * state.pct_s_x + np.where(fin_pct, pct_ret, 0.0)
+        pct_s_x2 = beta_vola * state.pct_s_x2 + np.where(fin_pct, pct_ret**2, 0.0)
+        pct_s_w = beta_vola * state.pct_s_w + fin_pct.astype(float)
+        pct_s_w2 = beta_vola_sq * state.pct_s_w2 + fin_pct.astype(float)
         pct_count = state.pct_count + fin_pct.astype(int)
 
         # ── Compute vol-adjusted return (for the correlation IIR input) ─────
-        log_vol = _ewm_std_from_state(log_s, log_s2, log_sw, log_sw2, log_count, min_samples=1)
+        log_vol = _ewm_std_from_state(vola_s_x, vola_s_x2, vola_s_w, vola_s_w2, vola_count, min_samples=1)
         # Divide; std == 0 yields ±inf → clipped to ±cfg.clip (matches Polars)
         with np.errstate(divide="ignore", invalid="ignore"):
             vol_adj_val = np.where(
@@ -576,18 +613,27 @@ class BasanosStream:
         va_f = np.where(fin_va, vol_adj_val, 0.0)
         joint_fin = fin_va[:, np.newaxis] & fin_va[np.newaxis, :]  # (N, N)
 
-        v_x = va_f[:, np.newaxis] * joint_fin  # (N, N)
-        v_x2 = (va_f**2)[:, np.newaxis] * joint_fin  # (N, N)
-        v_xy = va_f[:, np.newaxis] * va_f[np.newaxis, :]  # (N, N)
-        v_w = joint_fin.astype(np.float64)  # (N, N)
+        new_v_x = (va_f[:, np.newaxis] * joint_fin)[np.newaxis]  # (1, N, N)
+        new_v_x2 = ((va_f**2)[:, np.newaxis] * joint_fin)[np.newaxis]  # (1, N, N)
+        new_v_xy = (va_f[:, np.newaxis] * va_f[np.newaxis, :])[np.newaxis]  # (1, N, N)
+        new_v_w = joint_fin.astype(np.float64)[np.newaxis]  # (1, N, N)
 
-        s_x = beta_corr * state.corr_s_x + v_x
-        s_x2 = beta_corr * state.corr_s_x2 + v_x2
-        s_xy = beta_corr * state.corr_s_xy + v_xy
-        s_w = beta_corr * state.corr_s_w + v_w
+        filt_a_corr = np.array([1.0, -beta_corr])
+        # y_x[0] is the current-step EWM state (filter output); corr_zi_x is the
+        # new filter memory (zf = beta * y[0]) to pass as zi on the next step.
+        y_x, corr_zi_x = lfilter([1.0], filt_a_corr, new_v_x, axis=0, zi=state.corr_zi_x)
+        y_x2, corr_zi_x2 = lfilter([1.0], filt_a_corr, new_v_x2, axis=0, zi=state.corr_zi_x2)
+        y_xy, corr_zi_xy = lfilter([1.0], filt_a_corr, new_v_xy, axis=0, zi=state.corr_zi_xy)
+        y_w, corr_zi_w = lfilter([1.0], filt_a_corr, new_v_w, axis=0, zi=state.corr_zi_w)
         corr_count = state.corr_count + joint_fin.astype(np.int64)
 
         # ── Reconstruct the EWM correlation matrix ─────────────────────────
+        # Use y_*[0] (the filter OUTPUT for this step), not zf[0].
+        s_x = y_x[0]
+        s_x2 = y_x2[0]
+        s_xy = y_xy[0]
+        s_w = y_w[0]
+
         with np.errstate(divide="ignore", invalid="ignore"):
             pos_w = s_w > 0
             ewm_x = np.where(pos_w, s_x / s_w, np.nan)
@@ -612,7 +658,7 @@ class BasanosStream:
         matrix = shrink2id(corr, lamb=cfg.shrink)
 
         # ── Compute EWMA volatility (pct-return std) ────────────────────────
-        vola_vec = _ewm_std_from_state(pct_s, pct_s2, pct_sw, pct_sw2, pct_count, min_samples=cfg.vola)
+        vola_vec = _ewm_std_from_state(pct_s_x, pct_s_x2, pct_s_w, pct_s_w2, pct_count, min_samples=cfg.vola)
 
         # ── Update profit_variance ──────────────────────────────────────────
         profit_variance = state.profit_variance
@@ -668,28 +714,25 @@ class BasanosStream:
                         status = "valid"
 
         # ── Persist updated state ───────────────────────────────────────────
-        self._state = _StreamState(
-            cfg=cfg,
-            assets=assets,
-            corr_s_x=s_x,
-            corr_s_x2=s_x2,
-            corr_s_xy=s_xy,
-            corr_s_w=s_w,
-            corr_count=corr_count,
-            log_s=log_s,
-            log_s2=log_s2,
-            log_sw=log_sw,
-            log_sw2=log_sw2,
-            log_count=log_count,
-            pct_s=pct_s,
-            pct_s2=pct_s2,
-            pct_sw=pct_sw,
-            pct_sw2=pct_sw2,
-            pct_count=pct_count,
-            prev_prices=new_p.copy(),
-            prev_cash_pos=new_cash_pos.copy(),
-            profit_variance=profit_variance,
-        )
+        state.corr_zi_x = corr_zi_x
+        state.corr_zi_x2 = corr_zi_x2
+        state.corr_zi_xy = corr_zi_xy
+        state.corr_zi_w = corr_zi_w
+        state.corr_count = corr_count
+        state.vola_s_x = vola_s_x
+        state.vola_s_x2 = vola_s_x2
+        state.vola_s_w = vola_s_w
+        state.vola_s_w2 = vola_s_w2
+        state.vola_count = vola_count
+        state.pct_s_x = pct_s_x
+        state.pct_s_x2 = pct_s_x2
+        state.pct_s_w = pct_s_w
+        state.pct_s_w2 = pct_s_w2
+        state.pct_count = pct_count
+        state.prev_price = new_p.copy()
+        state.prev_cash_pos = new_cash_pos.copy()
+        state.profit_variance = profit_variance
+        state.step_count += 1
 
         return StepResult(
             date=date,
