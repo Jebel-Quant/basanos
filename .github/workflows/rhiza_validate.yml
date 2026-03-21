@@ -29,14 +29,8 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
 
-      - name: Validate Rhiza config
-        # don't run this in rhiza itself. Rhiza has no template.yml file.
-        if: ${{ github.repository != 'jebel-quant/rhiza' }}
-        shell: bash
+      - name: Validate
+        env:
+          UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
         run: |
-          uvx "rhiza>=0.8.0" validate .
-        
-      - name: Run Rhiza Tests
-        shell: bash
-        run: |
-          make rhiza-test
+          make validate

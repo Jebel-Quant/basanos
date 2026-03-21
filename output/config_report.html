@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Basanos Configuration Report</title>
+  <style>
+/* ── Reset & Base ─────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif;
+    background: #0f1117;
+    color: #e2e8f0;
+    line-height: 1.6;
+}
+
+/* ── Header ───────────────────────────────────────── */
+.report-header {
+    background: linear-gradient(135deg, #1a1f35 0%, #0d1b2a 100%);
+    border-bottom: 2px solid #2d3748;
+    padding: 2.5rem 2rem 2rem;
+}
+.report-header h1 {
+    font-size: 2rem;
+    font-weight: 700;
+    color: #63b3ed;
+    letter-spacing: -0.5px;
+}
+.report-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1.5rem;
+    margin-top: 0.75rem;
+    font-size: 0.875rem;
+    color: #a0aec0;
+}
+.report-meta span strong { color: #e2e8f0; }
+
+/* ── Table of Contents ────────────────────────────── */
+.toc {
+    background: #1a1f35;
+    border-bottom: 1px solid #2d3748;
+    padding: 0.75rem 2rem;
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    font-size: 0.8rem;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+}
+.toc a {
+    color: #63b3ed;
+    text-decoration: none;
+    opacity: 0.8;
+    transition: opacity 0.2s;
+}
+.toc a:hover { opacity: 1; text-decoration: underline; }
+
+/* ── Main Content ─────────────────────────────────── */
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+/* ── Sections ─────────────────────────────────────── */
+.section { margin-bottom: 3rem; }
+.section-title {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #90cdf4;
+    margin-bottom: 1.25rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #2d3748;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+.section-title::before {
+    content: "";
+    display: inline-block;
+    width: 4px;
+    height: 1.2em;
+    background: #4299e1;
+    border-radius: 2px;
+}
+
+/* ── Chart Card ───────────────────────────────────── */
+.chart-card {
+    background: #1a202c;
+    border: 1px solid #2d3748;
+    border-radius: 12px;
+    padding: 1rem;
+    overflow: hidden;
+}
+.chart-card .js-plotly-plot,
+.chart-card .plotly-graph-div { width: 100% !important; }
+.chart-unavailable {
+    color: #a0aec0;
+    font-style: italic;
+    padding: 1rem;
+}
+
+/* ── Footer ───────────────────────────────────────── */
+.report-footer {
+    text-align: center;
+    padding: 1.5rem;
+    color: #4a5568;
+    font-size: 0.75rem;
+    border-top: 1px solid #2d3748;
+    margin-top: 3rem;
+}
+
+
+/* ── Parameter & Guidance Tables ─────────────────── */
+.param-table, .guidance-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.875rem;
+}
+.param-table th, .guidance-table th {
+    background: #2d3748;
+    color: #90cdf4;
+    padding: 0.6rem 1rem;
+    text-align: left;
+    font-weight: 600;
+    white-space: nowrap;
+}
+.param-table td, .guidance-table td {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid #2d3748;
+    vertical-align: top;
+}
+.param-table td.param-name {
+    font-family: "SFMono-Regular", Consolas, monospace;
+    color: #63b3ed;
+    white-space: nowrap;
+    font-weight: 600;
+}
+.param-table td.param-value {
+    font-family: "SFMono-Regular", Consolas, monospace;
+    color: #68d391;
+    white-space: nowrap;
+}
+.param-table td.param-constraint {
+    font-family: "SFMono-Regular", Consolas, monospace;
+    color: #f6ad55;
+    white-space: nowrap;
+}
+.param-table td.param-description { color: #cbd5e0; }
+.param-table tbody tr:hover,
+.guidance-table tbody tr:hover { background: #1e2a3a; }
+.guidance-table td.regime { color: #cbd5e0; white-space: nowrap; }
+.guidance-table td.shrink-range { color: #f6ad55; font-weight: 600; }
+.guidance-table td.notes { color: #a0aec0; }
+
+/* ── Theory Section ───────────────────────────────── */
+.theory-block {
+    background: #1a202c;
+    border: 1px solid #2d3748;
+    border-radius: 12px;
+    padding: 1.5rem 2rem;
+    line-height: 1.8;
+}
+.theory-block h3 {
+    color: #90cdf4;
+    font-size: 1rem;
+    font-weight: 600;
+    margin: 1.25rem 0 0.5rem;
+}
+.theory-block h3:first-child { margin-top: 0; }
+.theory-block p { color: #cbd5e0; margin-bottom: 0.75rem; }
+.theory-block code {
+    font-family: "SFMono-Regular", Consolas, monospace;
+    background: #2d3748;
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    font-size: 0.875em;
+    color: #63b3ed;
+}
+.theory-block .math-block {
+    font-family: "SFMono-Regular", Consolas, monospace;
+    background: #2d3748;
+    border-left: 3px solid #4299e1;
+    padding: 0.75rem 1rem;
+    border-radius: 0 8px 8px 0;
+    margin: 0.75rem 0;
+    color: #e2e8f0;
+    font-size: 0.9rem;
+}
+.theory-block ul {
+    list-style: none;
+    padding: 0;
+}
+.theory-block ul li {
+    color: #cbd5e0;
+    padding: 0.2rem 0;
+    padding-left: 1.5rem;
+    position: relative;
+}
+.theory-block ul li::before {
+    content: "▸";
+    position: absolute;
+    left: 0;
+    color: #4299e1;
+}
+.theory-block a { color: #63b3ed; }
+.theory-block a:hover { text-decoration: underline; }
+.refs { color: #a0aec0; font-size: 0.85rem; margin-top: 1rem; }
+
+  </style>
+</head>
+<body>
+
+
+<header class="report-header">
+  <h1>&#x2699;&#xFE0F; Basanos Configuration Report</h1>
+  <div class="report-meta">
+    <span><strong>vola:</strong> 16</span>
+    <span><strong>corr:</strong> 32</span>
+    <span><strong>clip:</strong> 3.5</span>
+    <span><strong>shrink&nbsp;(λ):</strong> 0.5</span>
+    <span><strong>AUM:</strong> 1,000,000</span>
+  </div>
+</header>
+
+
+
+<nav class="toc">
+  <a href="#parameters">Parameters</a>
+  
+  <a href="#guidance">Shrinkage Guidance</a>
+  <a href="#theory">Theory</a>
+</nav>
+
+
+<div class="container">
+
+  <section class="section" id="parameters">
+    <h2 class="section-title">Configuration Parameters</h2>
+    <div class="chart-card" style="overflow-x: auto;"><table class="param-table"><thead><tr><th>Parameter</th><th>Current&nbsp;Value</th><th>Constraint</th><th>Description</th><th>Default</th></tr></thead><tbody><tr><td class="param-name">vola</td><td class="param-value">16</td><td class="param-constraint">> 0</td><td class="param-description">EWMA lookback for volatility normalization.</td><td class="param-description" style="color:#718096;white-space:nowrap">required</td></tr><tr><td class="param-name">corr</td><td class="param-value">32</td><td class="param-constraint">> 0</td><td class="param-description">EWMA lookback for correlation estimation.</td><td class="param-description" style="color:#718096;white-space:nowrap">required</td></tr><tr><td class="param-name">clip</td><td class="param-value">3.5</td><td class="param-constraint">> 0.0</td><td class="param-description">Clipping threshold for volatility adjustment.</td><td class="param-description" style="color:#718096;white-space:nowrap">required</td></tr><tr><td class="param-name">shrink</td><td class="param-value">0.5</td><td class="param-constraint">≥ 0.0, ≤ 1.0</td><td class="param-description">Retention weight λ for linear shrinkage of the EWMA correlation matrix toward the identity: C_shrunk = λ·C_ewma + (1-λ)·I. λ=1.0 uses the raw EWMA matrix (no shrinkage); λ=0.0 replaces it entirely with the identity (maximum shrinkage, positions are treated as uncorrelated). Values in [0.3, 0.8] are typical for daily financial return data. Lower values improve numerical stability when assets are many relative to the lookback (high concentration ratio n/T). See shrink2id() for full guidance. Only used when covariance_mode='ewma_shrink'.</td><td class="param-description" style="color:#718096;white-space:nowrap">required</td></tr><tr><td class="param-name">aum</td><td class="param-value">1.00e+06</td><td class="param-constraint">> 0.0</td><td class="param-description">Assets under management for portfolio scaling.</td><td class="param-description" style="color:#718096;white-space:nowrap">required</td></tr><tr><td class="param-name">profit_variance_init</td><td class="param-value">1</td><td class="param-constraint">> 0.0</td><td class="param-description">Initial value for the profit variance EMA used in position sizing. Defaults to 1.0 (unit variance) so that the first positions are unscaled until real P&L data accumulates.</td><td class="param-description" style="color:#718096;white-space:nowrap">default: 1</td></tr><tr><td class="param-name">profit_variance_decay</td><td class="param-value">0.99</td><td class="param-constraint">> 0.0, < 1.0</td><td class="param-description">EMA decay factor λ for the realized P&L variance (higher = slower adaptation). The default 0.99 gives a half-life of ~69 periods and an effective window of 100 periods, suitable for daily data.</td><td class="param-description" style="color:#718096;white-space:nowrap">default: 0.99</td></tr><tr><td class="param-name">denom_tol</td><td class="param-value">1.00e-12</td><td class="param-constraint">> 0.0</td><td class="param-description">Minimum normalisation denominator; positions are zeroed at or below this value. The default 1e-12 is well above float64 machine epsilon (~2.2e-16) while remaining negligible for any economically meaningful signal.</td><td class="param-description" style="color:#718096;white-space:nowrap">default: 1.00e-12</td></tr><tr><td class="param-name">position_scale</td><td class="param-value">1.00e+06</td><td class="param-constraint">> 0.0</td><td class="param-description">Multiplicative scaling factor applied to dimensionless risk positions to obtain cash positions in base-currency units. Defaults to 1e6 (one million), a conventional denomination for institutional portfolios.</td><td class="param-description" style="color:#718096;white-space:nowrap">default: 1.00e+06</td></tr><tr><td class="param-name">min_corr_denom</td><td class="param-value">1.00e-14</td><td class="param-constraint">> 0.0</td><td class="param-description">Guard threshold for the EWMA correlation denominator sqrt(var_x * var_y). When the denominator is at or below this value the correlation is set to NaN instead of dividing by a near-zero number. The default 1e-14 is safely above float64 underflow while being negligible for any realistic return variance.</td><td class="param-description" style="color:#718096;white-space:nowrap">default: 1.00e-14</td></tr><tr><td class="param-name">max_nan_fraction</td><td class="param-value">0.9</td><td class="param-constraint">> 0.0, < 1.0</td><td class="param-description">Maximum tolerated fraction of null values in any asset price column. ExcessiveNullsError is raised during construction when the null fraction strictly exceeds this threshold. The default 0.9 allows up to 90 % missing prices while rejecting columns that are almost entirely null.</td><td class="param-description" style="color:#718096;white-space:nowrap">default: 0.9</td></tr><tr><td class="param-name">covariance_config</td><td class="param-value">covariance_mode=<CovarianceMode.ewma_shrink: 'ewma_shrink'></td><td class="param-constraint">—</td><td class="param-description">Covariance estimation configuration. Pass EwmaShrinkConfig() (default) for EWMA correlation with linear shrinkage toward the identity, or SlidingWindowConfig(window=W, n_factors=k) for a rolling-window factor model. See Section 4.4 of basanos.pdf.</td><td class="param-description" style="color:#718096;white-space:nowrap">default: PydanticUndefined</td></tr></tbody></table></div>
+  </section>
+
+  <section class="section" id="lambda-sweep">
+    <h2 class="section-title">Lambda (Shrinkage) Sweep</h2>
+    <p class="chart-unavailable" style="padding:1.5rem;">Lambda sweep is available when accessing this report via <code>engine.config_report</code> (requires a <strong>BasanosEngine</strong> instance with price and signal data).</p>
+  </section>
+
+  <section class="section" id="guidance">
+    <h2 class="section-title">Shrinkage Guidance &#x2014; n / T Regimes</h2>
+    <div class="chart-card" style="overflow-x: auto;"><table class="guidance-table"><thead><tr><th>n (assets) / T (corr lookback)</th><th>Suggested shrink (λ)</th><th>Notes</th></tr></thead><tbody><tr><td class="regime">n > 20, T < 40</td><td class="shrink-range">0.3 - 0.5</td><td class="notes">Near-singular matrix likely; strong regularisation needed.</td></tr><tr><td class="regime">n ~= 10, T ~= 60</td><td class="shrink-range">0.5 - 0.7</td><td class="notes">Balanced regime; moderate regularisation.</td></tr><tr><td class="regime">n < 10, T > 100</td><td class="shrink-range">0.7 - 0.9</td><td class="notes">Well-conditioned sample; light shrinkage for stability.</td></tr></tbody></table></div>
+  </section>
+
+  <section class="section" id="theory">
+    <h2 class="section-title">Theory &amp; References</h2>
+    <div class="theory-block">
+      <h3>Linear Shrinkage toward the Identity</h3>
+      <p>
+        The <code>shrink</code> parameter (&lambda;) controls how much the EWMA sample
+        correlation matrix <em>C<sub>EWMA</sub></em> is regularised before being
+        passed to the linear solver.  The shrunk matrix is:
+      </p>
+      <div class="math-block">C_shrunk = &lambda; &middot; C_EWMA + (1 - &lambda;) &middot; I_n</div>
+      <p>
+        where <em>I<sub>n</sub></em> is the n x n identity matrix.
+        Setting &lambda; = 1 uses the raw EWMA correlation matrix (no shrinkage); setting
+        &lambda; = 0 replaces it entirely with the identity (positions become purely
+        signal-proportional, uncorrelated).
+      </p>
+
+      <h3>Why Shrinkage?</h3>
+      <p>
+        When the number of assets <em>n</em> is large relative to the lookback
+        window <em>T</em> (high concentration ratio <em>n/T</em>), the sample
+        covariance matrix is poorly estimated.  Extreme eigenvalues amplify
+        estimation noise and cause the linear solver to allocate excessive
+        leverage to a few eigendirections.  Shrinkage toward the identity damps
+        these extremes, improves the condition number, and produces more stable,
+        diversified positions.
+      </p>
+
+      <h3>When to Prefer Strong Shrinkage (low &lambda;)</h3>
+      <ul>
+        <li>Fewer than ~30 assets with a <code>corr</code> lookback shorter than 100 days.</li>
+        <li>High-volatility or crisis regimes where correlations spike and the
+            sample matrix is less representative of the true structure.</li>
+        <li>Portfolios where estimation noise is more costly than correlation bias
+            (low signal-to-noise ratio of <code>mu</code>).</li>
+      </ul>
+
+      <h3>When to Prefer Light Shrinkage (high &lambda;)</h3>
+      <ul>
+        <li>Many assets with a long lookback (low concentration ratio).</li>
+        <li>The EWMA correlation structure carries genuine diversification
+            information that the solver should exploit.</li>
+        <li>Out-of-sample testing shows that position stability is not a concern.</li>
+      </ul>
+
+      <h3>EWMA Parameters &#x2014; vola and corr</h3>
+      <p>
+        Both <code>vola</code> and <code>corr</code> are span-equivalent EWMA
+        lookbacks (in trading periods).  The EWMA decay factor is
+        <em>a = 2 / (span + 1)</em>, giving a centre-of-mass of
+        <em>span / 2</em> periods.  <code>corr</code> must be &gt;= <code>vola</code>
+        to ensure the correlation estimator sees at least as much history as the
+        volatility normaliser.
+      </p>
+
+      <h3>References</h3>
+      <p class="refs">
+        Ledoit, O. &amp; Wolf, M. (2004).
+        <em>A well-conditioned estimator for large-dimensional covariance matrices.</em>
+        Journal of Multivariate Analysis, 88(2), 365-411.<br/>
+        Chen, Y., Wiesel, A., Eldar, Y. C., &amp; Hero, A. O. (2010).
+        <em>Shrinkage Algorithms for MMSE Covariance Estimation.</em>
+        IEEE Transactions on Signal Processing, 58(10), 5016-5029.<br/>
+        See also: <code>basanos.math._signal.shrink2id</code> for the implementation.
+      </p>
+    </div>
+  </section>
+
+</div>
+
+<footer class="report-footer">
+  Generated by <strong>basanos</strong>
+</footer>
+
+</body>
+</html>
