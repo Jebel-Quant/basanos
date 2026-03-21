@@ -367,6 +367,31 @@ def test_step_matches_basanos_engine(warmup_len: int):
     np.testing.assert_allclose(result.cash_position, expected, rtol=1e-8, equal_nan=True)
 
 
+@pytest.mark.parametrize("n_steps", [5, 10])
+def test_multi_step_matches_basanos_engine(n_steps: int):
+    """5+ consecutive step() calls must match BasanosEngine.cash_position within rtol=1e-8."""
+    warmup_len = 60
+    prices, mu, cfg, assets = _make_prices_mu(n_total=warmup_len + n_steps)
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+    expected = engine.cash_position.select(assets).to_numpy()
+
+    for step_i in range(n_steps):
+        row_idx = warmup_len + step_i
+        result = stream.step(prices_np[row_idx], mu_np[row_idx], prices["date"][row_idx])
+        np.testing.assert_allclose(
+            result.cash_position,
+            expected[row_idx],
+            rtol=1e-8,
+            equal_nan=True,
+            err_msg=f"Mismatch at step {step_i + 1} (row {row_idx})",
+        )
+
+
 def test_step_returns_step_result():
     """step() must return a StepResult instance."""
     prices, mu, cfg, assets = _make_prices_mu()
