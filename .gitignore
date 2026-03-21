@@ -26,6 +26,9 @@ results/
 # temp file used by Junie
 .output.txt
 
+# HTML outputs from docstring examples (e.g. report.save("output/..."))
+output/
+
 # folder used for programs, e.g. uv, uvx, task, etc.
 bin
 
