@@ -1551,6 +1551,90 @@ def test_sw_warmup_status_when_buffer_not_full():
     assert result.status == "warmup"
 
 
+def test_sw_short_warmup_all_nan_steps_return_warmup_then_transition():
+    """All window-n_rows steps return 'warmup'; the next step is non-warmup.
+
+    When the warmup batch has fewer rows than the sliding window, the rolling
+    buffer contains NaN-padded prefix rows.  Each step shifts one NaN row out
+    and appends a real row.  The buffer is fully populated with real data
+    exactly when step_count reaches window — the same point in_warmup becomes
+    False.  This test asserts that:
+
+    1. All ``window - n_rows`` warmup steps return ``status="warmup"``.
+    2. Cash positions are NaN during that period.
+    3. The first post-warmup step returns a non-warmup status.
+    4. After the transition the buffer contains no NaN rows.
+    """
+    n_total = 80
+    window = 20
+    n_rows = 15  # warmup batch shorter than window by 5 rows
+    prices, mu, _, assets = _make_prices_mu(n_total=n_total)
+    cfg_sw = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=window, n_factors=2),
+    )
+    stream = BasanosStream.from_warmup(prices.head(n_rows), mu.head(n_rows), cfg_sw)
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    nan_pad_steps = window - n_rows  # 5 steps should all be "warmup"
+
+    for i in range(nan_pad_steps):
+        result = stream.step(prices_np[n_rows + i], mu_np[n_rows + i], prices["date"][n_rows + i])
+        assert result.status == "warmup", f"step {i + 1}: expected 'warmup', got {result.status!r}"
+        assert np.all(np.isnan(result.cash_position)), f"step {i + 1}: expected NaN cash_position during warmup"
+
+    # First post-warmup step: buffer is now fully populated with real data.
+    result_post = stream.step(
+        prices_np[n_rows + nan_pad_steps],
+        mu_np[n_rows + nan_pad_steps],
+        prices["date"][n_rows + nan_pad_steps],
+    )
+    assert result_post.status != "warmup", f"expected non-warmup after buffer full, got {result_post.status!r}"
+    assert stream._state.sw_ret_buf is not None
+    assert np.all(np.isfinite(stream._state.sw_ret_buf)), "buffer still contains NaN rows after warmup ends"
+
+
+def test_sw_short_warmup_save_load_preserves_warmup_period():
+    """A stream saved mid-NaN-padding period restores the correct warmup state."""
+    import pathlib
+    import tempfile
+
+    n_total = 80
+    window = 20
+    n_rows = 15
+    prices, mu, _, assets = _make_prices_mu(n_total=n_total)
+    cfg_sw = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=window, n_factors=2),
+    )
+    stream = BasanosStream.from_warmup(prices.head(n_rows), mu.head(n_rows), cfg_sw)
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "sw_short.npz"
+        stream.save(p)
+        restored = BasanosStream.load(p)
+
+    # Both the original and restored stream should return identical results
+    # for each remaining warmup step.
+    for i in range(window - n_rows + 1):
+        idx = n_rows + i
+        r_orig = stream.step(prices_np[idx], mu_np[idx], prices["date"][idx])
+        r_rest = restored.step(prices_np[idx], mu_np[idx], prices["date"][idx])
+        assert r_orig.status == r_rest.status, f"step {i + 1}: status mismatch"
+        np.testing.assert_array_equal(r_orig.cash_position, r_rest.cash_position)
+
+
 def test_sw_step_zero_signal_yields_zero_signal():
     """step() must return 'zero_signal' when mu is all-zero in SW mode."""
     stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)

@@ -456,6 +456,16 @@ class BasanosStream:
             A stream instance whose :meth:`step` method is ready to accept the
             row immediately following the last warmup row.
 
+        Notes:
+        ------
+        **Short-warmup behaviour with** ``SlidingWindowConfig``: when
+        ``len(prices) < cfg.covariance_config.window``, the internal rolling
+        buffer (``sw_ret_buf``) is NaN-padded for the missing prefix rows.
+        :meth:`step` returns ``StepResult(status="warmup")`` for each of the
+        first ``window - len(prices)`` calls, exactly matching the EWM warmup
+        semantics.  By the time :meth:`step` returns the first non-warmup
+        result the buffer contains only real data — no NaN-padded rows remain.
+
         Raises:
         ------
         MissingDateColumnError
@@ -598,12 +608,21 @@ class BasanosStream:
         state = self._state
         n_assets = len(assets)
 
-        # ── Check if still in the EWM warmup period ─────────────────────────
-        # step_count is initialised to n_rows in from_warmup, so this is True
-        # for the first (cfg.corr - n_rows) calls when the warmup batch was
-        # shorter than cfg.corr (i.e. not enough rows to populate the EWM
-        # correlation matrix).  All accumulators are still updated so that the
-        # state is ready the moment the warmup period ends.
+        # ── Check if still in the warmup period ──────────────────────────────
+        # step_count is initialised to n_rows in from_warmup.
+        #
+        # EwmaShrinkConfig: in_warmup is True for the first (cfg.corr - n_rows)
+        # calls when the warmup batch was shorter than cfg.corr (not enough rows
+        # to populate the EWM correlation matrix).
+        #
+        # SlidingWindowConfig: in_warmup is True for the first (window - n_rows)
+        # calls when the warmup batch was shorter than the window.  During this
+        # period sw_ret_buf still contains NaN-padded prefix rows; each step
+        # shifts one NaN out and appends a real row, so the buffer is fully
+        # populated with real data exactly when in_warmup becomes False.
+        #
+        # In both modes all accumulators are still updated during warmup so that
+        # the state is ready the moment the warmup period ends.
         _warmup_thresh = (
             cast(SlidingWindowConfig, cfg.covariance_config).window
             if isinstance(cfg.covariance_config, SlidingWindowConfig)
