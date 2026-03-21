@@ -53,9 +53,26 @@ class SolveStatus(StrEnum):
     VALID = "valid"
 
 
+@dataclasses.dataclass(frozen=True)
+class MatrixBundle:
+    """Container for the covariance matrix and any mode-specific auxiliary state.
+
+    Wrapping the covariance matrix in a dataclass decouples
+    :meth:`_SolveMixin._compute_position` from the raw array so that future
+    covariance modes (e.g. DCC-GARCH, RMT-cleaned) can carry additional fields
+    through the same interface without changing the method signature.
+
+    Attributes:
+        matrix: The ``(n_active, n_active)`` covariance sub-matrix for the
+            active assets at a given timestamp.
+    """
+
+    matrix: np.ndarray
+
+
 #: Yield type for :meth:`_SolveMixin._iter_matrices`:
-#: ``(i, t, mask, matrix)`` where ``matrix`` is ``None`` during warmup/no-data.
-MatrixYield: TypeAlias = tuple[int, datetime.date, np.ndarray, np.ndarray | None]
+#: ``(i, t, mask, bundle)`` where ``bundle`` is ``None`` during warmup/no-data.
+MatrixYield: TypeAlias = tuple[int, datetime.date, np.ndarray, MatrixBundle | None]
 
 #: Yield type for :meth:`_SolveMixin._iter_solve`:
 #: ``(i, t, mask, pos_or_none, status)`` where ``pos_or_none`` is ``None`` only for warmup rows.
@@ -215,7 +232,7 @@ class _SolveMixin:
         t: datetime.date,
         mask: np.ndarray,
         expected_mu: np.ndarray,
-        matrix: np.ndarray,
+        bundle: MatrixBundle,
         denom_tol: float,
     ) -> SolveYield:
         """Shared solve step used by both covariance branches.
@@ -225,17 +242,23 @@ class _SolveMixin:
         delegates to :meth:`_denom_guard_yield`.  Handles
         :exc:`~basanos.exceptions.SingularMatrixError` from both calls.
 
+        Accepting a :class:`MatrixBundle` instead of a raw array means future
+        covariance modes can attach auxiliary state to the bundle without
+        changing this method's signature.
+
         Args:
             i: Row index.
             t: Timestamp.
             mask: Boolean asset mask of shape ``(n_assets,)``.
             expected_mu: Masked expected-return vector of shape ``(n_active,)``.
-            matrix: ``(n_active, n_active)`` covariance matrix for the active assets.
+            bundle: Covariance bundle whose ``matrix`` field is an
+                ``(n_active, n_active)`` covariance matrix for the active assets.
             denom_tol: Tolerance threshold for the normalisation denominator.
 
         Returns:
             SolveYield: A degenerate or valid ``(i, t, mask, pos, status)`` tuple.
         """
+        matrix = bundle.matrix
         try:
             denom = inv_a_norm(expected_mu, matrix)
         except SingularMatrixError:
@@ -286,13 +309,13 @@ class _SolveMixin:
         return profit_variance
 
     def _iter_matrices(self: _EngineProtocol) -> Generator[MatrixYield, None, None]:
-        r"""Yield ``(i, t, mask, matrix)`` for every timestamp.
+        r"""Yield ``(i, t, mask, bundle)`` for every timestamp.
 
-        ``matrix`` is the effective :math:`(n_{\text{sub}},\ n_{\text{sub}})`
-        correlation matrix for the active assets (those with finite prices at
-        timestamp *t*).  Yields ``None`` when no valid matrix is available
-        (e.g., before the warm-up period has elapsed or when no assets have
-        finite prices).
+        ``bundle`` is a :class:`MatrixBundle` wrapping the effective
+        :math:`(n_{\text{sub}},\ n_{\text{sub}})` correlation matrix for the
+        active assets (those with finite prices at timestamp *t*).  Yields
+        ``None`` when no valid matrix is available (e.g., before the warm-up
+        period has elapsed or when no assets have finite prices).
 
         The behaviour depends on :attr:`BasanosConfig.covariance_config`:
 
@@ -305,14 +328,14 @@ class _SolveMixin:
           :attr:`~basanos.math._factor_model.FactorModel.covariance`.
 
         Yields:
-            tuple: ``(i, t, mask, matrix)`` where
+            tuple: ``(i, t, mask, bundle)`` where
 
             * ``i`` (*int*): Row index into ``self.prices``.
             * ``t``: Timestamp value from ``self.prices["date"]``.
             * ``mask`` (*np.ndarray[bool]*): Shape ``(n_assets,)``; ``True``
               for assets with finite prices at row *i*.
-            * ``matrix`` (*np.ndarray | None*): Shape
-              ``(mask.sum(), mask.sum())`` or ``None``.
+            * ``bundle`` (:class:`MatrixBundle` | ``None``): Covariance bundle
+              of shape ``(mask.sum(), mask.sum())``, or ``None``.
         """
         assets = self.assets
         prices_num = self.prices.select(assets).to_numpy()
@@ -327,7 +350,7 @@ class _SolveMixin:
                     continue
                 corr_n = cor[t]
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-                yield i, t, mask, matrix
+                yield i, t, mask, MatrixBundle(matrix=matrix)
         else:
             sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
             win_w: int = sw_config.window
@@ -344,7 +367,7 @@ class _SolveMixin:
                 k_eff = min(win_k, win_w, n_sub)
                 try:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
-                    yield i, t, mask, fm.covariance
+                    yield i, t, mask, MatrixBundle(matrix=fm.covariance)
                 except (np.linalg.LinAlgError, ValueError) as exc:
                     _logger.warning("Factor model fit failed at t=%s: %s", t, exc)
                     yield i, t, mask, None
@@ -372,8 +395,8 @@ class _SolveMixin:
         is_sw = isinstance(self.cfg.covariance_config, SlidingWindowConfig)
         win_w: int = cast(SlidingWindowConfig, self.cfg.covariance_config).window if is_sw else 0
 
-        for i, t, mask, matrix in self._iter_matrices():
-            if matrix is None:
+        for i, t, mask, bundle in self._iter_matrices():
+            if bundle is None:
                 # Distinguish SW warmup (insufficient history) from no-data / model-failure.
                 if is_sw and mask.any() and i + 1 < win_w:
                     yield i, t, mask, None, SolveStatus.WARMUP
@@ -384,7 +407,7 @@ class _SolveMixin:
             if early is not None:
                 yield early
                 continue
-            yield _SolveMixin._compute_position(i, t, mask, expected_mu, matrix, self.cfg.denom_tol)
+            yield _SolveMixin._compute_position(i, t, mask, expected_mu, bundle, self.cfg.denom_tol)
 
     def warmup_state(self: _EngineProtocol) -> WarmupState:
         """Return the final :class:`WarmupState` after replaying the full batch.
