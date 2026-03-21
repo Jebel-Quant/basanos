@@ -337,3 +337,37 @@ Seven commits and four PRs merged since entry #6 close all three weaknesses and 
 **Rationale**: The session delivers four coherent structural improvements in a single day: God Object decomposition, `Portfolio` split, exception consolidation, and Jinja2 template migration. Each is technically correct and follows the established quality bar. The score does not increase because the two uncovered statements are direct artefacts of the typecheck fix strategy chosen during PR #287 (annotation-only mixin contract + `isinstance` guard), both of which would be addressed more cleanly with `Protocol`-based typing. The Jinja2 ceiling and `Portfolio` inheritance coupling are minor but repeat patterns that have required prior cleanup work. The codebase architecture is materially better today than at entry #6.
 
 ---
+
+## 2026-03-21 — Analysis Entry #9
+
+### Summary
+
+Twelve commits since entry #8 close all three weaknesses and both risks from that session, then advance the architecture in two directions: (1) completing the `Portfolio` → composition migration with `PortfolioData` fully privatised and the double-construction eliminated (PRs #310, #314, #317), and (2) laying the infrastructure foundation for the long-requested streaming API via `StepResult` (PR #326) and `_StreamState` (PR #328) in `_stream.py`, with `StepResult` promoted to the public `basanos.math` namespace. The `cor` key type is narrowed to `dict[datetime.date, np.ndarray]` (`_engine_protocol.py:101`, PR #304). `_validate_inputs` extraction (PR #308) reduces `__post_init__` to a 3-line summary call. The `self: _EngineProtocol` pattern is documented (PR #313). Test count reaches 689 (up 33 from entry #8's 656). No new technical debt is introduced; the sole remaining structural gap is that `BasanosStream` itself — the step-loop consumer of `_StreamState` — does not yet exist.
+
+### Strengths
+
+- **`cor` key type narrowed correctly** (`_engine_protocol.py:101`, PR #304): `dict[object, np.ndarray]` → `dict[datetime.date, np.ndarray]`. The fix is applied at both the property and the Protocol declaration, so all three mixin consumers inherit the same precise contract. Code that indexes `cor[t]` can now be validated statically. This closes weakness #1 from entry #8 with one targeted annotation change.
+- **`Portfolio` composition is clean and complete** (PRs #310, #314, #317): PR #310 eliminated `Portfolio(PortfolioData)` inheritance and replaced it with a `_data: PortfolioData` private field. PR #314 eliminated the double `PortfolioData` construction that was a performance artefact of the initial migration, and fully privatised the construction path. PR #317 declared `_data` as `ClassVar` to remove the sole remaining `type: ignore`. The three PRs together fully resolve the IS-A coupling concern filed across entries #7 and #8 — no `isinstance(p, PortfolioData)` surprise remains.
+- **`_validate_inputs` extraction complete** (PR #308, `optimizer.py`): The six validation checks (date column, shape, column parity, non-positive prices, excessive NaNs, warm-up gap) now live in a `_validate_inputs` helper. `__post_init__` becomes a 3-line summary call. A `Warns` section documents the sliding-window warm-up boundary (PR #318). Weakness #3 from entry #8 is fully resolved.
+- **Streaming API foundation is memory-efficient and mathematically correct** (`_stream.py:1–191`): `_StreamState` carries only 4×(1,N,N) + (N,N) + 8×(N,) arrays — O(N²) total, independent of T. This is in direct contrast to batch `_ewm_corr_numpy`, which holds 14×(T,N,N) arrays at peak (O(T·N²)). The IIR filter state reuse via `lfilter`'s `zi`/`zf` interface is the correct incremental implementation — the module docstring proves that the incremental path is bit-for-bit equivalent to the batch path. `StepResult` is already exported from `basanos.math`, signalling public API intent before `BasanosStream` ships.
+- **`self: _EngineProtocol` pattern documented** (PR #313, `_engine_protocol.py`): The unconventional mixin `self` annotation is now explained in-situ. Risk #2 from entry #8 is closed.
+- **EWMA+shrinkage vs. sliding-window covariance modes documented** (PR #320): The two covariance modes are now described with explicit trade-off language in the docstrings. New contributors no longer need to reverse-engineer the distinction from code.
+
+### Weaknesses
+
+- **`BasanosStream` class does not yet exist**: `_StreamState` and `StepResult` are the types on either side of `BasanosStream.step()`, but the class itself is absent. `StepResult` is already public — users importing it today have no entry point to produce one. The API is half-built: infrastructure committed, consumer class not yet written.
+- **`StepResult.status` typed as `str` rather than `Literal`** (`_stream.py:188`): The four valid values (`"warmup"`, `"zero_signal"`, `"degenerate"`, `"valid"`) are documented and parametrically tested, but the field annotation is `str`. A `Literal["warmup", "zero_signal", "degenerate", "valid"]` annotation would enable type-checker exhaustiveness checking in `match`/`if` chains and flag invalid status strings at assignment sites. One-line fix.
+- **Streaming tests are structural only** (`test_stream.py`, 15 tests): Tests verify shapes, dtypes, field names, mutability, and the public export — but no test calls any computation. There is no test that updating a `_StreamState` with a price row produces numerically correct filter state. The tests are necessary but insufficient for a production-ready streaming path.
+
+### Risks / Technical Debt
+
+- **Streaming API is infrastructure-only**: Two types exist, one is public. `BasanosStream` is absent. Any evolution of `_StreamState` (e.g., new fields for factor model state) before `BasanosStream` ships risks `test_stream.py::test_field_count` becoming a false constraint rather than a useful guard.
+- **Marimo diagnostics notebook has no CI validation** (PR #302, `notebooks/`): The new notebook for `position_status`, `condition_number`, and `solver_residual` diagnostics is not executed in CI. The `make paper` target now compiles the LaTeX paper (resolving the prior concern about `.tex` without a build workflow), but there is no equivalent validation gate for notebooks.
+
+### Score
+
+**9/10** — Unchanged
+
+**Rationale**: All entry #8 weaknesses and risks are resolved within 12 commits spanning one calendar day. The streaming API foundation is the most significant architectural advance since `_iter_solve` — if completed, it closes the longest-standing open item across all entries. The score does not advance because `BasanosStream` itself does not exist (the feature is half-built), `StepResult.status` has an imprecise type annotation, and the streaming test suite covers only structural invariants. These are addressable gaps, not architectural flaws. The `Portfolio` composition trilogy (PRs #310, #314, #317) is the cleanest multi-PR refactor in the journal to date.
+
+---
