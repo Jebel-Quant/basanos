@@ -1143,3 +1143,141 @@ def test_ewm_vol_accumulators_output_shapes():
         assert arr.shape == (n_assets,), f"{name}.shape expected ({n_assets},), got {arr.shape}"
     assert count.shape == (n_assets,)
     assert np.issubdtype(count.dtype, np.integer)
+
+
+# ─── save / load round-trip tests ────────────────────────────────────────────
+
+
+def test_save_creates_npz_file(tmp_path):
+    """save() must create a .npz file at the given path."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+    out = tmp_path / "stream"
+    stream.save(out)
+    assert (tmp_path / "stream.npz").exists()
+
+
+def test_load_returns_basanos_stream(tmp_path):
+    """load() must return a BasanosStream instance."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+    path = tmp_path / "stream.npz"
+    stream.save(path)
+    loaded = BasanosStream.load(path)
+    assert isinstance(loaded, BasanosStream)
+
+
+def test_save_load_assets_preserved(tmp_path):
+    """Loaded stream must have the same assets as the original."""
+    prices, mu, cfg, _asset_names = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+    path = tmp_path / "stream.npz"
+    stream.save(path)
+    loaded = BasanosStream.load(path)
+    assert loaded.assets == stream.assets
+
+
+def test_save_load_cfg_preserved(tmp_path):
+    """Loaded stream must carry the same config as the original."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+    path = tmp_path / "stream.npz"
+    stream.save(path)
+    loaded = BasanosStream.load(path)
+    assert loaded._cfg == stream._cfg
+
+
+def test_save_load_step_count_preserved(tmp_path):
+    """Loaded stream must have the same step_count as the original."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    warmup_len = 50
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    path = tmp_path / "stream.npz"
+    stream.save(path)
+    loaded = BasanosStream.load(path)
+    assert loaded._state.step_count == stream._state.step_count
+
+
+def test_save_load_round_trip_step_output(tmp_path):
+    """Loaded stream must produce identical step() output to the original stream.
+
+    This is the primary correctness guarantee: save+load is a lossless
+    round-trip and the loaded stream continues from the exact same state.
+    """
+    warmup_len = 50
+    prices, mu, cfg, assets = _make_prices_mu(n_total=warmup_len + 5)
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    original = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    path = tmp_path / "stream.npz"
+    original.save(path)
+    loaded = BasanosStream.load(path)
+
+    for step_i in range(5):
+        row_idx = warmup_len + step_i
+        result_orig = original.step(prices_np[row_idx], mu_np[row_idx], prices["date"][row_idx])
+        result_load = loaded.step(prices_np[row_idx], mu_np[row_idx], prices["date"][row_idx])
+
+        np.testing.assert_array_equal(result_orig.cash_position, result_load.cash_position)
+        np.testing.assert_array_equal(result_orig.vola, result_load.vola)
+        assert result_orig.status == result_load.status, (
+            f"Status mismatch at step {step_i}: {result_orig.status!r} != {result_load.status!r}"
+        )
+
+
+def test_save_load_round_trip_matches_engine(tmp_path):
+    """Loaded stream's step() output must match BasanosEngine reference, not just the original stream.
+
+    This verifies that save+load preserves numerical correctness end-to-end,
+    not merely that original and loaded agree with each other.
+    """
+    warmup_len = 50
+    prices, mu, cfg, assets = _make_prices_mu(n_total=warmup_len + 3)
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    path = tmp_path / "stream.npz"
+    stream.save(path)
+    loaded = BasanosStream.load(path)
+
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+    expected_pos = engine.cash_position.select(assets).to_numpy()
+
+    for step_i in range(3):
+        row_idx = warmup_len + step_i
+        result = loaded.step(prices_np[row_idx], mu_np[row_idx], prices["date"][row_idx])
+        np.testing.assert_allclose(
+            result.cash_position,
+            expected_pos[row_idx],
+            rtol=1e-8,
+            equal_nan=True,
+            err_msg=f"Loaded stream mismatch at step {step_i}",
+        )
+
+
+def test_load_missing_key_raises_value_error(tmp_path):
+    """load() must raise ValueError when the archive is missing expected keys."""
+    path = tmp_path / "bad.npz"
+    np.savez(path, some_array=np.zeros(3))
+    with pytest.raises(ValueError, match="missing expected keys"):
+        BasanosStream.load(path)
+
+
+def test_load_file_not_found_raises(tmp_path):
+    """load() must raise FileNotFoundError for a non-existent path."""
+    with pytest.raises(FileNotFoundError):
+        BasanosStream.load(tmp_path / "nonexistent.npz")
+
+
+def test_save_load_no_pickle_required(tmp_path):
+    """Archive must be loadable with allow_pickle=False (no pickle dependency)."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+    path = tmp_path / "stream.npz"
+    stream.save(path)
+    # Must not raise — proves the file contains no pickled objects
+    data = np.load(path, allow_pickle=False)
+    assert "_cfg_json" in data.files
+    assert "_assets_json" in data.files

@@ -51,7 +51,9 @@ giving **O(N^2)** memory independent of the number of timesteps processed.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
+import os
 from typing import Any, Literal
 
 import numpy as np
@@ -552,6 +554,157 @@ class BasanosStream:
             prev_price=prev_price,
             prev_cash_pos=prev_cash_pos,
             step_count=n_rows,
+        )
+        return cls(cfg=cfg, assets=assets, state=state)
+
+    # ------------------------------------------------------------------
+    # save / load
+    # ------------------------------------------------------------------
+
+    def save(self, path: str | os.PathLike[str]) -> None:
+        """Serialise the stream to a compressed NumPy archive (``.npz``).
+
+        All :class:`_StreamState` numpy arrays are saved verbatim.  The
+        :class:`~basanos.math.BasanosConfig` and asset list are encoded as
+        UTF-8 JSON bytes so that no Python pickle is required.
+
+        Parameters
+        ----------
+        path:
+            Destination file path.  ``.npz`` is appended automatically by
+            :func:`numpy.savez_compressed` if the path does not already end
+            with that suffix.
+
+        Examples:
+        --------
+        >>> import tempfile, pathlib, numpy as np
+        >>> import polars as pl
+        >>> from datetime import date, timedelta
+        >>> from basanos.math import BasanosConfig, BasanosStream
+        >>> rng = np.random.default_rng(0)
+        >>> n = 30
+        >>> dates = pl.date_range(
+        ...     date(2024, 1, 1), date(2024, 1, 1) + timedelta(days=n),
+        ...     interval="1d", eager=True,
+        ... )
+        >>> prices = pl.DataFrame({"date": dates, "A": np.cumprod(1 + rng.normal(0, 0.01, n + 1)) * 100})
+        >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(0, 0.5, n + 1)})
+        >>> cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+        >>> stream = BasanosStream.from_warmup(prices.head(n), mu.head(n), cfg)
+        >>> with tempfile.TemporaryDirectory() as d:
+        ...     stream.save(pathlib.Path(d) / "stream")
+        ...     loaded = BasanosStream.load(pathlib.Path(d) / "stream.npz")
+        ...     loaded.assets == stream.assets
+        True
+        """
+        state = self._state
+        cfg_bytes = np.frombuffer(self._cfg.model_dump_json().encode(), dtype=np.uint8)
+        assets_bytes = np.frombuffer(json.dumps(self._assets).encode(), dtype=np.uint8)
+        np.savez_compressed(
+            path,
+            # IIR filter state
+            corr_zi_x=state.corr_zi_x,
+            corr_zi_x2=state.corr_zi_x2,
+            corr_zi_xy=state.corr_zi_xy,
+            corr_zi_w=state.corr_zi_w,
+            corr_count=state.corr_count,
+            # Log-return vol accumulators
+            vola_s_x=state.vola_s_x,
+            vola_s_x2=state.vola_s_x2,
+            vola_s_w=state.vola_s_w,
+            vola_s_w2=state.vola_s_w2,
+            vola_count=state.vola_count,
+            # Pct-return vol accumulators
+            pct_s_x=state.pct_s_x,
+            pct_s_x2=state.pct_s_x2,
+            pct_s_w=state.pct_s_w,
+            pct_s_w2=state.pct_s_w2,
+            pct_count=state.pct_count,
+            # Scalar state (stored as 0-d arrays)
+            profit_variance=np.array(state.profit_variance),
+            prev_price=state.prev_price,
+            prev_cash_pos=state.prev_cash_pos,
+            step_count=np.array(state.step_count),
+            # JSON-encoded metadata (stored as uint8 byte arrays)
+            _cfg_json=cfg_bytes,
+            _assets_json=assets_bytes,
+        )
+
+    @classmethod
+    def load(cls, path: str | os.PathLike[str]) -> BasanosStream:
+        """Load a :class:`BasanosStream` previously saved with :meth:`save`.
+
+        Parameters
+        ----------
+        path:
+            Path to the ``.npz`` archive produced by :meth:`save`.
+
+        Returns:
+        -------
+        BasanosStream
+            A stream instance whose :meth:`step` method is ready to continue
+            from the point at which it was saved.
+
+        Raises:
+        ------
+        FileNotFoundError
+            If *path* does not exist.
+        ValueError
+            If the archive is missing expected keys (i.e. was not created by
+            :meth:`save`).
+        """
+        data = np.load(path, allow_pickle=False)
+        required = {
+            "corr_zi_x",
+            "corr_zi_x2",
+            "corr_zi_xy",
+            "corr_zi_w",
+            "corr_count",
+            "vola_s_x",
+            "vola_s_x2",
+            "vola_s_w",
+            "vola_s_w2",
+            "vola_count",
+            "pct_s_x",
+            "pct_s_x2",
+            "pct_s_w",
+            "pct_s_w2",
+            "pct_count",
+            "profit_variance",
+            "prev_price",
+            "prev_cash_pos",
+            "step_count",
+            "_cfg_json",
+            "_assets_json",
+        }
+        missing = required - set(data.files)
+        if missing:
+            _msg = f"Archive is missing expected keys: {sorted(missing)}"
+            raise ValueError(_msg)
+
+        cfg = BasanosConfig.model_validate_json(bytes(data["_cfg_json"]).decode())
+        assets: list[str] = json.loads(bytes(data["_assets_json"]).decode())
+
+        state = _StreamState(
+            corr_zi_x=data["corr_zi_x"],
+            corr_zi_x2=data["corr_zi_x2"],
+            corr_zi_xy=data["corr_zi_xy"],
+            corr_zi_w=data["corr_zi_w"],
+            corr_count=data["corr_count"],
+            vola_s_x=data["vola_s_x"],
+            vola_s_x2=data["vola_s_x2"],
+            vola_s_w=data["vola_s_w"],
+            vola_s_w2=data["vola_s_w2"],
+            vola_count=data["vola_count"],
+            pct_s_x=data["pct_s_x"],
+            pct_s_x2=data["pct_s_x2"],
+            pct_s_w=data["pct_s_w"],
+            pct_s_w2=data["pct_s_w2"],
+            pct_count=data["pct_count"],
+            profit_variance=float(data["profit_variance"]),
+            prev_price=data["prev_price"],
+            prev_cash_pos=data["prev_cash_pos"],
+            step_count=int(data["step_count"]),
         )
         return cls(cfg=cfg, assets=assets, state=state)
 
