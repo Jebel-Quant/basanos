@@ -40,7 +40,11 @@ from basanos.math import (
     WarmupState,
 )
 from basanos.math._stream import StepResult as StepResultDirect
-from basanos.math._stream import _StreamState
+
+# _StreamState, _ewm_std_from_state, and _ewm_vol_accumulators_from_batch are
+# imported from the private module to enable isolation testing of the state
+# extraction logic independently of the public API.
+from basanos.math._stream import _ewm_std_from_state, _ewm_vol_accumulators_from_batch, _StreamState
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -799,3 +803,249 @@ def test_warmup_state_single_row():
     ws = engine.warmup_state()
     assert isinstance(ws, WarmupState)
     assert ws.prev_cash_pos.shape == (2,)
+
+
+# ─── Isolation tests: from_warmup state extraction ────────────────────────────
+#
+# These tests verify each piece of state extracted by from_warmup independently
+# of the downstream solve step.  A bug in state extraction that happened to
+# cancel out in the solve would be invisible to test_step_matches_basanos_engine
+# but would be caught here.
+
+
+def test_corr_iir_state_is_beta_times_last_filter_output():
+    """corr_zi_x[0] must equal beta_corr * s_x[-1] from scipy lfilter on the warmup data.
+
+    For a first-order IIR filter y[t] = beta*y[t-1] + x[t], the final filter
+    memory (zf) satisfies zf[0] = beta * y[T-1].  from_warmup must store that
+    memory in corr_zi_x so that the next step() call correctly continues the
+    same recurrence.  This test reconstructs s_x[-1] from the same IIR inputs
+    that _ewm_corr_numpy uses and verifies the stored memory matches, without
+    exercising the downstream solve path.
+    """
+    from scipy.signal import lfilter as scipy_lfilter
+
+    prices, mu, cfg, assets = _make_prices_mu(n_total=60)
+    warmup_prices = prices.head(50)
+    warmup_mu = mu.head(50)
+
+    stream = BasanosStream.from_warmup(warmup_prices, warmup_mu, cfg)
+
+    # Independently reconstruct the same IIR inputs that _ewm_corr_numpy uses
+    engine = BasanosEngine(prices=warmup_prices, mu=warmup_mu, cfg=cfg)
+    ret_adj_np = engine.ret_adj.select(assets).to_numpy()  # (T, N)
+
+    beta_corr = cfg.corr / (1.0 + cfg.corr)
+    fin = np.isfinite(ret_adj_np)
+    xt_f = np.where(fin, ret_adj_np, 0.0)
+    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]
+
+    v_x = xt_f[:, :, np.newaxis] * joint_fin
+    v_x2 = (xt_f**2)[:, :, np.newaxis] * joint_fin
+    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]
+    v_w = joint_fin.astype(np.float64)
+
+    filt_a = np.array([1.0, -beta_corr])
+    # Run lfilter without zi (same as _ewm_corr_numpy) to get the last output.
+    # The IIR memory after the last step is: zf[0] = beta * y[-1].
+    s_x = scipy_lfilter([1.0], filt_a, v_x, axis=0)
+    s_x2 = scipy_lfilter([1.0], filt_a, v_x2, axis=0)
+    s_xy = scipy_lfilter([1.0], filt_a, v_xy, axis=0)
+    s_w = scipy_lfilter([1.0], filt_a, v_w, axis=0)
+
+    n = len(assets)
+    expected_zi_x = np.zeros((1, n, n))
+    expected_zi_x2 = np.zeros((1, n, n))
+    expected_zi_xy = np.zeros((1, n, n))
+    expected_zi_w = np.zeros((1, n, n))
+    expected_zi_x[0] = beta_corr * s_x[-1]
+    expected_zi_x2[0] = beta_corr * s_x2[-1]
+    expected_zi_xy[0] = beta_corr * s_xy[-1]
+    expected_zi_w[0] = beta_corr * s_w[-1]
+
+    np.testing.assert_allclose(stream._state.corr_zi_x, expected_zi_x, rtol=1e-12)
+    np.testing.assert_allclose(stream._state.corr_zi_x2, expected_zi_x2, rtol=1e-12)
+    np.testing.assert_allclose(stream._state.corr_zi_xy, expected_zi_xy, rtol=1e-12)
+    np.testing.assert_allclose(stream._state.corr_zi_w, expected_zi_w, rtol=1e-12)
+
+
+def test_corr_count_matches_cumulative_joint_finite():
+    """corr_count must equal the cumulative sum of joint-finite observations.
+
+    Each entry corr_count[i, j] must equal the number of warmup rows at which
+    both asset i and asset j had a finite vol-adjusted return — the same
+    quantity that _ewm_corr_numpy accumulates in its count tensor.
+    """
+    prices, mu, cfg, assets = _make_prices_mu(n_total=60)
+    warmup_prices = prices.head(50)
+    warmup_mu = mu.head(50)
+
+    stream = BasanosStream.from_warmup(warmup_prices, warmup_mu, cfg)
+
+    engine = BasanosEngine(prices=warmup_prices, mu=warmup_mu, cfg=cfg)
+    ret_adj_np = engine.ret_adj.select(assets).to_numpy()  # (T, N)
+
+    fin = np.isfinite(ret_adj_np)  # (T, N)
+    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
+    expected_count = joint_fin.astype(np.int64).sum(axis=0)  # (N, N)
+
+    np.testing.assert_array_equal(stream._state.corr_count, expected_count)
+
+
+def test_pct_accumulators_match_polars_ewm_std():
+    """_ewm_std_from_state(pct_s_*) for the warmup last row must match engine.vola.
+
+    engine.vola uses polars.Expr.ewm_std(com=cfg.vola-1, adjust=True).
+    This test verifies that the pct_s_* accumulators extracted by from_warmup
+    encode exactly the same information, independently of the solve path.
+    A discrepancy here means from_warmup's volatility state is stale relative
+    to the Polars accumulator semantics.
+    """
+    prices, mu, cfg, assets = _make_prices_mu(n_total=60)
+    warmup_prices = prices.head(50)
+    warmup_mu = mu.head(50)
+
+    stream = BasanosStream.from_warmup(warmup_prices, warmup_mu, cfg)
+    state = stream._state
+
+    # Compute volatility from the extracted accumulators
+    stream_vola = _ewm_std_from_state(
+        state.pct_s_x,
+        state.pct_s_x2,
+        state.pct_s_w,
+        state.pct_s_w2,
+        state.pct_count,
+        min_samples=cfg.vola,
+    )
+
+    # Expected: Polars batch ewm_std on the same warmup data (last row)
+    engine = BasanosEngine(prices=warmup_prices, mu=warmup_mu, cfg=cfg)
+    expected_vola = engine.vola.select(assets).to_numpy()[-1]  # last warmup row
+
+    np.testing.assert_allclose(stream_vola, expected_vola, rtol=1e-8, equal_nan=True)
+
+
+def test_vola_log_accumulators_match_batch_ewm_std():
+    """_ewm_std_from_state(vola_s_*) must match an independent batch EWM std of log-returns.
+
+    vola_s_* tracks the EWMA of log-returns for vol-adjustment (min_samples=1).
+    This test verifies the accumulators agree with an independent lfilter
+    computation on the same log-return series, without going through the solve.
+    """
+    from scipy.signal import lfilter as scipy_lfilter
+
+    prices, mu, cfg, assets = _make_prices_mu(n_total=60)
+    warmup_prices = prices.head(50)
+    warmup_mu = mu.head(50)
+
+    stream = BasanosStream.from_warmup(warmup_prices, warmup_mu, cfg)
+    state = stream._state
+
+    # Reconstruct log-returns independently
+    prices_np = warmup_prices.select(assets).to_numpy()
+    n_rows = prices_np.shape[0]
+    log_ret = np.full_like(prices_np, np.nan)
+    if n_rows > 1:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            log_ret[1:] = np.log(prices_np[1:] / prices_np[:-1])
+
+    beta_vola = (cfg.vola - 1) / cfg.vola
+    beta_vola_sq = beta_vola**2
+
+    fin_log = np.isfinite(log_ret).astype(np.float64)
+    log_ret_z = np.where(fin_log.astype(bool), log_ret, 0.0)
+    filt_a = np.array([1.0, -beta_vola])
+    filt_a2 = np.array([1.0, -beta_vola_sq])
+
+    expected_s_x = scipy_lfilter([1.0], filt_a, log_ret_z, axis=0)[-1]
+    expected_s_x2 = scipy_lfilter([1.0], filt_a, log_ret_z**2, axis=0)[-1]
+    expected_s_w = scipy_lfilter([1.0], filt_a, fin_log, axis=0)[-1]
+    expected_s_w2 = scipy_lfilter([1.0], filt_a2, fin_log, axis=0)[-1]
+    expected_count = fin_log.sum(axis=0).astype(int)
+
+    np.testing.assert_allclose(state.vola_s_x, expected_s_x, rtol=1e-12)
+    np.testing.assert_allclose(state.vola_s_x2, expected_s_x2, rtol=1e-12)
+    np.testing.assert_allclose(state.vola_s_w, expected_s_w, rtol=1e-12)
+    np.testing.assert_allclose(state.vola_s_w2, expected_s_w2, rtol=1e-12)
+    np.testing.assert_array_equal(state.vola_count, expected_count)
+
+
+# ─── Tests for the _ewm_vol_accumulators_from_batch helper ────────────────────
+
+
+def test_ewm_vol_accumulators_scalar_recurrence_identity():
+    """Batch helper must match the scalar step-by-step recurrence in step().
+
+    BasanosStream.step() advances the accumulators one row at a time using the
+    scalar recurrence s_x[t] = beta*s_x[t-1] + x[t].  _ewm_vol_accumulators_from_batch
+    achieves the same result in one vectorised lfilter call.  If these two paths
+    diverge, from_warmup's initial state would be inconsistent with the incremental
+    updates in step(), causing a discontinuity at the warmup boundary.
+    """
+    rng = np.random.default_rng(99)
+    t_len = 40
+    n_assets = 3
+    cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+    beta = (cfg.vola - 1) / cfg.vola
+    beta_sq = beta**2
+
+    # Random returns with a few NaNs
+    returns = rng.normal(0, 0.01, (t_len, n_assets))
+    returns[0] = np.nan  # typical leading NaN from pct_change / log-diff
+    returns[5, 1] = np.nan  # sporadic NaN
+
+    # Batch helper (lfilter path)
+    s_x_b, s_x2_b, s_w_b, s_w2_b, count_b = _ewm_vol_accumulators_from_batch(returns, beta, beta_sq)
+
+    # Scalar step-by-step recurrence (mirrors BasanosStream.step)
+    s_x_s = np.zeros(n_assets)
+    s_x2_s = np.zeros(n_assets)
+    s_w_s = np.zeros(n_assets)
+    s_w2_s = np.zeros(n_assets)
+    count_s = np.zeros(n_assets, dtype=int)
+    for row in returns:
+        fin = np.isfinite(row)
+        s_x_s = beta * s_x_s + np.where(fin, row, 0.0)
+        s_x2_s = beta * s_x2_s + np.where(fin, row**2, 0.0)
+        s_w_s = beta * s_w_s + fin.astype(float)
+        s_w2_s = beta_sq * s_w2_s + fin.astype(float)
+        count_s = count_s + fin.astype(int)
+
+    np.testing.assert_allclose(s_x_b, s_x_s, rtol=1e-12)
+    np.testing.assert_allclose(s_x2_b, s_x2_s, rtol=1e-12)
+    np.testing.assert_allclose(s_w_b, s_w_s, rtol=1e-12)
+    np.testing.assert_allclose(s_w2_b, s_w2_s, rtol=1e-12)
+    np.testing.assert_array_equal(count_b, count_s)
+
+
+def test_ewm_vol_accumulators_all_nan_returns_zero_accumulators():
+    """When every return is NaN, all accumulators must be zero and count zero."""
+    n_assets = 4
+    t_len = 20
+    returns = np.full((t_len, n_assets), np.nan)
+    beta = 0.8
+    beta_sq = beta**2
+
+    s_x, s_x2, s_w, s_w2, count = _ewm_vol_accumulators_from_batch(returns, beta, beta_sq)
+
+    np.testing.assert_array_equal(s_x, np.zeros(n_assets))
+    np.testing.assert_array_equal(s_x2, np.zeros(n_assets))
+    np.testing.assert_array_equal(s_w, np.zeros(n_assets))
+    np.testing.assert_array_equal(s_w2, np.zeros(n_assets))
+    np.testing.assert_array_equal(count, np.zeros(n_assets, dtype=int))
+
+
+def test_ewm_vol_accumulators_output_shapes():
+    """Output arrays must have shape (N,) and count must be integer dtype."""
+    n_assets = 5
+    t_len = 15
+    returns = np.random.default_rng(7).normal(0, 0.01, (t_len, n_assets))
+    beta = 0.75
+    beta_sq = beta**2
+
+    s_x, s_x2, s_w, s_w2, count = _ewm_vol_accumulators_from_batch(returns, beta, beta_sq)
+
+    for arr, name in [(s_x, "s_x"), (s_x2, "s_x2"), (s_w, "s_w"), (s_w2, "s_w2")]:
+        assert arr.shape == (n_assets,), f"{name}.shape expected ({n_assets},), got {arr.shape}"
+    assert count.shape == (n_assets,)
+    assert np.issubdtype(count.dtype, np.integer)
