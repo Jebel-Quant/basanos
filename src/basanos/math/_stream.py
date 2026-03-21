@@ -70,6 +70,12 @@ from ._signal import shrink2id
 
 _logger = logging.getLogger(__name__)
 
+#: Increment this when the :func:`BasanosStream.save` archive layout changes in
+#: a backward-incompatible way.  :func:`BasanosStream.load` asserts the stored
+#: value matches before deserialising anything, so callers get a clear error
+#: instead of a silent ``KeyError`` or wrong state.
+_SAVE_FORMAT_VERSION: int = 1
+
 
 @dataclasses.dataclass
 class _StreamState:
@@ -938,6 +944,7 @@ class BasanosStream:
         state = self._state
         np.savez(
             path,
+            format_version=np.array(_SAVE_FORMAT_VERSION),
             corr_zi_x=state.corr_zi_x,
             corr_zi_x2=state.corr_zi_x2,
             corr_zi_xy=state.corr_zi_xy,
@@ -1005,6 +1012,19 @@ class BasanosStream:
             True
         """
         data = np.load(path, allow_pickle=False)
+        if "format_version" not in data:
+            raise ValueError(  # noqa: TRY003
+                "Stream file is missing a format version tag. "
+                "It was written with an incompatible version of BasanosStream. "
+                "Re-generate it via BasanosStream.from_warmup()."
+            )
+        found = int(data["format_version"])
+        if found != _SAVE_FORMAT_VERSION:
+            raise ValueError(  # noqa: TRY003
+                f"Stream file was written with format version {found}, "
+                f"but the current version is {_SAVE_FORMAT_VERSION}. "
+                "Re-generate it via BasanosStream.from_warmup()."
+            )
         cfg = BasanosConfig.model_validate_json(data["cfg_json"].item())
         assets: list[str] = list(data["assets"])
         state = _StreamState(
