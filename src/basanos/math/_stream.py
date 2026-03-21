@@ -759,6 +759,8 @@ class BasanosStream:
                 )
                 n_sub = int(mask.sum())
                 k_eff = min(win_k, win_w, n_sub)
+                if sw_config.max_components is not None:
+                    k_eff = min(k_eff, sw_config.max_components)
                 try:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
                 except (np.linalg.LinAlgError, ValueError) as exc:

@@ -1588,3 +1588,75 @@ def test_sw_save_load_roundtrip():
 
     np.testing.assert_array_equal(result_orig.cash_position, result_loaded.cash_position)
     assert result_orig.status == result_loaded.status
+
+
+def test_sw_max_components_caps_k_eff():
+    """max_components must cap the effective SVD rank passed to FactorModel.from_returns."""
+    from basanos.math._factor_model import FactorModel
+
+    prices, mu, _, assets = _make_prices_mu(n_total=80)
+    warmup_len = 50
+    window = 20
+
+    cfg = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=window, n_factors=10, max_components=2),
+    )
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    captured_k: list[int] = []
+    original_from_returns = FactorModel.from_returns
+
+    def capture_k(returns, k):
+        captured_k.append(k)
+        return original_from_returns(returns, k)
+
+    with patch("basanos.math._stream.FactorModel.from_returns", side_effect=capture_k):
+        stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+
+    assert len(captured_k) == 1, "from_returns should be called exactly once"
+    assert captured_k[0] <= 2, f"k_eff must be capped at max_components=2, got {captured_k[0]}"
+
+
+def test_sw_max_components_none_equals_no_cap():
+    """max_components=None must produce the same result as omitting max_components."""
+    prices, mu, _, assets = _make_prices_mu(n_total=80)
+    warmup_len = 50
+    window = 20
+
+    cfg_explicit_none = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=window, n_factors=2, max_components=None),
+    )
+    cfg_default = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=window, n_factors=2),
+    )
+
+    stream_explicit = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg_explicit_none)
+    stream_default = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg_default)
+
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+    step_date = prices["date"][warmup_len]
+
+    result_explicit = stream_explicit.step(prices_np[warmup_len], mu_np[warmup_len], step_date)
+    result_default = stream_default.step(prices_np[warmup_len], mu_np[warmup_len], step_date)
+
+    np.testing.assert_array_equal(result_explicit.cash_position, result_default.cash_position)
+    assert result_explicit.status == result_default.status
