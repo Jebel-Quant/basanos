@@ -34,7 +34,7 @@ class _DiagnosticsMixin:
     * ``assets`` — list of asset column names
     * ``prices`` — Polars DataFrame with a ``'date'`` column
     * ``mu`` — Polars DataFrame of expected-return signals
-    * ``_iter_matrices()`` — generator yielding ``(i, t, mask, matrix)``
+    * ``_iter_matrices()`` — generator yielding ``(i, t, mask, bundle)``
     """
 
     @property
@@ -51,11 +51,11 @@ class _DiagnosticsMixin:
             pl.DataFrame: Two-column DataFrame ``{'date': ..., 'condition_number': ...}``.
         """
         kappas: list[float] = []
-        for _i, _t, _mask, matrix in self._iter_matrices():
-            if matrix is None:
+        for _i, _t, _mask, bundle in self._iter_matrices():
+            if bundle is None:
                 kappas.append(float(np.nan))
                 continue
-            _v, mat = valid(matrix)
+            _v, mat = valid(bundle.matrix)
             if not _v.any():
                 kappas.append(float(np.nan))
                 continue
@@ -85,11 +85,11 @@ class _DiagnosticsMixin:
             pl.DataFrame: Two-column DataFrame ``{'date': ..., 'effective_rank': ...}``.
         """
         ranks: list[float] = []
-        for _i, _t, _mask, matrix in self._iter_matrices():
-            if matrix is None:
+        for _i, _t, _mask, bundle in self._iter_matrices():
+            if bundle is None:
                 ranks.append(float(np.nan))
                 continue
-            _v, mat = valid(matrix)
+            _v, mat = valid(bundle.matrix)
             if not _v.any():
                 ranks.append(float(np.nan))
                 continue
@@ -126,10 +126,11 @@ class _DiagnosticsMixin:
         mu_np = self.mu.select(assets).to_numpy()
 
         residuals: list[float] = []
-        for i, t, mask, matrix in self._iter_matrices():
-            if matrix is None:
+        for i, t, mask, bundle in self._iter_matrices():
+            if bundle is None:
                 residuals.append(float(np.nan))
                 continue
+            matrix = bundle.matrix
             expected_mu = np.nan_to_num(mu_np[i][mask])
             if np.allclose(expected_mu, 0.0):
                 residuals.append(0.0)
@@ -187,9 +188,10 @@ class _DiagnosticsMixin:
         n_assets = len(assets)
         util_np = np.full((self.prices.height, n_assets), np.nan)
 
-        for i, t, mask, matrix in self._iter_matrices():
-            if matrix is None:
+        for i, t, mask, bundle in self._iter_matrices():
+            if bundle is None:
                 continue
+            matrix = bundle.matrix
             expected_mu = np.nan_to_num(mu_np[i][mask])
             if np.allclose(expected_mu, 0.0):
                 util_np[i, mask] = 0.0
