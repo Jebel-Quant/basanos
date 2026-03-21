@@ -103,6 +103,7 @@ line-ending = "auto"
 [lint.per-file-ignores]
 # Test files - allow assert statements and subprocess calls for testing
 "**/tests/**/*.py" = [
+    "D102",     # Allow test methods without docstrings
     "S101",     # Allow assert statements in tests
     "S603",     # Allow subprocess calls without shell=False check
     "S607",     # Allow starting processes with partial paths in tests
