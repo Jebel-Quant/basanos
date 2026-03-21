@@ -24,6 +24,13 @@ post-validate:: typecheck ## run type checking as part of make validate
 
 ## Custom targets
 
+##@ Quality
+
+.PHONY: licenses
+licenses: install ## run license compliance scan (fail on GPL, LGPL, AGPL)
+	@printf "${BLUE}[INFO] Running license compliance scan...${RESET}\n"
+	@${UV_BIN} run --with pip-licenses pip-licenses --fail-on="GPL;LGPL;AGPL"
+
 ##@ Paper
 
 .PHONY: paper
