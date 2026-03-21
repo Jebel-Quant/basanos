@@ -442,9 +442,9 @@ class Portfolio:
             [0.0, 0.002, 0.003]
         """
         assets = [c for c in self.cashposition.columns if c != "date" and self.cashposition[c].dtype.is_numeric()]
-        daily_abs_chg = (pl.sum_horizontal(pl.col(c).diff().abs().fill_null(0.0) for c in assets) / self.aum).alias(
-            "turnover"
-        )
+        daily_abs_chg = (
+            pl.sum_horizontal(pl.col(c).diff().abs().fill_null(0.0).fill_nan(0.0) for c in assets) / self.aum
+        ).alias("turnover")
         cols: list[str | pl.Expr] = []
         if "date" in self.cashposition.columns:
             cols.append("date")
