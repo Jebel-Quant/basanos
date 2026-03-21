@@ -318,13 +318,14 @@ cfg_engine.config_report.save("output/config_with_sweep")
 
 ## Notebooks
 
-Four interactive [Marimo](https://marimo.io/) notebooks live under
+Five interactive [Marimo](https://marimo.io/) notebooks live under
 `book/marimo/notebooks/`. They are self-contained — each embeds its own
 dependency list ([PEP 723](https://peps.python.org/pep-0723/)), so `uv run`
 installs everything automatically.
 
 | Notebook | Description | Key concepts |
 |---|---|---|
+| **[`end_to_end.py`](book/marimo/notebooks/end_to_end.py)** | **Complete worked example from raw prices to HTML report using realistic synthetic equity data** | Data preparation, config selection with shrinkage guidance, engine instantiation, HTML report generation, trading cost analysis |
 | [`demo.py`](book/marimo/notebooks/demo.py) | End-to-end interactive demo of the Basanos optimizer | Signal generation, correlation-aware position sizing, portfolio analytics, reactive UI |
 | [`ewm_benchmark.py`](book/marimo/notebooks/ewm_benchmark.py) | Validates and benchmarks the NumPy/SciPy EWM correlation implementation against the legacy pandas version | EWM, `scipy.signal.lfilter`, NaN handling, performance comparison |
 | [`shrinkage_guide.py`](book/marimo/notebooks/shrinkage_guide.py) | Theoretical and empirical guide to tuning the shrinkage parameter λ | Marchenko-Pastur law, linear shrinkage `C(λ) = λ·C_EWMA + (1−λ)·I`, Sharpe vs. λ sweep, turnover analysis |
@@ -337,12 +338,13 @@ installs everything automatically.
 make marimo
 
 # Open a single notebook for interactive editing
-marimo edit book/marimo/notebooks/demo.py
+marimo edit book/marimo/notebooks/end_to_end.py
 
 # Run a single notebook read-only / presentation mode
-marimo run book/marimo/notebooks/demo.py
+marimo run book/marimo/notebooks/end_to_end.py
 
 # Self-contained via uv — no prior install needed
+uv run book/marimo/notebooks/end_to_end.py
 uv run book/marimo/notebooks/demo.py
 uv run book/marimo/notebooks/ewm_benchmark.py
 uv run book/marimo/notebooks/shrinkage_guide.py
