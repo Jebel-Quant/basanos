@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 if TYPE_CHECKING:
@@ -803,3 +804,139 @@ class BasanosStream:
             status=status,
             vola=vola_vec,
         )
+
+    def save(self, path: str | os.PathLike[str]) -> None:
+        """Serialise the stream to a ``.npz`` archive at *path*.
+
+        All :class:`_StreamState` arrays, the configuration, and the asset
+        list are written in a single :func:`numpy.savez` call.  A stream
+        restored via :meth:`load` produces bit-for-bit identical
+        :meth:`step` output.
+
+        Args:
+            path: Destination file path.  :func:`numpy.savez` appends
+                ``.npz`` automatically when the suffix is absent.
+
+        Examples:
+            >>> import tempfile, pathlib, numpy as np
+            >>> import polars as pl
+            >>> from datetime import date, timedelta
+            >>> from basanos.math import BasanosConfig, BasanosStream
+            >>> rng = np.random.default_rng(0)
+            >>> n = 60
+            >>> end = date(2024, 1, 1) + timedelta(days=n - 1)
+            >>> dates = pl.date_range(
+            ...     date(2024, 1, 1), end, interval="1d", eager=True
+            ... )
+            >>> prices = pl.DataFrame({
+            ...     "date": dates,
+            ...     "A": np.cumprod(1 + rng.normal(0.001, 0.02, n)) * 100.0,
+            ...     "B": np.cumprod(1 + rng.normal(0.001, 0.02, n)) * 150.0,
+            ... })
+            >>> mu = pl.DataFrame({
+            ...     "date": dates,
+            ...     "A": rng.normal(0, 0.5, n),
+            ...     "B": rng.normal(0, 0.5, n),
+            ... })
+            >>> cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+            >>> stream = BasanosStream.from_warmup(prices, mu, cfg)
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     p = pathlib.Path(tmp) / "stream.npz"
+            ...     stream.save(p)
+            ...     restored = BasanosStream.load(p)
+            ...     restored.assets == stream.assets
+            True
+        """
+        state = self._state
+        np.savez(
+            path,
+            corr_zi_x=state.corr_zi_x,
+            corr_zi_x2=state.corr_zi_x2,
+            corr_zi_xy=state.corr_zi_xy,
+            corr_zi_w=state.corr_zi_w,
+            corr_count=state.corr_count,
+            vola_s_x=state.vola_s_x,
+            vola_s_x2=state.vola_s_x2,
+            vola_s_w=state.vola_s_w,
+            vola_s_w2=state.vola_s_w2,
+            vola_count=state.vola_count,
+            pct_s_x=state.pct_s_x,
+            pct_s_x2=state.pct_s_x2,
+            pct_s_w=state.pct_s_w,
+            pct_s_w2=state.pct_s_w2,
+            pct_count=state.pct_count,
+            profit_variance=np.array(state.profit_variance),
+            prev_price=state.prev_price,
+            prev_cash_pos=state.prev_cash_pos,
+            step_count=np.array(state.step_count),
+            cfg_json=np.array(self._cfg.model_dump_json()),
+            assets=np.array(self._assets),
+        )
+
+    @classmethod
+    def load(cls, path: str | os.PathLike[str]) -> BasanosStream:
+        """Restore a stream previously saved with :meth:`save`.
+
+        Args:
+            path: Path to a ``.npz`` archive written by :meth:`save`.
+
+        Returns:
+            A :class:`BasanosStream` whose :meth:`step` output is
+            bit-for-bit identical to the original stream at the time
+            :meth:`save` was called.
+
+        Examples:
+            >>> import tempfile, pathlib, numpy as np
+            >>> import polars as pl
+            >>> from datetime import date, timedelta
+            >>> from basanos.math import BasanosConfig, BasanosStream
+            >>> rng = np.random.default_rng(1)
+            >>> n = 60
+            >>> end = date(2024, 1, 1) + timedelta(days=n - 1)
+            >>> dates = pl.date_range(
+            ...     date(2024, 1, 1), end, interval="1d", eager=True
+            ... )
+            >>> prices = pl.DataFrame({
+            ...     "date": dates,
+            ...     "A": np.cumprod(1 + rng.normal(0.001, 0.02, n)) * 100.0,
+            ...     "B": np.cumprod(1 + rng.normal(0.001, 0.02, n)) * 150.0,
+            ... })
+            >>> mu = pl.DataFrame({
+            ...     "date": dates,
+            ...     "A": rng.normal(0, 0.5, n),
+            ...     "B": rng.normal(0, 0.5, n),
+            ... })
+            >>> cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+            >>> stream = BasanosStream.from_warmup(prices, mu, cfg)
+            >>> with tempfile.TemporaryDirectory() as tmp:
+            ...     p = pathlib.Path(tmp) / "stream.npz"
+            ...     stream.save(p)
+            ...     restored = BasanosStream.load(p)
+            ...     restored.assets == stream.assets
+            True
+        """
+        data = np.load(path, allow_pickle=False)
+        cfg = BasanosConfig.model_validate_json(data["cfg_json"].item())
+        assets: list[str] = list(data["assets"])
+        state = _StreamState(
+            corr_zi_x=data["corr_zi_x"],
+            corr_zi_x2=data["corr_zi_x2"],
+            corr_zi_xy=data["corr_zi_xy"],
+            corr_zi_w=data["corr_zi_w"],
+            corr_count=data["corr_count"],
+            vola_s_x=data["vola_s_x"],
+            vola_s_x2=data["vola_s_x2"],
+            vola_s_w=data["vola_s_w"],
+            vola_s_w2=data["vola_s_w2"],
+            vola_count=data["vola_count"],
+            pct_s_x=data["pct_s_x"],
+            pct_s_x2=data["pct_s_x2"],
+            pct_s_w=data["pct_s_w"],
+            pct_s_w2=data["pct_s_w2"],
+            pct_count=data["pct_count"],
+            profit_variance=float(data["profit_variance"]),
+            prev_price=data["prev_price"],
+            prev_cash_pos=data["prev_cash_pos"],
+            step_count=int(data["step_count"]),
+        )
+        return cls(cfg=cfg, assets=assets, state=state)

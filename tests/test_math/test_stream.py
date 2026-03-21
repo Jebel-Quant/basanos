@@ -1356,3 +1356,67 @@ def test_step_singular_solve_yields_degenerate():
 
     assert result.status == "degenerate"
     assert np.all(result.cash_position == 0.0)
+
+
+# ─── save / load round-trip ───────────────────────────────────────────────────
+
+
+def test_save_load_roundtrip_produces_identical_step_output():
+    """A stream restored from disk must produce bit-for-bit identical step() output."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, assets = _make_prices_mu()
+    warmup_len = 50
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    stream_orig = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "stream.npz"
+        stream_orig.save(p)
+        stream_loaded = BasanosStream.load(p)
+
+    step_date = prices["date"][warmup_len]
+    result_orig = stream_orig.step(prices_np[warmup_len], mu_np[warmup_len], step_date)
+    result_loaded = stream_loaded.step(prices_np[warmup_len], mu_np[warmup_len], step_date)
+
+    np.testing.assert_array_equal(result_orig.cash_position, result_loaded.cash_position)
+    np.testing.assert_array_equal(result_orig.vola, result_loaded.vola)
+    assert result_orig.status == result_loaded.status
+
+
+def test_save_load_preserves_assets_and_cfg():
+    """Restored stream must have the same assets list and config as the original."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, _assets = _make_prices_mu()
+
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "stream.npz"
+        stream.save(p)
+        restored = BasanosStream.load(p)
+
+    assert restored.assets == stream.assets
+    assert restored._cfg == stream._cfg
+
+
+def test_save_appends_npz_suffix():
+    """`save` must write a readable file even when path has no .npz suffix."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, _assets = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p_no_suffix = pathlib.Path(tmp) / "stream"
+        stream.save(p_no_suffix)
+        # numpy appends .npz when the suffix is absent
+        restored = BasanosStream.load(pathlib.Path(tmp) / "stream.npz")
+
+    assert restored.assets == stream.assets
