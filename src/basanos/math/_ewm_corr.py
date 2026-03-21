@@ -7,8 +7,126 @@ be read, tested, and profiled in isolation without loading the full
 engine machinery.
 """
 
+import dataclasses
+
 import numpy as np
 from scipy.signal import lfilter
+
+
+@dataclasses.dataclass
+class _EwmCorrState:
+    """Final IIR filter memory after a full EWM correlation pass.
+
+    Returned alongside the correlation tensor by
+    :func:`_ewm_corr_with_final_state`.  Pass these values as the ``zi``
+    arguments to ``scipy.signal.lfilter`` on the next step to continue the
+    IIR recurrence without replaying history.
+
+    For a first-order filter ``a = [1, -beta]``, ``b = [1]``, the final
+    state after processing the last sample ``y[-1]`` is ``zf[0] = beta *
+    y[-1]``.  Each ``corr_zi_*`` field stores exactly that quantity,
+    shaped ``(1, N, N)`` to match the ``zi`` format expected by
+    ``lfilter(..., axis=0)``.
+
+    Attributes:
+        corr_zi_x:  Final state for the ``x``-accumulator; shape ``(1, N, N)``.
+        corr_zi_x2: Final state for the ``x²``-accumulator; shape ``(1, N, N)``.
+        corr_zi_xy: Final state for the ``xy``-accumulator; shape ``(1, N, N)``.
+        corr_zi_w:  Final state for the weight-accumulator; shape ``(1, N, N)``.
+        count:      Cumulative joint-finite observation count per asset pair
+                    at the last timestep; shape ``(N, N)`` dtype int64.
+    """
+
+    corr_zi_x: np.ndarray  # (1, N, N)
+    corr_zi_x2: np.ndarray  # (1, N, N)
+    corr_zi_xy: np.ndarray  # (1, N, N)
+    corr_zi_w: np.ndarray  # (1, N, N)
+    count: np.ndarray  # (N, N) int64
+
+
+def _ewm_corr_with_final_state(
+    data: np.ndarray,
+    com: int,
+    min_periods: int,
+    min_corr_denom: float = 1e-14,
+) -> tuple[np.ndarray, _EwmCorrState]:
+    """Compute per-row EWM correlation matrices and return the final IIR state.
+
+    Identical to :func:`_ewm_corr_numpy` but also returns the final filter
+    memory as an :class:`_EwmCorrState`.  Callers that need both the
+    correlation tensor *and* the IIR state (e.g.
+    :meth:`BasanosEngine.warmup_state`) should call this function once rather
+    than calling :func:`_ewm_corr_numpy` and rerunning ``lfilter`` separately
+    to extract the state.
+
+    Args:
+        data: Float array of shape ``(T, N)`` — typically volatility-adjusted
+            log returns.
+        com: EWM centre-of-mass.
+        min_periods: Minimum joint-finite observations before a value is
+            reported.
+        min_corr_denom: Guard threshold for the correlation denominator.
+
+    Returns:
+        tuple: ``(result, state)`` where ``result`` has shape ``(T, N, N)``
+        (see :func:`_ewm_corr_numpy`) and ``state`` is the final
+        :class:`_EwmCorrState`.
+    """
+    _t_len, n_assets = data.shape
+    beta = com / (1.0 + com)
+
+    fin = np.isfinite(data)
+    xt_f = np.where(fin, data, 0.0)
+    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]
+
+    v_x = xt_f[:, :, np.newaxis] * joint_fin
+    v_x2 = (xt_f * xt_f)[:, :, np.newaxis] * joint_fin
+    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]
+    v_w = joint_fin.astype(np.float64)
+
+    filt_a = np.array([1.0, -beta])
+    s_x = lfilter([1.0], filt_a, v_x, axis=0)
+    s_x2 = lfilter([1.0], filt_a, v_x2, axis=0)
+    s_xy = lfilter([1.0], filt_a, v_xy, axis=0)
+    s_w = lfilter([1.0], filt_a, v_w, axis=0)
+
+    count = np.cumsum(joint_fin, axis=0)
+
+    # Final IIR state: for b=[1], a=[1,-beta] in direct-form-II-transposed,
+    # the filter memory after sample y[-1] is zf[0] = beta * y[-1].
+    # Shaped (1, N, N) to match the zi format expected by lfilter.
+    iir_state = _EwmCorrState(
+        corr_zi_x=(beta * s_x[-1])[np.newaxis],
+        corr_zi_x2=(beta * s_x2[-1])[np.newaxis],
+        corr_zi_xy=(beta * s_xy[-1])[np.newaxis],
+        corr_zi_w=(beta * s_w[-1])[np.newaxis],
+        count=count[-1].astype(np.int64),
+    )
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pos_w = s_w > 0
+        ewm_x = np.where(pos_w, s_x / s_w, np.nan)
+        ewm_y = np.where(pos_w, s_x.swapaxes(1, 2) / s_w, np.nan)
+        ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)
+        ewm_y2 = np.where(pos_w, s_x2.swapaxes(1, 2) / s_w, np.nan)
+        ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)
+
+    var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
+    var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
+    denom = np.sqrt(var_x * var_y)
+    cov = ewm_xy - ewm_x * ewm_y
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        result = np.where(denom > min_corr_denom, cov / denom, np.nan)
+
+    result = np.clip(result, -1.0, 1.0)
+    result[count < min_periods] = np.nan
+
+    diag_idx = np.arange(n_assets)
+    diag_count = count[:, diag_idx, diag_idx]
+    result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
+
+    return result, iir_state
 
 
 def _ewm_corr_numpy(
@@ -61,66 +179,5 @@ def _ewm_corr_numpy(
         RAM.  Reduce T or N before calling this function when working with
         large universes.
     """
-    _t_len, n_assets = data.shape
-    beta = com / (1.0 + com)
-
-    fin = np.isfinite(data)  # (T, N) bool
-    xt_f = np.where(fin, data, 0.0)  # (T, N) float - zeroed where not finite
-
-    # joint_fin[t, i, j] = True iff assets i and j are both finite at t
-    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
-
-    # Build per-pair input sequences for the recurrence s[t] = beta*s[t-1] + v[t].
-    #
-    # v_x[t, i, j]  = x_i[t]    where pair (i,j) jointly finite, else 0
-    # v_x2[t, i, j] = x_i[t]^2  where jointly finite, else 0
-    # v_xy[t, i, j] = x_i[t]*x_j[t]  (xt_f is 0 for non-finite, so implicit mask)
-    # v_w[t, i, j]  = 1          where jointly finite, else 0  (weight indicator)
-    #
-    # By symmetry v_x[t,j,i] carries x_j[t] for pair (i,j), so s_x.swapaxes(1,2)
-    # gives the EWM numerator of x_j without a separate v_y array.
-    v_x = xt_f[:, :, np.newaxis] * joint_fin  # (T, N, N)
-    v_x2 = (xt_f * xt_f)[:, :, np.newaxis] * joint_fin  # (T, N, N)
-    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]  # (T, N, N)
-    v_w = joint_fin.astype(np.float64)  # (T, N, N)
-
-    # Solve the IIR recurrence for every (i, j) pair in parallel.
-    # lfilter([1], [1, -beta], v, axis=0) computes s[t] = beta*s[t-1] + v[t].
-    filt_a = np.array([1.0, -beta])
-    s_x = lfilter([1.0], filt_a, v_x, axis=0)  # (T, N, N)
-    s_x2 = lfilter([1.0], filt_a, v_x2, axis=0)  # (T, N, N)
-    s_xy = lfilter([1.0], filt_a, v_xy, axis=0)  # (T, N, N)
-    s_w = lfilter([1.0], filt_a, v_w, axis=0)  # (T, N, N)
-
-    # Joint finite observation count per pair at each timestep (for min_periods)
-    count = np.cumsum(joint_fin, axis=0)  # (T, N, N) int64
-
-    # EWM means: running numerator / running weight denominator.
-    # s_x.swapaxes(1,2)[t,i,j] = s_x[t,j,i] = EWM numerator of x_j for pair (i,j).
-    with np.errstate(divide="ignore", invalid="ignore"):
-        pos_w = s_w > 0
-        ewm_x = np.where(pos_w, s_x / s_w, np.nan)  # EWM(x_i)
-        ewm_y = np.where(pos_w, s_x.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j)
-        ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)  # EWM(x_i^2)
-        ewm_y2 = np.where(pos_w, s_x2.swapaxes(1, 2) / s_w, np.nan)  # EWM(x_j^2)
-        ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)  # EWM(x_i*x_j)
-
-    var_x = np.maximum(ewm_x2 - ewm_x * ewm_x, 0.0)
-    var_y = np.maximum(ewm_y2 - ewm_y * ewm_y, 0.0)
-    denom = np.sqrt(var_x * var_y)
-    cov = ewm_xy - ewm_x * ewm_y
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        result = np.where(denom > min_corr_denom, cov / denom, np.nan)
-
-    result = np.clip(result, -1.0, 1.0)
-
-    # Apply min_periods mask for all pairs
-    result[count < min_periods] = np.nan
-
-    # Diagonal is exactly 1.0 where the asset has sufficient observations
-    diag_idx = np.arange(n_assets)
-    diag_count = count[:, diag_idx, diag_idx]  # (T, N)
-    result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
-
+    result, _ = _ewm_corr_with_final_state(data, com, min_periods, min_corr_denom)
     return result

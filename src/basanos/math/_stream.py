@@ -52,7 +52,10 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
+
+if TYPE_CHECKING:
+    from ._ewm_corr import _EwmCorrState
 
 import numpy as np
 import polars as pl
@@ -469,31 +472,17 @@ class BasanosStream:
         n_rows = prices.height
         prices_np = prices.select(assets).to_numpy()  # (n_rows, n_assets)
 
-        # 3. Extract IIR filter state for EWM correlation -------------------
-        # This mirrors the internals of _ewm_corr_numpy exactly.
-        # The lfilter zi format requires shape (1, N, N) for a first-order filter.
-        beta_corr: float = cfg.corr / (1.0 + cfg.corr)
-        ret_adj_np: np.ndarray = engine.ret_adj.select(assets).to_numpy()  # (n_rows, n_assets)
-
-        fin = np.isfinite(ret_adj_np)  # (n_rows, n_assets)
-        xt_f = np.where(fin, ret_adj_np, 0.0)  # (n_rows, n_assets)
-        joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (n_rows, n_assets, n_assets)
-
-        # Per-pair IIR input sequences (identical to _ewm_corr_numpy)
-        v_x = xt_f[:, :, np.newaxis] * joint_fin  # (n_rows, n_assets, n_assets)
-        v_x2 = (xt_f**2)[:, :, np.newaxis] * joint_fin  # (n_rows, n_assets, n_assets)
-        v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]  # (n_rows, n_assets, n_assets)
-        v_w = joint_fin.astype(np.float64)  # (n_rows, n_assets, n_assets)
-
-        filt_a_corr = np.array([1.0, -beta_corr])
-        zi0 = np.zeros((1, n_assets, n_assets))
-        # lfilter returns (y, zf); zf has shape (1, n_assets, n_assets) and is
-        # the final filter state — pass back as zi on the next step.
-        _, corr_zi_x = lfilter([1.0], filt_a_corr, v_x, axis=0, zi=zi0)
-        _, corr_zi_x2 = lfilter([1.0], filt_a_corr, v_x2, axis=0, zi=zi0)
-        _, corr_zi_xy = lfilter([1.0], filt_a_corr, v_xy, axis=0, zi=zi0)
-        _, corr_zi_w = lfilter([1.0], filt_a_corr, v_w, axis=0, zi=zi0)
-        corr_count: np.ndarray = np.sum(joint_fin.astype(np.int64), axis=0)  # (n_assets, n_assets)
+        # 3. Extract IIR filter state and profit-variance from WarmupState ----
+        # warmup_state() calls _ewm_corr_with_final_state internally, so the
+        # IIR filter state is captured from the same single pass that computes
+        # the correlation tensor — no second lfilter sweep needed here.
+        ws = engine.warmup_state()
+        iir = cast("_EwmCorrState", ws.corr_iir_state)  # guaranteed: EwmaShrinkConfig was validated above
+        corr_zi_x = iir.corr_zi_x
+        corr_zi_x2 = iir.corr_zi_x2
+        corr_zi_xy = iir.corr_zi_xy
+        corr_zi_w = iir.corr_zi_w
+        corr_count: np.ndarray = iir.count
 
         # 4. Derive EWMA volatility accumulators (vectorised) ---------------
         # Both log-return (for vol_adj) and pct-return (for vola) use the
@@ -522,11 +511,7 @@ class BasanosStream:
             pct_ret, beta_vola, beta_vola_sq
         )
 
-        # 5. Replay profit_variance -----------------------------------------
-        # Delegate to BasanosEngine.warmup_state() to obtain the final
-        # profit_variance and prev_cash_pos without coupling to the private
-        # _iter_solve generator.
-        ws = engine.warmup_state()
+        # 5. Extract profit_variance and prev_cash_pos from WarmupState ------
         profit_variance: float = ws.profit_variance
         prev_cash_pos: np.ndarray = ws.prev_cash_pos
         prev_price: np.ndarray = prices_np[-1].copy()

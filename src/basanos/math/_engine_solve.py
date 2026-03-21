@@ -16,6 +16,7 @@ import numpy as np
 
 from ..exceptions import SingularMatrixError
 from ._config import EwmaShrinkConfig, SlidingWindowConfig
+from ._ewm_corr import _ewm_corr_with_final_state, _EwmCorrState
 from ._factor_model import FactorModel
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id
@@ -40,10 +41,16 @@ class WarmupState:
         prev_cash_pos: Cash positions at the last warmup row, shape
             ``(n_assets,)``.  ``NaN`` for assets that were still in their
             own warmup period.
+        corr_iir_state: Final IIR filter memory from the EWM correlation pass,
+            or ``None`` when using :class:`~basanos.math.SlidingWindowConfig`.
+            :meth:`BasanosStream.from_warmup` reads these arrays to seed the
+            incremental ``lfilter`` state without a second pass over the
+            warmup data.
     """
 
     profit_variance: float
     prev_cash_pos: np.ndarray
+    corr_iir_state: _EwmCorrState | None = dataclasses.field(default=None)
 
 
 class _SolveMixin:
@@ -305,6 +312,8 @@ class _SolveMixin:
         n_rows = self.prices.height
         prices_np = self.prices.select(assets).to_numpy()
         vola_np = self.vola.select(assets).to_numpy()
+        mu_np = self.mu.select(assets).to_numpy()
+        dates = self.prices["date"].to_list()
 
         returns_num = np.zeros((n_rows, n_assets), dtype=float)
         if n_rows > 1:
@@ -316,20 +325,79 @@ class _SolveMixin:
         risk_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
         cash_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
 
-        for i, _t, mask, pos, _status in self._iter_solve():
-            if i > 0:
-                ret_mask = np.isfinite(returns_num[i]) & mask
-                if ret_mask.any():
+        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
+            # Single pass: compute correlation tensor and capture final IIR state
+            # together, so from_warmup() can read the IIR state without a second
+            # sweep over the warmup data.
+            ret_adj_np = self.ret_adj.select(assets).to_numpy()
+            tensor, iir_state = _ewm_corr_with_final_state(
+                ret_adj_np,
+                com=self.cfg.corr,
+                min_periods=self.cfg.corr,
+                min_corr_denom=self.cfg.min_corr_denom,
+            )
+            cor = {dates[t]: tensor[t] for t in range(n_rows)}
+
+            for i, t in enumerate(dates):
+                mask = np.isfinite(prices_np[i])
+                if i > 0:
+                    ret_mask = np.isfinite(returns_num[i]) & mask
+                    if ret_mask.any():
+                        with np.errstate(invalid="ignore"):
+                            cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
+                        lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
+                        rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
+                        profit = float(lhs @ rhs)
+                        profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
+                if not mask.any():
+                    continue
+                corr_n = cor[t]
+                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+                expected_mu = np.nan_to_num(mu_np[i][mask])
+                if np.allclose(expected_mu, 0.0):
+                    risk_pos_np[i, mask] = 0.0
                     with np.errstate(invalid="ignore"):
-                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
-                    lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
-                    rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
-                    profit = float(lhs @ rhs)
-                    profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
-            if pos is not None:
+                        cash_pos_np[i, mask] = 0.0
+                    continue
+                try:
+                    denom = inv_a_norm(expected_mu, matrix)
+                except SingularMatrixError:
+                    denom = float("nan")
+                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
+                    risk_pos_np[i, mask] = 0.0
+                    with np.errstate(invalid="ignore"):
+                        cash_pos_np[i, mask] = 0.0
+                    continue
+                try:
+                    pos = solve(matrix, expected_mu) / denom
+                except SingularMatrixError:
+                    risk_pos_np[i, mask] = 0.0
+                    with np.errstate(invalid="ignore"):
+                        cash_pos_np[i, mask] = 0.0
+                    continue
                 risk_pos_np[i, mask] = pos / profit_variance
                 with np.errstate(invalid="ignore"):
                     cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
+        else:
+            iir_state = None
+            for i, _t, mask, pos, _status in self._iter_solve():
+                if i > 0:
+                    ret_mask = np.isfinite(returns_num[i]) & mask
+                    if ret_mask.any():
+                        with np.errstate(invalid="ignore"):
+                            cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
+                        lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
+                        rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
+                        profit = float(lhs @ rhs)
+                        profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
+                if pos is not None:
+                    risk_pos_np[i, mask] = pos / profit_variance
+                    with np.errstate(invalid="ignore"):
+                        cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
 
         prev_cash_pos = cash_pos_np[-1].copy()
-        return WarmupState(profit_variance=profit_variance, prev_cash_pos=prev_cash_pos)
+        return WarmupState(
+            profit_variance=profit_variance,
+            prev_cash_pos=prev_cash_pos,
+            corr_iir_state=iir_state,
+        )

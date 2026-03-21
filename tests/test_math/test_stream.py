@@ -1143,3 +1143,216 @@ def test_ewm_vol_accumulators_output_shapes():
         assert arr.shape == (n_assets,), f"{name}.shape expected ({n_assets},), got {arr.shape}"
     assert count.shape == (n_assets,)
     assert np.issubdtype(count.dtype, np.integer)
+
+
+# ─── corr_iir_state tests ──────────────────────────────────────────────────────
+
+
+def test_warmup_state_has_corr_iir_state_for_ewma_shrink():
+    """corr_iir_state must be non-None for EwmaShrinkConfig."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
+    ws = engine.warmup_state()
+    assert ws.corr_iir_state is not None
+
+
+def test_warmup_state_corr_iir_state_is_none_for_sliding_window():
+    """corr_iir_state must be None for SlidingWindowConfig."""
+    prices, mu, _, _assets = _make_prices_mu(n_total=80)
+    cfg = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=20, n_factors=2),
+    )
+    engine = BasanosEngine(prices=prices.head(60), mu=mu.head(60), cfg=cfg)
+    ws = engine.warmup_state()
+    assert ws.corr_iir_state is None
+
+
+def test_warmup_state_corr_iir_state_shapes():
+    """corr_iir_state fields must have documented shapes."""
+    prices, mu, cfg, assets = _make_prices_mu()
+    n_assets = len(assets)
+    engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
+    ws = engine.warmup_state()
+    iir = ws.corr_iir_state
+    assert iir is not None
+    assert iir.corr_zi_x.shape == (1, n_assets, n_assets)
+    assert iir.corr_zi_x2.shape == (1, n_assets, n_assets)
+    assert iir.corr_zi_xy.shape == (1, n_assets, n_assets)
+    assert iir.corr_zi_w.shape == (1, n_assets, n_assets)
+    assert iir.count.shape == (n_assets, n_assets)
+    assert iir.count.dtype == np.int64
+
+
+def test_warmup_state_corr_iir_state_matches_stream_state():
+    """IIR state from warmup_state() must match the IIR state seeded into _StreamState by from_warmup()."""
+    prices, mu, cfg, _assets = _make_prices_mu()
+    n = 50
+    engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
+    ws = engine.warmup_state()
+    iir = ws.corr_iir_state
+    assert iir is not None
+
+    stream = BasanosStream.from_warmup(prices.head(n), mu.head(n), cfg)
+    np.testing.assert_allclose(iir.corr_zi_x, stream._state.corr_zi_x, rtol=1e-12)
+    np.testing.assert_allclose(iir.corr_zi_x2, stream._state.corr_zi_x2, rtol=1e-12)
+    np.testing.assert_allclose(iir.corr_zi_xy, stream._state.corr_zi_xy, rtol=1e-12)
+    np.testing.assert_allclose(iir.corr_zi_w, stream._state.corr_zi_w, rtol=1e-12)
+    np.testing.assert_array_equal(iir.count, stream._state.corr_count)
+
+
+def test_warmup_state_ewma_zero_signal_row():
+    """warmup_state() must not raise when a row has all-zero mu (zero_signal path)."""
+    prices, mu, cfg, assets = _make_prices_mu()
+    n = 50
+    # Zero out the last row of mu to trigger the zero_signal branch
+    mu_np = mu.head(n).select(assets).to_numpy().copy()
+    mu_np[-1, :] = 0.0
+    dates_col = mu.head(n)["date"]
+    mu_zeroed = pl.DataFrame({"date": dates_col, **{a: mu_np[:, i] for i, a in enumerate(assets)}})
+    engine = BasanosEngine(prices=prices.head(n), mu=mu_zeroed, cfg=cfg)
+    ws = engine.warmup_state()
+    assert isinstance(ws, WarmupState)
+    # Last row had zero_signal; prev_cash_pos must be all-zero (not NaN)
+    assert np.all(ws.prev_cash_pos == 0.0)
+
+
+def test_warmup_state_ewma_all_nan_prices_row():
+    """warmup_state() must not raise when a row has all-NaN prices (mask.any() == False path)."""
+    from datetime import date as dt
+
+    n = 50
+    rng = np.random.default_rng(99)
+    start = dt(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+
+    # Build alternating non-monotonic prices for two assets
+    price_a = np.cumprod(1 + np.where(np.arange(n) % 2 == 0, 0.01, -0.005)) * 100.0
+    price_b = np.cumprod(1 + np.where(np.arange(n) % 2 == 0, -0.005, 0.01)) * 150.0
+    mu_vals = rng.normal(0, 0.5, n)
+
+    # Set one interior row to null for both assets (null_pct = 2/100 = 2% < 50%)
+    price_a_list = price_a.tolist()
+    price_b_list = price_b.tolist()
+    price_a_list[20] = None
+    price_b_list[20] = None
+
+    prices = pl.DataFrame({"date": dates, "A": price_a_list, "B": price_b_list})
+    mu = pl.DataFrame({"date": dates, "A": mu_vals, "B": mu_vals})
+    cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+    ws = engine.warmup_state()
+    assert isinstance(ws, WarmupState)
+    assert ws.corr_iir_state is not None
+
+
+def test_warmup_state_ewma_singular_inv_a_norm():
+    """warmup_state() must not raise when inv_a_norm raises SingularMatrixError (sets denom=nan)."""
+    from unittest.mock import patch
+
+    from basanos.exceptions import SingularMatrixError
+
+    prices, mu, cfg, _ = _make_prices_mu()
+    n = 50
+    engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
+
+    with patch("basanos.math._engine_solve.inv_a_norm", side_effect=SingularMatrixError("singular")):
+        ws = engine.warmup_state()
+
+    assert isinstance(ws, WarmupState)
+    # All positions were zeroed due to degenerate denom
+    assert np.all(ws.prev_cash_pos == 0.0)
+
+
+def test_warmup_state_ewma_degenerate_denom():
+    """warmup_state() must not raise when inv_a_norm returns a non-finite denom."""
+    from unittest.mock import patch
+
+    prices, mu, cfg, _ = _make_prices_mu()
+    n = 50
+    engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
+
+    with patch("basanos.math._engine_solve.inv_a_norm", return_value=float("nan")):
+        ws = engine.warmup_state()
+
+    assert isinstance(ws, WarmupState)
+    assert np.all(ws.prev_cash_pos == 0.0)
+
+
+def test_warmup_state_ewma_singular_solve():
+    """warmup_state() must not raise when solve raises SingularMatrixError after inv_a_norm succeeds."""
+    from unittest.mock import patch
+
+    from basanos.exceptions import SingularMatrixError
+
+    prices, mu, cfg, _ = _make_prices_mu()
+    n = 50
+    engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
+
+    # inv_a_norm returns a valid denom; solve then raises
+    with patch("basanos.math._engine_solve.solve", side_effect=SingularMatrixError("singular")):
+        ws = engine.warmup_state()
+
+    assert isinstance(ws, WarmupState)
+    assert np.all(ws.prev_cash_pos == 0.0)
+
+
+# ─── _ewm_std_from_state edge cases ──────────────────────────────────────────
+
+
+def test_ewm_std_from_state_all_counts_below_min_samples_returns_all_nan():
+    """_ewm_std_from_state must return all-NaN immediately when no asset meets min_samples."""
+    n = 4
+    s_x = np.ones(n)
+    s_x2 = np.ones(n)
+    s_w = np.ones(n)
+    s_w2 = np.ones(n)
+    count = np.zeros(n, dtype=int)  # all below any min_samples >= 1
+
+    result = _ewm_std_from_state(s_x, s_x2, s_w, s_w2, count, min_samples=1)
+
+    assert result.shape == (n,)
+    assert np.all(np.isnan(result))
+
+
+# ─── step() error-handling branches ──────────────────────────────────────────
+
+
+def test_step_singular_inv_a_norm_yields_degenerate():
+    """step() must return status='degenerate' when inv_a_norm raises SingularMatrixError."""
+    from basanos.exceptions import SingularMatrixError
+
+    prices, mu, cfg, assets = _make_prices_mu()
+    warmup_len = 50
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+
+    with patch("basanos.math._stream.inv_a_norm", side_effect=SingularMatrixError("singular")):
+        result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+
+    assert result.status == "degenerate"
+    assert np.all(result.cash_position == 0.0)
+
+
+def test_step_singular_solve_yields_degenerate():
+    """step() must return status='degenerate' when solve raises SingularMatrixError."""
+    from basanos.exceptions import SingularMatrixError
+
+    prices, mu, cfg, assets = _make_prices_mu()
+    warmup_len = 50
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+
+    with patch("basanos.math._stream.solve", side_effect=SingularMatrixError("singular")):
+        result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+
+    assert result.status == "degenerate"
+    assert np.all(result.cash_position == 0.0)

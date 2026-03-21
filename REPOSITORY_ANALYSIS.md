@@ -371,3 +371,38 @@ Twelve commits since entry #8 close all three weaknesses and both risks from tha
 **Rationale**: All entry #8 weaknesses and risks are resolved within 12 commits spanning one calendar day. The streaming API foundation is the most significant architectural advance since `_iter_solve` — if completed, it closes the longest-standing open item across all entries. The score does not advance because `BasanosStream` itself does not exist (the feature is half-built), `StepResult.status` has an imprecise type annotation, and the streaming test suite covers only structural invariants. These are addressable gaps, not architectural flaws. The `Portfolio` composition trilogy (PRs #310, #314, #317) is the cleanest multi-PR refactor in the journal to date.
 
 ---
+
+## 2026-03-21 — Analysis Entry #10
+
+### Summary
+
+Seven commits since entry #9 complete the streaming API that has been the longest-standing open item across all journal entries. `BasanosStream` is now fully implemented: `from_warmup()` (PR #329), `step()` (PR #332), frozen semantics and warmup-status handling (PR #333), `StepResult.status` narrowed from `str` to `Literal` (PR #336), `WarmupState` + `warmup_state()` decoupling from `_iter_solve` (PR #339), and an EWM warmup short-circuit in `step()` that skips the O(N²) matrix reconstruction and O(N³) Cholesky solve during the pre-correlation period (PR #340). The streaming test suite grows from 15 structural tests to 48 tests covering numerical correctness (`rtol=1e-8` vs. batch engine), multi-step state continuity, state-invariant warmup assertions, timing verification, and a Hypothesis property suite. Total test count reaches 699. All three weaknesses from entry #9 are resolved.
+
+### Strengths
+
+- **`BasanosStream` closes the longest-standing structural gap** (`_stream.py:275`): Every journal entry since the initial analysis noted "No streaming / incremental API" as unchanged. That risk is now resolved. `from_warmup()` initialises the O(N²) IIR filter state from a historical batch; each subsequent `step()` advances by one row in O(N²) time. The O(N²) memory guarantee (4×(1,N,N) + (N,N) + 8×(N,) — independent of T) is proved in the module docstring and verified against the batch engine at `rtol=1e-8`.
+- **EWM warmup short-circuit is correct and tested** (`_stream.py:623–650`, PR #340): When `state.step_count < cfg.corr`, `step()` updates all accumulators but returns early before the O(N²) correlation matrix reconstruction and O(N³) Cholesky solve. Three dedicated tests cover this: `test_stream_warmup_status_before_min_periods` (status label), `test_stream_warmup_skips_solve_state_unchanged` (asserts `profit_variance` and `prev_cash_pos` are unchanged across all warmup steps), and `test_stream_warmup_step_faster_than_full_solve` (asserts ≥1.5× timing advantage at N=20 over 30 steps).
+- **`WarmupState` decoupling is architecturally correct** (`_engine_solve.py:30`, PR #339): `BasanosStream.from_warmup()` previously coupled to `BasanosEngine._iter_solve` private generator. PR #339 introduces `WarmupState` (frozen dataclass with `profit_variance` and `prev_cash_pos`) and `BasanosEngine.warmup_state()` as a public method. `from_warmup()` now calls `engine.warmup_state()` for these two scalars without touching the private generator.
+- **`StepResult.status` is `Literal[...]`** (`_stream.py:208`, PR #336): `Literal["warmup", "zero_signal", "degenerate", "valid"]` enables static exhaustiveness checking in `match`/`if` chains, closes the one-line weakness from entry #9, and is consistent with the `position_status` column semantics in the batch engine.
+- **`BasanosStream` frozen semantics are correctly implemented** (`_stream.py:331–333`): `__setattr__` raises `dataclasses.FrozenInstanceError` for any attribute write. The internal `_state: _StreamState` is mutable (enabling in-place accumulator updates without object churn per step), but the stream façade is immutable to callers. The asymmetry is intentional and documented.
+- **Numerical correctness coverage is now comprehensive** (`test_stream.py:359–396`): `test_step_matches_basanos_engine` and `test_multi_step_matches_basanos_engine` both assert `np.testing.assert_allclose(..., rtol=1e-8, equal_nan=True)` against `BasanosEngine.cash_position`, closing the entry #9 weakness that tests were structural-only.
+
+### Weaknesses
+
+- **No `_StreamState` serialization interface** (issue #348): `_StreamState` is a plain mutable dataclass. It has no `__getstate__`/`__setstate__`, no pickle protocol, and no `save`/`load` helpers. A live system that crashes and restarts must call `from_warmup()` again on the full historical batch. For multi-year warmup windows this is a significant operational gap.
+- **`from_warmup()` O(T·N²) redundancy** (issue #349): `from_warmup()` calls `BasanosEngine(prices, mu, cfg)` — which runs `_ewm_corr_numpy` internally — then immediately re-runs 4 independent `lfilter` sweeps over the same `T×N×N` arrays to extract final IIR `zf` states (`_stream.py:428–431`). The `warmup_state()` decoupling provides only `profit_variance` and `prev_cash_pos`; the IIR state is still re-derived from scratch. For T=2520, N=150 this doubles the O(T·N²) initialisation work.
+- **`step()` missing input shape validation** (issue #350): `new_prices` and `new_mu` arrays are not validated against `(n_assets,)` before use (`_stream.py:556–561`). A wrong-length array produces a cryptic numpy error rather than a clear `ValueError`. This is the only unguarded public API boundary in the module.
+- **SlidingWindowConfig streaming deferred with no timeline** (issue #356): `from_warmup()` raises `TypeError` for non-`EwmaShrinkConfig` inputs. `BasanosStream` and `StepResult` are public. Users who deploy `SlidingWindowConfig` for batch computation have no streaming path.
+
+### Risks / Technical Debt
+
+- **Warmup timing test is wallclock-based** (issue #351, `test_stream.py:584`): `test_stream_warmup_step_faster_than_full_solve` asserts a 1.5× speedup threshold via `time.perf_counter()`. The threshold is conservative but susceptible to CI scheduling noise. A mock-based approach (asserting `shrink2id` / `inv_a_norm` are not called during warmup) would be more robust.
+- **No CI validation for Marimo notebook** (issue #355, unchanged from entry #9): The `notebooks/` directory is not executed in any workflow. Notebooks can accumulate stale cells without triggering CI failures.
+
+### Score
+
+**9/10** — Unchanged in number, but this entry marks the closure of the most structurally significant long-standing gap
+
+**Rationale**: The streaming API is complete, correctly implemented, and comprehensively tested. Closing "No streaming / incremental API" — noted in every journal entry since the initial analysis — is the most material quality improvement in the codebase's history after the initial architecture. The score remains 9/10 rather than advancing to 10 because three concrete gaps prevent a perfect assessment: no serialization for `_StreamState` (a hard operational requirement for production systems), the O(T·N²) redundancy in `from_warmup()` (a performance concern for long warmup windows), and the missing input validation on `step()`. All three are tracked and addressable in targeted follow-up PRs.
+
+---
