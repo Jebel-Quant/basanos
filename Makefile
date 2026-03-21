@@ -14,8 +14,8 @@ include .rhiza/rhiza.mk
 
 ## Hooks
 
-# post-validate runs at the end of `make validate`, both locally and in CI.
-# CI: .github/workflows/rhiza_validate.yml calls `make validate` on every push/PR.
+# CI equivalent: .github/workflows/rhiza_typecheck.yml runs `make typecheck`
+# on every push and pull_request to main/master.
 post-validate:: typecheck ## run type checking as part of make validate
 
 ## Custom targets
