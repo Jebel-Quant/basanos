@@ -36,6 +36,7 @@ from basanos.math import (
     BasanosStream,
     SlidingWindowConfig,
     StepResult,
+    WarmupState,
 )
 from basanos.math._stream import StepResult as StepResultDirect
 from basanos.math._stream import _StreamState
@@ -624,3 +625,66 @@ def test_hypothesis_stream_properties(n_assets: int, n_rows: int, seed: int) -> 
     cp = result.cash_position
     assert not np.any(np.isposinf(cp)), f"+inf in cash_position: {cp}"
     assert not np.any(np.isneginf(cp)), f"-inf in cash_position: {cp}"
+
+
+# ─── warmup_state() tests ─────────────────────────────────────────────────────
+
+
+def test_warmup_state_returns_warmup_state():
+    """warmup_state() must return a WarmupState instance."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
+    ws = engine.warmup_state()
+    assert isinstance(ws, WarmupState)
+
+
+def test_warmup_state_profit_variance_is_positive_float():
+    """profit_variance must be a positive finite float."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
+    ws = engine.warmup_state()
+    assert isinstance(ws.profit_variance, float)
+    assert np.isfinite(ws.profit_variance)
+    assert ws.profit_variance > 0.0
+
+
+def test_warmup_state_prev_cash_pos_shape():
+    """prev_cash_pos must have shape (n_assets,)."""
+    prices, mu, cfg, assets = _make_prices_mu()
+    engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
+    ws = engine.warmup_state()
+    assert ws.prev_cash_pos.shape == (len(assets),)
+
+
+def test_warmup_state_is_frozen():
+    """WarmupState must be frozen (immutable)."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
+    ws = engine.warmup_state()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ws.profit_variance = 1.0  # type: ignore[misc]
+
+
+def test_warmup_state_matches_from_warmup_state():
+    """profit_variance and prev_cash_pos from warmup_state() must match the internal stream state."""
+    prices, mu, cfg, _assets = _make_prices_mu()
+    n = 50
+    engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
+    ws = engine.warmup_state()
+
+    stream = BasanosStream.from_warmup(prices.head(n), mu.head(n), cfg)
+    assert ws.profit_variance == stream._state.profit_variance
+    np.testing.assert_array_equal(ws.prev_cash_pos, stream._state.prev_cash_pos)
+
+
+def test_warmup_state_single_row():
+    """warmup_state() must not raise for a single-row batch."""
+    start = date(2024, 1, 1)
+    dates = pl.date_range(start=start, end=start, interval="1d", eager=True)
+    prices = pl.DataFrame({"date": dates, "A": [100.0], "B": [200.0]})
+    mu = pl.DataFrame({"date": dates, "A": [0.1], "B": [-0.1]})
+    cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+    ws = engine.warmup_state()
+    assert isinstance(ws, WarmupState)
+    assert ws.prev_cash_pos.shape == (2,)
