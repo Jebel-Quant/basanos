@@ -2,7 +2,7 @@
 
 Verifies that PortfolioData can be instantiated directly, that its factory
 classmethods work, that all pure data properties are accessible, and that
-Portfolio correctly inherits every PortfolioData property.
+Portfolio correctly delegates every PortfolioData property via composition.
 """
 
 from __future__ import annotations
@@ -47,18 +47,24 @@ def portfolio_data(prices, positions):
     return PortfolioData(prices=prices, cashposition=positions, aum=1e5)
 
 
-# ─── Inheritance ─────────────────────────────────────────────────────────────
+# ─── Composition relationship ─────────────────────────────────────────────────
 
 
-def test_portfolio_is_subclass_of_portfolio_data():
-    """Portfolio must be a strict subclass of PortfolioData."""
-    assert issubclass(Portfolio, PortfolioData)
+def test_portfolio_is_not_subclass_of_portfolio_data():
+    """Portfolio must NOT subclass PortfolioData (composition, not inheritance)."""
+    assert not issubclass(Portfolio, PortfolioData)
 
 
-def test_portfolio_instance_is_portfolio_data(prices, positions):
-    """A Portfolio instance must also pass isinstance checks for PortfolioData."""
+def test_portfolio_instance_is_not_portfolio_data(prices, positions):
+    """A Portfolio instance must not pass isinstance checks for PortfolioData."""
     pf = Portfolio(prices=prices, cashposition=positions)
-    assert isinstance(pf, PortfolioData)
+    assert not isinstance(pf, PortfolioData)
+
+
+def test_portfolio_holds_portfolio_data_via_data_property(prices, positions):
+    """Portfolio.data must be a PortfolioData instance (composition accessor)."""
+    pf = Portfolio(prices=prices, cashposition=positions)
+    assert isinstance(pf.data, PortfolioData)
 
 
 # ─── PortfolioData direct instantiation ──────────────────────────────────────
@@ -178,35 +184,35 @@ def test_portfolio_data_has_no_turnover():
     assert not hasattr(PortfolioData, "turnover")
 
 
-# ─── Portfolio inherits all PortfolioData properties ─────────────────────────
+# ─── Portfolio delegates all PortfolioData properties ─────────────────────────
 
 
-def test_portfolio_inherits_profits(prices, positions):
-    """Portfolio exposes the inherited PortfolioData.profits property."""
+def test_portfolio_delegates_profits(prices, positions):
+    """Portfolio exposes profits via delegation to the internal PortfolioData."""
     pf = Portfolio(prices=prices, cashposition=positions)
     assert "A" in pf.profits.columns
 
 
-def test_portfolio_inherits_profit(prices, positions):
-    """Portfolio exposes the inherited PortfolioData.profit property."""
+def test_portfolio_delegates_profit(prices, positions):
+    """Portfolio exposes profit via delegation to the internal PortfolioData."""
     pf = Portfolio(prices=prices, cashposition=positions)
     assert "profit" in pf.profit.columns
 
 
-def test_portfolio_inherits_nav_accumulated(prices, positions):
-    """Portfolio exposes the inherited PortfolioData.nav_accumulated property."""
+def test_portfolio_delegates_nav_accumulated(prices, positions):
+    """Portfolio exposes nav_accumulated via delegation to the internal PortfolioData."""
     pf = Portfolio(prices=prices, cashposition=positions)
     assert "NAV_accumulated" in pf.nav_accumulated.columns
 
 
-def test_portfolio_inherits_returns(prices, positions):
-    """Portfolio exposes the inherited PortfolioData.returns property."""
+def test_portfolio_delegates_returns(prices, positions):
+    """Portfolio exposes returns via delegation to the internal PortfolioData."""
     pf = Portfolio(prices=prices, cashposition=positions)
     assert "returns" in pf.returns.columns
 
 
-def test_portfolio_inherits_drawdown(prices, positions):
-    """Portfolio exposes the inherited PortfolioData.drawdown property."""
+def test_portfolio_delegates_drawdown(prices, positions):
+    """Portfolio exposes drawdown via delegation to the internal PortfolioData."""
     pf = Portfolio(prices=prices, cashposition=positions)
     assert "drawdown" in pf.drawdown.columns
 

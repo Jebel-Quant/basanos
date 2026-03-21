@@ -5,10 +5,10 @@ raw portfolio inputs (prices, cash positions, AUM) and computes the derived
 data series (profits, NAV, returns, drawdown) without any analytics or
 visualisation dependencies.
 
-:class:`PortfolioData` is the foundation for :class:`~basanos.analytics.Portfolio`,
-which extends it with analytics facades (Stats, Plots, Report), portfolio
-transforms (lag, truncate, smoothed_holding), and attribution tools
-(tilt/timing decomposition, turnover, cost analysis).
+:class:`PortfolioData` is held by composition inside
+:class:`~basanos.analytics.Portfolio`, which adds analytics facades (Stats,
+Plots, Report), portfolio transforms (lag, truncate, smoothed_holding), and
+attribution tools (tilt/timing decomposition, turnover, cost analysis).
 """
 
 import dataclasses
@@ -44,7 +44,8 @@ class PortfolioData:
     - :attr:`all` — merged view of all derived series
 
     This class deliberately carries no analytics, visualisation, or transform
-    logic; those live in the :class:`~basanos.analytics.Portfolio` subclass.
+    logic; those live in :class:`~basanos.analytics.Portfolio`, which holds a
+    ``PortfolioData`` instance via composition.
 
     Attributes:
         cashposition: Polars DataFrame of per-asset cash positions over time
