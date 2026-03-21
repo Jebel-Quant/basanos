@@ -89,6 +89,12 @@ Or with [uv](https://github.com/astral-sh/uv):
 uv add basanos
 ```
 
+Or with conda (via [conda-forge](https://conda-forge.org/)):
+
+```bash
+conda install -c conda-forge basanos
+```
+
 ## Quick Start
 
 ### Portfolio Optimization

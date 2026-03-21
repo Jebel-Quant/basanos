@@ -1,0 +1,53 @@
+{% set name = "basanos" %}
+{% set version = "0.5.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  url: https://pypi.org/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz
+  sha256: 183119d62fa797646d2a2b489727307dbbecf2487aa9f3e4ad2d6b860ef0c743
+
+build:
+  noarch: python
+  script: {{ PYTHON }} -m pip install . -vv --no-deps --no-build-isolation
+  number: 0
+
+requirements:
+  host:
+    - python >=3.11
+    - pip
+    - hatchling
+  run:
+    - python >=3.11
+    - jinja2 >=3.1
+    - numpy >=2.4,<3
+    - plotly >=6.6.0,<7
+    - polars >=1.37.1
+    - pydantic >=2.12.5,<3
+    - scipy >=1.17.0,<2
+
+test:
+  imports:
+    - basanos
+    - basanos.math
+  commands:
+    - pip check
+
+about:
+  home: https://github.com/Jebel-Quant/basanos
+  summary: Correlation-aware portfolio optimization and analytics for Python.
+  description: |
+    Basanos computes correlation-adjusted risk positions from price data and
+    expected-return signals. It estimates time-varying EWMA correlations,
+    applies shrinkage towards the identity matrix, and solves a normalized
+    linear system per timestamp to produce stable, scale-invariant positions.
+  license: MIT
+  license_file: LICENSE
+  doc_url: https://jebel-quant.github.io/basanos/
+  dev_url: https://github.com/Jebel-Quant/basanos
+
+extra:
+  recipe-maintainers:
+    - Jebel-Quant
