@@ -41,12 +41,6 @@ Total incremental state is 4x(1,N,N) + (N,N) + 8x(N,) + O(1) scalars,
 giving **O(N²)** memory independent of the number of timesteps processed.
 """
 
-"""Incremental (streaming) output types for BasanosStream.
-
-This private module provides the :class:`StepResult` frozen dataclass, which
-is the per-timestep output type of the ``BasanosStream`` incremental API.
-"""
-
 from __future__ import annotations
 
 import dataclasses
@@ -142,7 +136,8 @@ class _StreamState:
     prev_price: np.ndarray  # (N,) last price row (to compute returns at next step)
     prev_cash_pos: np.ndarray  # (N,) last cash position (to compute profit at next step)
     step_count: int
-      
+
+
 @dataclasses.dataclass(frozen=True)
 class StepResult:
     """Frozen dataclass representing the output of a single ``BasanosStream`` step.
