@@ -26,6 +26,7 @@ Notes:
 """
 
 # Public re-exports (explicit aliases so linters recognize intent)
+from ._engine_solve import WarmupState as WarmupState
 from ._factor_model import FactorModel as FactorModel
 from ._stream import BasanosStream as BasanosStream
 from ._stream import StepResult as StepResult

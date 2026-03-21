@@ -8,6 +8,7 @@ the per-timestamp solve logic independently readable and testable.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING, cast
 
@@ -23,6 +24,26 @@ if TYPE_CHECKING:
     from ._engine_protocol import _EngineProtocol
 
 _logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class WarmupState:
+    """Final state produced by a full batch solve; consumed by :meth:`BasanosStream.from_warmup`.
+
+    Returned by :meth:`BasanosEngine.warmup_state` and used by
+    :meth:`BasanosStream.from_warmup` to initialise the streaming state without
+    coupling to the private :meth:`~_SolveMixin._iter_solve` generator.
+
+    Attributes:
+        profit_variance: Final EWMA profit-variance scalar after replaying the
+            full warmup batch.
+        prev_cash_pos: Cash positions at the last warmup row, shape
+            ``(n_assets,)``.  ``NaN`` for assets that were still in their
+            own warmup period.
+    """
+
+    profit_variance: float
+    prev_cash_pos: np.ndarray
 
 
 class _SolveMixin:
@@ -239,3 +260,76 @@ class _SolveMixin:
                     yield i, t, mask, np.zeros(n_sub), "degenerate"
                     continue
                 yield i, t, mask, x / denom, "valid"
+
+    def warmup_state(self: _EngineProtocol) -> WarmupState:
+        """Return the final :class:`WarmupState` after replaying the full batch.
+
+        Encapsulates the profit-variance EMA replay loop that was previously
+        duplicated inside :meth:`BasanosStream.from_warmup`.  By centralising
+        the loop here, :meth:`~BasanosStream.from_warmup` no longer needs to
+        call the private :meth:`_iter_solve` generator directly.
+
+        Returns:
+            WarmupState: A frozen dataclass with:
+
+            * ``profit_variance`` - final EWMA profit-variance scalar.
+            * ``prev_cash_pos`` - cash-position vector at the last row,
+              shape ``(n_assets,)``.
+
+        Examples:
+            >>> import numpy as np
+            >>> import polars as pl
+            >>> from basanos.math import BasanosConfig, BasanosEngine
+            >>> rng = np.random.default_rng(0)
+            >>> dates = list(range(30))
+            >>> prices = pl.DataFrame({
+            ...     "date": dates,
+            ...     "A": np.cumprod(1 + rng.normal(0.001, 0.02, 30)) * 100.0,
+            ...     "B": np.cumprod(1 + rng.normal(0.001, 0.02, 30)) * 150.0,
+            ... })
+            >>> mu = pl.DataFrame({
+            ...     "date": dates,
+            ...     "A": rng.normal(0, 0.5, 30),
+            ...     "B": rng.normal(0, 0.5, 30),
+            ... })
+            >>> cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+            >>> ws = engine.warmup_state()
+            >>> isinstance(ws.profit_variance, float)
+            True
+            >>> ws.prev_cash_pos.shape
+            (2,)
+        """
+        assets = self.assets
+        n_assets = len(assets)
+        n_rows = self.prices.height
+        prices_np = self.prices.select(assets).to_numpy()
+        vola_np = self.vola.select(assets).to_numpy()
+
+        returns_num = np.zeros((n_rows, n_assets), dtype=float)
+        if n_rows > 1:
+            returns_num[1:] = prices_np[1:] / prices_np[:-1] - 1.0
+
+        profit_variance: float = self.cfg.profit_variance_init
+        lamb: float = self.cfg.profit_variance_decay
+
+        risk_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
+        cash_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
+
+        for i, _t, mask, pos, _status in self._iter_solve():
+            if i > 0:
+                ret_mask = np.isfinite(returns_num[i]) & mask
+                if ret_mask.any():
+                    with np.errstate(invalid="ignore"):
+                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
+                    lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
+                    rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
+                    profit = float(lhs @ rhs)
+                    profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
+            if pos is not None:
+                risk_pos_np[i, mask] = pos / profit_variance
+                with np.errstate(invalid="ignore"):
+                    cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
+
+        prev_cash_pos = cash_pos_np[-1].copy()
+        return WarmupState(profit_variance=profit_variance, prev_cash_pos=prev_cash_pos)
