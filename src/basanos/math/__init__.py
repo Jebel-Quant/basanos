@@ -27,6 +27,7 @@ Notes:
 
 # Public re-exports (explicit aliases so linters recognize intent)
 from ._factor_model import FactorModel as FactorModel
+from ._stream import BasanosStream as BasanosStream
 from ._stream import StepResult as StepResult
 from .optimizer import BasanosConfig as BasanosConfig
 from .optimizer import BasanosEngine as BasanosEngine
