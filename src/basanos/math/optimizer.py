@@ -136,6 +136,15 @@ def _validate_inputs(prices: pl.DataFrame, mu: pl.DataFrame, cfg: "BasanosConfig
         ExcessiveNullsError: If any asset column exceeds ``cfg.max_nan_fraction``.
         MonotonicPricesError: If any asset price series is monotonically
             non-decreasing or non-increasing.
+
+    Warns:
+        UserWarning (via logging): If ``cfg.covariance`` is a
+            :class:`SlidingWindowConfig` and
+            ``len(prices) < 2 * cfg.covariance.window``, a warning is emitted
+            via the module logger rather than an exception.  This is a
+            deliberate soft boundary — callers may intentionally supply data
+            shorter than the full warm-up period.  During warm-up the first
+            ``window - 1`` timestamps will yield zero positions.
     """
     # ensure 'date' column exists in prices before any other validation
     if "date" not in prices.columns:

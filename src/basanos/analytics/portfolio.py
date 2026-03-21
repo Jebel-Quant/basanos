@@ -18,7 +18,7 @@ unchanged.
 """
 
 import dataclasses
-from typing import Self
+from typing import ClassVar, Self
 
 import polars as pl
 import polars.selectors as cs
@@ -69,6 +69,7 @@ class Portfolio:
     cashposition: pl.DataFrame
     prices: pl.DataFrame
     aum: float = 1e8
+    _data: ClassVar[PortfolioData]
 
     def __post_init__(self) -> None:
         """Create and cache the internal PortfolioData instance.
