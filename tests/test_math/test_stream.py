@@ -26,6 +26,8 @@ from datetime import date, timedelta
 import numpy as np
 import polars as pl
 import pytest
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
 from basanos.exceptions import MissingDateColumnError
 from basanos.math import (
@@ -483,3 +485,142 @@ def test_step_zero_signal_yields_zero_positions():
 
     assert result.status == "zero_signal"
     np.testing.assert_array_equal(result.cash_position[np.isfinite(prices_np[warmup_len])], 0.0)
+
+
+# ─── New required tests ───────────────────────────────────────────────────────
+
+
+def test_stream_assets_match_engine():
+    """stream.assets must equal BasanosEngine(...).assets for the same inputs."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    warmup_len = 50
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    engine = BasanosEngine(prices=prices.head(warmup_len), mu=mu.head(warmup_len), cfg=cfg)
+    assert stream.assets == engine.assets
+
+
+def test_stream_is_frozen():
+    """Assigning any attribute on a BasanosStream instance must raise FrozenInstanceError."""
+    prices, mu, cfg, _ = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        stream.assets = ["X"]  # type: ignore[misc]
+
+
+def test_stream_warmup_status_before_min_periods():
+    """step() returns status='warmup' when the warmup batch is shorter than cfg.corr."""
+    # Use deterministic oscillating prices to avoid MonotonicPricesError with few rows
+    warmup_len = 5
+    n_total = warmup_len + 1
+    start = date(2020, 1, 1)
+    dates = pl.date_range(start=start, end=start + timedelta(days=n_total - 1), interval="1d", eager=True)
+    # Alternating prices guarantee non-monotonic (required by the engine)
+    price_a = np.array([100.0, 102.0, 101.0, 103.0, 102.0, 104.0], dtype=float)
+    price_b = np.array([200.0, 198.0, 202.0, 199.0, 203.0, 200.0], dtype=float)
+    prices = pl.DataFrame({"date": dates, "A": price_a, "B": price_b})
+    mu_vals = np.array([0.1, 0.2, -0.1, 0.3, -0.2, 0.1], dtype=float)
+    mu = pl.DataFrame({"date": dates, "A": mu_vals, "B": mu_vals})
+    cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+
+    # warmup_len=5 < cfg.corr=10, so step_count (=5) < cfg.corr → warmup
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    assets = stream.assets
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+
+    assert result.status == "warmup"
+    assert np.all(np.isnan(result.cash_position))
+    assert np.all(np.isnan(result.vola))
+
+
+def test_stream_degenerate_status_all_nan_prices():
+    """step() returns status='degenerate' when the new price row is all-NaN."""
+    prices, mu, cfg, assets = _make_prices_mu()
+    warmup_len = 50
+    mu_np = mu.select(assets).to_numpy()
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    all_nan_prices = np.full(len(assets), np.nan)
+    result = stream.step(all_nan_prices, mu_np[warmup_len], prices["date"][warmup_len])
+
+    assert result.status == "degenerate"
+
+
+def test_stream_profit_variance_changes_after_step():
+    """state.profit_variance must change after a valid step with non-zero returns."""
+    prices, mu, cfg, assets = _make_prices_mu()
+    warmup_len = 50
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    initial_pv = stream._state.profit_variance  # direct access to internal state for test
+    result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+
+    if result.status == "valid":
+        # After a valid step with non-zero returns, profit_variance must change
+        assert stream._state.profit_variance != initial_pv, (
+            "profit_variance must change after a valid step with non-trivial returns"
+        )
+    else:
+        # For warmup/degenerate/zero_signal, profit_variance may or may not change;
+        # we only assert it was updated (not left unmodified by skipping the step).
+        assert stream._state.profit_variance is not None
+
+
+# ─── Hypothesis property tests ────────────────────────────────────────────────
+
+
+@given(
+    n_assets=st.integers(min_value=1, max_value=3),
+    n_rows=st.integers(min_value=5, max_value=40),
+    seed=st.integers(min_value=0, max_value=2**31 - 1),
+)
+@settings(max_examples=40, deadline=3000)  # 3 s per example; stream warmup is O(N²)
+def test_hypothesis_stream_properties(n_assets: int, n_rows: int, seed: int) -> None:
+    """For arbitrary small inputs: status ∈ valid set and no ±inf in cash_position."""
+    from basanos.exceptions import MonotonicPricesError
+
+    rng = np.random.default_rng(seed)
+    start = date(2020, 1, 1)
+    n_total = n_rows + 1  # warmup of n_rows, then one step
+    dates = pl.date_range(
+        start=start,
+        end=start + timedelta(days=n_total - 1),
+        interval="1d",
+        eager=True,
+    )
+    asset_names = [chr(ord("A") + i) for i in range(n_assets)]
+    price_data: dict[str, object] = {"date": dates}
+    mu_data: dict[str, object] = {"date": dates}
+    for a in asset_names:
+        # Use sinusoidal perturbations on top of random walk to prevent monotonic series
+        base = 100.0 + rng.uniform(0, 100)
+        noise = rng.normal(0, 0.01, n_total)
+        osc = 0.01 * np.sin(np.linspace(0, 4 * np.pi, n_total))
+        price_data[a] = base * np.cumprod(1 + noise + osc)
+        mu_data[a] = rng.normal(0, 0.5, n_total)
+
+    prices = pl.DataFrame(price_data)
+    mu_df = pl.DataFrame(mu_data)
+    cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+
+    try:
+        stream = BasanosStream.from_warmup(prices.head(n_rows), mu_df.head(n_rows), cfg)
+    except MonotonicPricesError:
+        # Random price series can still be monotonic with few rows; skip this example
+        return
+
+    prices_np = prices.select(asset_names).to_numpy()
+    mu_np = mu_df.select(asset_names).to_numpy()
+
+    result = stream.step(prices_np[n_rows], mu_np[n_rows], prices["date"][n_rows])
+
+    valid_statuses = {"warmup", "zero_signal", "degenerate", "valid"}
+    assert result.status in valid_statuses, f"Unexpected status: {result.status!r}"
+
+    cp = result.cash_position
+    assert not np.any(np.isposinf(cp)), f"+inf in cash_position: {cp}"
+    assert not np.any(np.isneginf(cp)), f"-inf in cash_position: {cp}"

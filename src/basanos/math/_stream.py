@@ -319,9 +319,13 @@ class BasanosStream:
 
     def __init__(self, cfg: BasanosConfig, assets: list[str], state: _StreamState) -> None:
         """Initialise from an explicit config, asset list, and state container."""
-        self._cfg = cfg
-        self._assets = assets
-        self._state = state
+        object.__setattr__(self, "_cfg", cfg)
+        object.__setattr__(self, "_assets", assets)
+        object.__setattr__(self, "_state", state)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Prevent accidental attribute mutation — BasanosStream is immutable."""
+        raise dataclasses.FrozenInstanceError(f"{type(self).__name__}.{name}")
 
     @property
     def assets(self) -> list[str]:
@@ -515,7 +519,7 @@ class BasanosStream:
             profit_variance=profit_variance,
             prev_price=prev_price,
             prev_cash_pos=prev_cash_pos,
-            step_count=0,
+            step_count=n_rows,
         )
         return cls(cfg=cfg, assets=assets, state=state)
 
@@ -555,6 +559,14 @@ class BasanosStream:
         assets = self._assets
         state = self._state
         n_assets = len(assets)
+
+        # ── Check if still in the EWM warmup period ─────────────────────────
+        # step_count is initialised to n_rows in from_warmup, so this is True
+        # for the first (cfg.corr - n_rows) calls when the warmup batch was
+        # shorter than cfg.corr (i.e. not enough rows to populate the EWM
+        # correlation matrix).  All accumulators are still updated so that the
+        # state is ready the moment the warmup period ends.
+        in_warmup: bool = state.step_count < cfg.corr  # insufficient samples for corr matrix
 
         # ── Resolve inputs to (N,) float64 arrays ──────────────────────────
         if isinstance(new_prices, dict):
@@ -733,6 +745,14 @@ class BasanosStream:
         state.prev_cash_pos = new_cash_pos.copy()
         state.profit_variance = profit_variance
         state.step_count += 1
+
+        if in_warmup:
+            return StepResult(
+                date=date,
+                cash_position=np.full(n_assets, np.nan),
+                status="warmup",
+                vola=np.full(n_assets, np.nan),
+            )
 
         return StepResult(
             date=date,
