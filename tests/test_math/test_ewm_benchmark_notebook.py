@@ -30,7 +30,7 @@ import pytest
 # test validates the internal implementation that the ewm_benchmark notebook
 # also uses.  Tests are permitted to access private internals; making the
 # symbol public solely to satisfy a test import is what the issue warns against.
-from basanos.math._ewm_corr import _ewm_corr_numpy as ewm_corr_numpy
+from basanos.math._ewm_corr import ewm_corr as ewm_corr_numpy
 
 _NOTEBOOK = Path(__file__).parents[2] / "book/marimo/notebooks/ewm_benchmark.py"
 
