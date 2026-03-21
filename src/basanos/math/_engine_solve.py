@@ -9,9 +9,11 @@ the per-timestamp solve logic independently readable and testable.
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import logging
+from collections.abc import Generator
 from enum import StrEnum
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeAlias, cast
 
 import numpy as np
 
@@ -49,6 +51,15 @@ class SolveStatus(StrEnum):
     ZERO_SIGNAL = "zero_signal"
     DEGENERATE = "degenerate"
     VALID = "valid"
+
+
+#: Yield type for :meth:`_SolveMixin._iter_matrices`:
+#: ``(i, t, mask, matrix)`` where ``matrix`` is ``None`` during warmup/no-data.
+MatrixYield: TypeAlias = tuple[int, datetime.date, np.ndarray, np.ndarray | None]
+
+#: Yield type for :meth:`_SolveMixin._iter_solve`:
+#: ``(i, t, mask, pos_or_none, status)`` where ``pos_or_none`` is ``None`` only for warmup rows.
+SolveYield: TypeAlias = tuple[int, datetime.date, np.ndarray, np.ndarray | None, SolveStatus]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -154,7 +165,7 @@ class _SolveMixin:
                 cash_pos_np[i, mask] = _SolveMixin._scale_to_cash(pos, profit_variance, vola_np[i, mask])
         return profit_variance
 
-    def _iter_matrices(self: _EngineProtocol):
+    def _iter_matrices(self: _EngineProtocol) -> Generator[MatrixYield, None, None]:
         r"""Yield ``(i, t, mask, matrix)`` for every timestamp.
 
         ``matrix`` is the effective :math:`(n_{\text{sub}},\ n_{\text{sub}})`
@@ -218,7 +229,7 @@ class _SolveMixin:
                     _logger.warning("Factor model fit failed at t=%s: %s", t, exc)
                     yield i, t, mask, None
 
-    def _iter_solve(self: _EngineProtocol):
+    def _iter_solve(self: _EngineProtocol) -> Generator[SolveYield, None, None]:
         r"""Yield ``(i, t, mask, pos_or_none, status)`` for every timestamp.
 
         This is the single authoritative implementation of the per-timestamp
