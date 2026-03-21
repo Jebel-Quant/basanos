@@ -10,11 +10,11 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "jinja2>=3.1",
-    "numpy>=2.4,<3",
-    "plotly>=6.6.0,<7",
+    "numpy>=2.4",
+    "plotly>=6.6.0",
     "polars>=1.37.1",
-    "pydantic>=2.12.5,<3",
-    "scipy>=1.17.0,<2",
+    "pydantic>=2.12.5",
+    "scipy>=1.17.0",
 ]
 
 [project.urls]
@@ -25,13 +25,13 @@ Issues = "https://github.com/Jebel-Quant/basanos/issues"
 
 [dependency-groups]
 dev = [
-    "hypothesis>=6.0.0,<7",
-    "marimo>=0.21.0,<1",
-    "pandas>=2.0,<4",
-    "pyarrow>=14.0,<24",
+    "hypothesis>=6.0.0",
+    "marimo>=0.21.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
     "pytest>=9.0.2",
     "pytest-cov>=7.0.0",
-    "pytest-xdist>=3.0,<4",
+    "pytest-xdist>=3.0",
     "ty>=0.0.23,<1",
 ]
 
