@@ -472,36 +472,12 @@ class BasanosStream:
         pct_count: np.ndarray = fin_pct.sum(axis=0).astype(int)
 
         # 5. Replay profit_variance -----------------------------------------
-        # Replicate the exact loop from BasanosEngine.cash_position
-        # (optimizer.py lines 451-469) to arrive at the correct final
-        # profit_variance and prev_cash_pos.
-        returns_num = np.zeros((n_rows, n_assets), dtype=float)
-        if n_rows > 1:
-            returns_num[1:] = prices_np[1:] / prices_np[:-1] - 1.0
-
-        vola_np: np.ndarray = engine.vola.select(assets).to_numpy()  # (n_rows, n_assets)
-        profit_variance: float = cfg.profit_variance_init
-        lamb: float = cfg.profit_variance_decay
-
-        risk_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
-        cash_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
-
-        for i, _t, mask, pos, _status in engine._iter_solve():
-            if i > 0:
-                ret_mask = np.isfinite(returns_num[i]) & mask
-                if ret_mask.any():
-                    with np.errstate(invalid="ignore"):
-                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
-                    lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
-                    rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
-                    profit = float(lhs @ rhs)
-                    profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
-            if pos is not None:
-                risk_pos_np[i, mask] = pos / profit_variance
-                with np.errstate(invalid="ignore"):
-                    cash_pos_np[i, mask] = risk_pos_np[i, mask] / vola_np[i, mask]
-
-        prev_cash_pos: np.ndarray = cash_pos_np[-1].copy()
+        # Delegate to BasanosEngine.warmup_state() to obtain the final
+        # profit_variance and prev_cash_pos without coupling to the private
+        # _iter_solve generator.
+        ws = engine.warmup_state()
+        profit_variance: float = ws.profit_variance
+        prev_cash_pos: np.ndarray = ws.prev_cash_pos
         prev_price: np.ndarray = prices_np[-1].copy()
 
         # 6. Construct _StreamState and return ------------------------------
