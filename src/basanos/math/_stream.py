@@ -63,7 +63,8 @@ import polars as pl
 from scipy.signal import lfilter
 
 from ..exceptions import MissingDateColumnError
-from ._config import BasanosConfig, EwmaShrinkConfig
+from ._config import BasanosConfig, EwmaShrinkConfig, SlidingWindowConfig
+from ._factor_model import FactorModel
 from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id
 
@@ -158,6 +159,12 @@ class _StreamState:
     prev_price: np.ndarray  # (N,) last price row (to compute returns at next step)
     prev_cash_pos: np.ndarray  # (N,) last cash position (to compute profit at next step)
     step_count: int
+
+    # ── SlidingWindowConfig state — None for EwmaShrinkConfig ────────────────
+    # shape (W, N): last W vol-adjusted returns (oldest row first); None when
+    # using EwmaShrinkConfig.  The corr_zi_* fields above are unused (zeros)
+    # in this mode; sw_ret_buf carries all the correlation state instead.
+    sw_ret_buf: np.ndarray | None = None  # (W, N) rolling buffer, or None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -434,9 +441,8 @@ class BasanosStream:
             Expected-return signal DataFrame aligned row-by-row with
             ``prices``.
         cfg:
-            Engine configuration.  ``cfg.covariance_config`` **must** be an
-            :class:`~basanos.math.EwmaShrinkConfig` instance; sliding-window
-            mode is not yet supported for streaming.
+            Engine configuration.  Both :class:`~basanos.math.EwmaShrinkConfig`
+            and :class:`~basanos.math.SlidingWindowConfig` are supported.
 
         Returns:
         -------
@@ -446,20 +452,10 @@ class BasanosStream:
 
         Raises:
         ------
-        TypeError
-            If ``cfg.covariance_config`` is not an
-            :class:`~basanos.math.EwmaShrinkConfig`.
         MissingDateColumnError
             If ``'date'`` is absent from ``prices``.
         """
         # 1. Validate -------------------------------------------------------
-        if not isinstance(cfg.covariance_config, EwmaShrinkConfig):
-            _msg = (
-                f"BasanosStream.from_warmup() only supports EwmaShrinkConfig; "
-                f"got {type(cfg.covariance_config).__name__}. "
-                f"SlidingWindowConfig support is deferred."
-            )
-            raise TypeError(_msg)
         if "date" not in prices.columns:
             raise MissingDateColumnError("prices")
 
@@ -473,17 +469,34 @@ class BasanosStream:
         n_rows = prices.height
         prices_np = prices.select(assets).to_numpy()  # (n_rows, n_assets)
 
-        # 3. Extract IIR filter state and profit-variance from WarmupState ----
-        # warmup_state() calls _ewm_corr_with_final_state internally, so the
-        # IIR filter state is captured from the same single pass that computes
-        # the correlation tensor — no second lfilter sweep needed here.
+        # 3. Extract mode-specific state from WarmupState --------------------
         ws = engine.warmup_state()
-        iir = cast("_EwmCorrState", ws.corr_iir_state)  # guaranteed: EwmaShrinkConfig was validated above
-        corr_zi_x = iir.corr_zi_x
-        corr_zi_x2 = iir.corr_zi_x2
-        corr_zi_xy = iir.corr_zi_xy
-        corr_zi_w = iir.corr_zi_w
-        corr_count: np.ndarray = iir.count
+        if isinstance(cfg.covariance_config, EwmaShrinkConfig):
+            # EWM: seed the per-step lfilter from the IIR state captured
+            # during the single batch pass in warmup_state().
+            iir = cast("_EwmCorrState", ws.corr_iir_state)
+            corr_zi_x = iir.corr_zi_x
+            corr_zi_x2 = iir.corr_zi_x2
+            corr_zi_xy = iir.corr_zi_xy
+            corr_zi_w = iir.corr_zi_w
+            corr_count: np.ndarray = iir.count
+            sw_ret_buf: np.ndarray | None = None
+        else:
+            # SW: carry the last W vol-adjusted returns as a rolling buffer.
+            # The IIR fields are initialised to zeros and left unused.
+            sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
+            win_w = sw_config.window
+            ret_adj_np = engine.ret_adj.select(assets).to_numpy()  # (n_rows, N)
+            if n_rows >= win_w:
+                sw_ret_buf = ret_adj_np[-win_w:].copy()
+            else:
+                sw_ret_buf = np.full((win_w, n_assets), np.nan)
+                sw_ret_buf[-n_rows:] = ret_adj_np
+            corr_zi_x = np.zeros((1, n_assets, n_assets))
+            corr_zi_x2 = np.zeros((1, n_assets, n_assets))
+            corr_zi_xy = np.zeros((1, n_assets, n_assets))
+            corr_zi_w = np.zeros((1, n_assets, n_assets))
+            corr_count = np.zeros((n_assets, n_assets), dtype=np.int64)
 
         # 4. Derive EWMA volatility accumulators (vectorised) ---------------
         # Both log-return (for vol_adj) and pct-return (for vola) use the
@@ -538,6 +551,7 @@ class BasanosStream:
             prev_price=prev_price,
             prev_cash_pos=prev_cash_pos,
             step_count=n_rows,
+            sw_ret_buf=sw_ret_buf,
         )
         return cls(cfg=cfg, assets=assets, state=state)
 
@@ -584,7 +598,12 @@ class BasanosStream:
         # shorter than cfg.corr (i.e. not enough rows to populate the EWM
         # correlation matrix).  All accumulators are still updated so that the
         # state is ready the moment the warmup period ends.
-        in_warmup: bool = state.step_count < cfg.corr  # insufficient samples for corr matrix
+        _warmup_thresh = (
+            cast(SlidingWindowConfig, cfg.covariance_config).window
+            if isinstance(cfg.covariance_config, SlidingWindowConfig)
+            else cfg.corr
+        )
+        in_warmup: bool = state.step_count < _warmup_thresh
 
         # ── Resolve inputs to (N,) float64 arrays ──────────────────────────
         if isinstance(new_prices, dict):
@@ -643,24 +662,38 @@ class BasanosStream:
                 np.nan,
             )
 
-        # ── Update IIR filter state for EWM correlation ─────────────────────
-        fin_va = np.isfinite(vol_adj_val)
-        va_f = np.where(fin_va, vol_adj_val, 0.0)
-        joint_fin = fin_va[:, np.newaxis] & fin_va[np.newaxis, :]  # (N, N)
+        # ── Mode-specific correlation state update ───────────────────────────
+        if isinstance(cfg.covariance_config, SlidingWindowConfig):
+            # SW: shift the rolling window buffer in-place and append this row.
+            # The corr_zi_* fields are unused; alias them to their old values so
+            # the early-return and persist blocks below can reference them safely.
+            buf = state.sw_ret_buf  # (W, N), already owned by state
+            buf[:-1] = buf[1:]  # type: ignore[index]
+            buf[-1] = vol_adj_val  # type: ignore[index]
+            corr_zi_x = state.corr_zi_x
+            corr_zi_x2 = state.corr_zi_x2
+            corr_zi_xy = state.corr_zi_xy
+            corr_zi_w = state.corr_zi_w
+            corr_count = state.corr_count
+        else:
+            # EWM: Update IIR filter state for EWM correlation
+            fin_va = np.isfinite(vol_adj_val)
+            va_f = np.where(fin_va, vol_adj_val, 0.0)
+            joint_fin = fin_va[:, np.newaxis] & fin_va[np.newaxis, :]  # (N, N)
 
-        new_v_x = (va_f[:, np.newaxis] * joint_fin)[np.newaxis]  # (1, N, N)
-        new_v_x2 = ((va_f**2)[:, np.newaxis] * joint_fin)[np.newaxis]  # (1, N, N)
-        new_v_xy = (va_f[:, np.newaxis] * va_f[np.newaxis, :])[np.newaxis]  # (1, N, N)
-        new_v_w = joint_fin.astype(np.float64)[np.newaxis]  # (1, N, N)
+            new_v_x = (va_f[:, np.newaxis] * joint_fin)[np.newaxis]  # (1, N, N)
+            new_v_x2 = ((va_f**2)[:, np.newaxis] * joint_fin)[np.newaxis]  # (1, N, N)
+            new_v_xy = (va_f[:, np.newaxis] * va_f[np.newaxis, :])[np.newaxis]  # (1, N, N)
+            new_v_w = joint_fin.astype(np.float64)[np.newaxis]  # (1, N, N)
 
-        filt_a_corr = np.array([1.0, -beta_corr])
-        # y_x[0] is the current-step EWM state (filter output); corr_zi_x is the
-        # new filter memory (zf = beta * y[0]) to pass as zi on the next step.
-        y_x, corr_zi_x = lfilter([1.0], filt_a_corr, new_v_x, axis=0, zi=state.corr_zi_x)
-        y_x2, corr_zi_x2 = lfilter([1.0], filt_a_corr, new_v_x2, axis=0, zi=state.corr_zi_x2)
-        y_xy, corr_zi_xy = lfilter([1.0], filt_a_corr, new_v_xy, axis=0, zi=state.corr_zi_xy)
-        y_w, corr_zi_w = lfilter([1.0], filt_a_corr, new_v_w, axis=0, zi=state.corr_zi_w)
-        corr_count = state.corr_count + joint_fin.astype(np.int64)
+            filt_a_corr = np.array([1.0, -beta_corr])
+            # y_x[0] is the current-step EWM state (filter output); corr_zi_x is
+            # the new filter memory (zf = beta * y[0]) passed as zi next step.
+            y_x, corr_zi_x = lfilter([1.0], filt_a_corr, new_v_x, axis=0, zi=state.corr_zi_x)
+            y_x2, corr_zi_x2 = lfilter([1.0], filt_a_corr, new_v_x2, axis=0, zi=state.corr_zi_x2)
+            y_xy, corr_zi_xy = lfilter([1.0], filt_a_corr, new_v_xy, axis=0, zi=state.corr_zi_xy)
+            y_w, corr_zi_w = lfilter([1.0], filt_a_corr, new_v_w, axis=0, zi=state.corr_zi_w)
+            corr_count = state.corr_count + joint_fin.astype(np.int64)
 
         # ── Early return during EWM warmup period ───────────────────────────
         # All accumulators are already updated above; skip the O(N²) matrix
@@ -691,40 +724,10 @@ class BasanosStream:
                 vola=np.full(n_assets, np.nan),
             )
 
-        # ── Reconstruct the EWM correlation matrix ─────────────────────────
-        # Use y_*[0] (the filter OUTPUT for this step), not zf[0].
-        s_x = y_x[0]
-        s_x2 = y_x2[0]
-        s_xy = y_xy[0]
-        s_w = y_w[0]
-
-        with np.errstate(divide="ignore", invalid="ignore"):
-            pos_w = s_w > 0
-            ewm_x = np.where(pos_w, s_x / s_w, np.nan)
-            ewm_y = np.where(pos_w, s_x.T / s_w, np.nan)
-            ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)
-            ewm_y2 = np.where(pos_w, s_x2.T / s_w, np.nan)
-            ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)
-
-        var_x = np.maximum(ewm_x2 - ewm_x**2, 0.0)
-        var_y = np.maximum(ewm_y2 - ewm_y**2, 0.0)
-        denom_corr = np.sqrt(var_x * var_y)
-        cov = ewm_xy - ewm_x * ewm_y
-
-        with np.errstate(divide="ignore", invalid="ignore"):
-            corr = np.where(denom_corr > cfg.min_corr_denom, cov / denom_corr, np.nan)
-        corr = np.clip(corr, -1.0, 1.0)
-        corr[corr_count < cfg.corr] = np.nan
-        diag_idx = np.arange(n_assets)
-        corr[diag_idx, diag_idx] = np.where(corr_count[diag_idx, diag_idx] >= cfg.corr, 1.0, np.nan)
-
-        # ── Apply shrinkage ─────────────────────────────────────────────────
-        matrix = shrink2id(corr, lamb=cfg.shrink)
-
-        # ── Compute EWMA volatility (pct-return std) ────────────────────────
+        # ── Compute EWMA volatility (pct-return std) — shared ───────────────
         vola_vec = _ewm_std_from_state(pct_s_x, pct_s_x2, pct_s_w, pct_s_w2, pct_count, min_samples=cfg.vola)
 
-        # ── Update profit_variance ──────────────────────────────────────────
+        # ── Update profit_variance — shared ─────────────────────────────────
         profit_variance = state.profit_variance
         lamb_pv = cfg.profit_variance_decay
         prev_cash_pos = state.prev_cash_pos
@@ -741,41 +744,124 @@ class BasanosStream:
         new_cash_pos = np.full(n_assets, np.nan, dtype=float)
         status = "degenerate"
 
-        if not mask.any():
-            status = "degenerate"
-        else:
-            corr_sub = matrix[np.ix_(mask, mask)]
-            expected_mu = np.nan_to_num(new_m[mask])
-            if np.allclose(expected_mu, 0.0):
-                new_cash_pos[mask] = 0.0
-                status = "zero_signal"
+        if isinstance(cfg.covariance_config, SlidingWindowConfig):
+            # ── SW path: FactorModel solve via Woodbury identity ─────────────
+            sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
+            if not mask.any():
+                status = "degenerate"
             else:
+                win_w = sw_config.window
+                win_k = sw_config.n_factors
+                window_ret = np.where(
+                    np.isfinite(state.sw_ret_buf[:, mask]),  # type: ignore[index]
+                    state.sw_ret_buf[:, mask],  # type: ignore[index]
+                    0.0,
+                )
+                n_sub = int(mask.sum())
+                k_eff = min(win_k, win_w, n_sub)
                 try:
-                    denom_val = inv_a_norm(expected_mu, corr_sub)
-                except SingularMatrixError:
-                    denom_val = float("nan")
-
-                if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
-                    _logger.warning(
-                        "Positions zeroed at date=%s: normalisation denominator degenerate (denom=%s, denom_tol=%s).",
-                        date,
-                        denom_val,
-                        cfg.denom_tol,
-                    )
+                    fm = FactorModel.from_returns(window_ret, k=k_eff)
+                except (np.linalg.LinAlgError, ValueError) as exc:
+                    _logger.debug("Sliding window SVD failed at date=%s: %s", date, exc)
                     new_cash_pos[mask] = 0.0
                     status = "degenerate"
                 else:
+                    expected_mu = np.nan_to_num(new_m[mask])
+                    if np.allclose(expected_mu, 0.0):
+                        new_cash_pos[mask] = 0.0
+                        status = "zero_signal"
+                    else:
+                        try:
+                            x = fm.solve(expected_mu)
+                            denom_val = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
+                        except (SingularMatrixError, np.linalg.LinAlgError) as exc:
+                            _logger.warning("Woodbury solve failed at date=%s: %s", date, exc)
+                            new_cash_pos[mask] = 0.0
+                            status = "degenerate"
+                        else:
+                            if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
+                                _logger.warning(
+                                    "Positions zeroed at date=%s (sliding_window): normalisation "
+                                    "denominator degenerate (denom=%s, denom_tol=%s).",
+                                    date,
+                                    denom_val,
+                                    cfg.denom_tol,
+                                )
+                                new_cash_pos[mask] = 0.0
+                                status = "degenerate"
+                            else:
+                                risk_pos = (x / denom_val) / profit_variance
+                                vola_sub = vola_vec[mask]
+                                with np.errstate(invalid="ignore"):
+                                    new_cash_pos[mask] = risk_pos / vola_sub
+                                status = "valid"
+        else:
+            # ── EWM path: shrink2id correlation matrix solve ─────────────────
+            # Reconstruct the EWM correlation matrix from filter outputs.
+            # Use y_*[0] (the filter OUTPUT for this step), not zf[0].
+            s_x = y_x[0]
+            s_x2 = y_x2[0]
+            s_xy = y_xy[0]
+            s_w = y_w[0]
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                pos_w = s_w > 0
+                ewm_x = np.where(pos_w, s_x / s_w, np.nan)
+                ewm_y = np.where(pos_w, s_x.T / s_w, np.nan)
+                ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)
+                ewm_y2 = np.where(pos_w, s_x2.T / s_w, np.nan)
+                ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)
+
+            var_x = np.maximum(ewm_x2 - ewm_x**2, 0.0)
+            var_y = np.maximum(ewm_y2 - ewm_y**2, 0.0)
+            denom_corr = np.sqrt(var_x * var_y)
+            cov = ewm_xy - ewm_x * ewm_y
+
+            with np.errstate(divide="ignore", invalid="ignore"):
+                corr = np.where(denom_corr > cfg.min_corr_denom, cov / denom_corr, np.nan)
+            corr = np.clip(corr, -1.0, 1.0)
+            corr[corr_count < cfg.corr] = np.nan
+            diag_idx = np.arange(n_assets)
+            corr[diag_idx, diag_idx] = np.where(corr_count[diag_idx, diag_idx] >= cfg.corr, 1.0, np.nan)
+
+            matrix = shrink2id(corr, lamb=cfg.shrink)
+
+            if not mask.any():
+                status = "degenerate"
+            else:
+                corr_sub = matrix[np.ix_(mask, mask)]
+                expected_mu = np.nan_to_num(new_m[mask])
+                if np.allclose(expected_mu, 0.0):
+                    new_cash_pos[mask] = 0.0
+                    status = "zero_signal"
+                else:
                     try:
-                        pos = solve(corr_sub, expected_mu) / denom_val
+                        denom_val = inv_a_norm(expected_mu, corr_sub)
                     except SingularMatrixError:
+                        denom_val = float("nan")
+
+                    if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
+                        _logger.warning(
+                            "Positions zeroed at date=%s: normalisation denominator "
+                            "degenerate (denom=%s, denom_tol=%s).",
+                            date,
+                            denom_val,
+                            cfg.denom_tol,
+                        )
                         new_cash_pos[mask] = 0.0
                         status = "degenerate"
                     else:
-                        risk_pos = pos / profit_variance
-                        vola_sub = vola_vec[mask]
-                        with np.errstate(invalid="ignore"):
-                            new_cash_pos[mask] = risk_pos / vola_sub
-                        status = "valid"
+                        try:
+                            pos = solve(corr_sub, expected_mu) / denom_val
+                        except SingularMatrixError:
+                            new_cash_pos[mask] = 0.0
+                            status = "degenerate"
+                        else:
+                            risk_pos = pos / profit_variance
+                            vola_sub = vola_vec[mask]
+                            with np.errstate(invalid="ignore"):
+                                new_cash_pos[mask] = risk_pos / vola_sub
+                            status = "valid"
 
         # ── Persist updated state ───────────────────────────────────────────
         state.corr_zi_x = corr_zi_x
@@ -871,6 +957,7 @@ class BasanosStream:
             step_count=np.array(state.step_count),
             cfg_json=np.array(self._cfg.model_dump_json()),
             assets=np.array(self._assets),
+            sw_ret_buf=(state.sw_ret_buf if state.sw_ret_buf is not None else np.empty((0, 0), dtype=float)),
         )
 
     @classmethod
@@ -938,5 +1025,6 @@ class BasanosStream:
             prev_price=data["prev_price"],
             prev_cash_pos=data["prev_cash_pos"],
             step_count=int(data["step_count"]),
+            sw_ret_buf=data["sw_ret_buf"] if data["sw_ret_buf"].size > 0 else None,
         )
         return cls(cfg=cfg, assets=assets, state=state)

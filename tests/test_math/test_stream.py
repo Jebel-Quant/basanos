@@ -205,6 +205,7 @@ def test_field_count() -> None:
         "prev_price",
         "prev_cash_pos",
         "step_count",
+        "sw_ret_buf",
     }
     assert fields == expected
 
@@ -320,19 +321,20 @@ def test_stream_state_is_dataclass():
 # ─── from_warmup validation ───────────────────────────────────────────────────
 
 
-def test_from_warmup_rejects_sliding_window():
-    """from_warmup raises TypeError for SlidingWindowConfig."""
-    prices, mu, _, _ = _make_prices_mu()
+def test_from_warmup_accepts_sliding_window():
+    """from_warmup must succeed for SlidingWindowConfig and seed the rolling buffer."""
+    prices, mu, _, assets = _make_prices_mu(n_total=80)
     cfg_sw = BasanosConfig(
         vola=5,
         corr=10,
         clip=3.0,
         shrink=0.5,
         aum=1e6,
-        covariance_config=SlidingWindowConfig(window=30, n_factors=2),
+        covariance_config=SlidingWindowConfig(window=20, n_factors=2),
     )
-    with pytest.raises(TypeError, match="EwmaShrinkConfig"):
-        BasanosStream.from_warmup(prices.head(40), mu.head(40), cfg_sw)
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg_sw)
+    assert stream._state.sw_ret_buf is not None
+    assert stream._state.sw_ret_buf.shape == (20, len(assets))
 
 
 def test_from_warmup_rejects_missing_date_column():
@@ -1420,3 +1422,169 @@ def test_save_appends_npz_suffix():
         restored = BasanosStream.load(pathlib.Path(tmp) / "stream.npz")
 
     assert restored.assets == stream.assets
+
+
+# ─── SlidingWindowConfig streaming tests ─────────────────────────────────────
+
+
+def _make_sw_stream(warmup_len: int = 50, window: int = 20, n_factors: int = 2):
+    """Return (stream, prices_np, mu_np, prices, mu, assets) for SW integration tests."""
+    prices, mu, _, assets = _make_prices_mu(n_total=80)
+    cfg_sw = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=window, n_factors=n_factors),
+    )
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg_sw)
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+    return stream, prices_np, mu_np, prices, mu, assets
+
+
+def test_sw_step_returns_step_result():
+    """step() with SlidingWindowConfig must return a StepResult."""
+    stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream()
+    warmup_len = 50
+    result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+    assert isinstance(result, StepResult)
+
+
+def test_sw_step_cash_position_and_vola_shape():
+    """cash_position and vola must have shape (N,) for SW mode."""
+    stream, prices_np, mu_np, prices, _mu, assets = _make_sw_stream()
+    warmup_len = 50
+    result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+    assert result.cash_position.shape == (len(assets),)
+    assert result.vola.shape == (len(assets),)
+
+
+def test_sw_step_valid_status_after_full_warmup():
+    """step() must return 'valid' when the buffer is full and signal is non-zero."""
+    stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
+    warmup_len = 50
+    result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+    assert result.status in {"valid", "degenerate"}
+
+
+def test_sw_warmup_status_when_buffer_not_full():
+    """step() must return 'warmup' when fewer than window rows have been seen."""
+    prices, mu, _, assets = _make_prices_mu(n_total=80)
+    # warmup batch shorter than window: stream starts in warmup
+    cfg_sw = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=20, n_factors=2),
+    )
+    # warmup_len=15 < window=20 → buffer is padded; first step still in warmup
+    stream = BasanosStream.from_warmup(prices.head(15), mu.head(15), cfg_sw)
+    assert stream._state.sw_ret_buf is not None
+    assert stream._state.sw_ret_buf.shape == (20, len(assets))
+
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+    result = stream.step(prices_np[15], mu_np[15], prices["date"][15])
+    assert result.status == "warmup"
+
+
+def test_sw_step_zero_signal_yields_zero_signal():
+    """step() must return 'zero_signal' when mu is all-zero in SW mode."""
+    stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
+    warmup_len = 50
+    zero_mu = np.zeros_like(mu_np[warmup_len])
+    result = stream.step(prices_np[warmup_len], zero_mu, prices["date"][warmup_len])
+    assert result.status == "zero_signal"
+    assert np.all(result.cash_position[np.isfinite(result.cash_position)] == 0.0)
+
+
+def test_sw_step_all_nan_prices_yields_degenerate():
+    """step() must return 'degenerate' when all prices are NaN in SW mode."""
+    stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
+    warmup_len = 50
+    nan_prices = np.full_like(prices_np[warmup_len], np.nan)
+    result = stream.step(nan_prices, mu_np[warmup_len], prices["date"][warmup_len])
+    assert result.status == "degenerate"
+
+
+def test_sw_step_singular_woodbury_yields_degenerate():
+    """step() must return 'degenerate' when the Woodbury solve raises SingularMatrixError."""
+    stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
+    warmup_len = 50
+    with patch("basanos.math._stream.FactorModel.from_returns") as mock_fm:
+        mock_fm.side_effect = ValueError("singular")
+        result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+    assert result.status == "degenerate"
+
+
+def test_sw_step_degenerate_denom_yields_degenerate():
+    """step() must return 'degenerate' when the Woodbury denominator is non-finite."""
+    stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
+    warmup_len = 50
+    with patch("basanos.math._stream.FactorModel.solve", return_value=np.zeros(3)):
+        result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+    assert result.status == "degenerate"
+
+
+def test_sw_step_fm_solve_raises_yields_degenerate():
+    """step() must return 'degenerate' when fm.solve() raises SingularMatrixError."""
+    from basanos.exceptions import SingularMatrixError
+
+    stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
+    warmup_len = 50
+    with patch("basanos.math._stream.FactorModel.solve", side_effect=SingularMatrixError("singular")):
+        result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+    assert result.status == "degenerate"
+
+
+def test_sw_step_matches_batch_engine():
+    """SW stream step at warmup_len must match the batch engine cash_position at that row."""
+    prices, mu, _, assets = _make_prices_mu(n_total=80)
+    warmup_len = 50
+    window = 20
+    cfg_sw = BasanosConfig(
+        vola=5,
+        corr=10,
+        clip=3.0,
+        shrink=0.5,
+        aum=1e6,
+        covariance_config=SlidingWindowConfig(window=window, n_factors=2),
+    )
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg_sw)
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
+
+    # Batch engine on prices[:warmup_len+1] should agree at the last row
+    from basanos.math import BasanosEngine
+
+    engine = BasanosEngine(prices=prices.head(warmup_len + 1), mu=mu.head(warmup_len + 1), cfg=cfg_sw)
+    batch_pos = engine.cash_position.select(assets).to_numpy()[-1]
+
+    np.testing.assert_allclose(result.cash_position, batch_pos, rtol=1e-6, equal_nan=True)
+
+
+def test_sw_save_load_roundtrip():
+    """A SW stream restored from disk must produce bit-for-bit identical step() output."""
+    import pathlib
+    import tempfile
+
+    stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream()
+    warmup_len = 50
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "sw_stream.npz"
+        stream.save(p)
+        restored = BasanosStream.load(p)
+
+    step_date = prices["date"][warmup_len]
+    result_orig = stream.step(prices_np[warmup_len], mu_np[warmup_len], step_date)
+    result_loaded = restored.step(prices_np[warmup_len], mu_np[warmup_len], step_date)
+
+    np.testing.assert_array_equal(result_orig.cash_position, result_loaded.cash_position)
+    assert result_orig.status == result_loaded.status
