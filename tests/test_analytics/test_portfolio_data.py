@@ -12,7 +12,8 @@ from datetime import date
 import polars as pl
 import pytest
 
-from basanos.analytics import Portfolio, PortfolioData
+from basanos.analytics import Portfolio
+from basanos.analytics._portfolio_data import PortfolioData
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -59,12 +60,6 @@ def test_portfolio_instance_is_not_portfolio_data(prices, positions):
     """A Portfolio instance must not pass isinstance checks for PortfolioData."""
     pf = Portfolio(prices=prices, cashposition=positions)
     assert not isinstance(pf, PortfolioData)
-
-
-def test_portfolio_holds_portfolio_data_via_data_property(prices, positions):
-    """Portfolio.data must be a PortfolioData instance (composition accessor)."""
-    pf = Portfolio(prices=prices, cashposition=positions)
-    assert isinstance(pf.data, PortfolioData)
 
 
 # ─── PortfolioData direct instantiation ──────────────────────────────────────

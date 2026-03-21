@@ -20,7 +20,8 @@ import polars as pl
 import polars.testing as pt
 import pytest
 
-from basanos.analytics import Portfolio, PortfolioData
+from basanos.analytics import Portfolio
+from basanos.analytics._portfolio_data import PortfolioData
 from basanos.exceptions import (
     CleaningInvariantError,
     IntegerIndexBoundError,
