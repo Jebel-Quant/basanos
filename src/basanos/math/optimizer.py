@@ -27,7 +27,7 @@ Let *N* be the number of assets and *T* the number of timestamps.
 
 **Memory usage** (peak, approximate)
 
-``_ewm_corr_numpy`` allocates roughly **14 float64 arrays** of shape
+``ewm_corr`` allocates roughly **14 float64 arrays** of shape
 ``(T, N, N)`` at peak (input sequences, IIR filter outputs, EWM components,
 and the result tensor).  Peak RAM ≈ **112 * T * N²** bytes.  Typical
 working sizes on a 16 GB machine:
@@ -66,7 +66,7 @@ God-Object complexity:
 
 * :mod:`basanos.math._config` — :class:`BasanosConfig` and all
   covariance-mode configuration classes.
-* :mod:`basanos.math._ewm_corr` — :func:`_ewm_corr_numpy`, the vectorised
+* :mod:`basanos.math._ewm_corr` — :func:`ewm_corr`, the vectorised
   IIR-filter implementation of per-row EWM correlation matrices.
 * :mod:`basanos.math._engine_solve` — :class:`_SolveMixin` with
   ``_iter_matrices`` and ``_iter_solve`` generators (per-timestamp solve
@@ -105,7 +105,7 @@ from ._config import (
 from ._engine_diagnostics import _DiagnosticsMixin
 from ._engine_ic import _SignalEvaluatorMixin
 from ._engine_solve import _SolveMixin
-from ._ewm_corr import _ewm_corr_numpy
+from ._ewm_corr import ewm_corr as _ewm_corr_numpy
 from ._signal import vol_adj
 
 if TYPE_CHECKING:
@@ -339,7 +339,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
             dict: Mapping ``date -> np.ndarray`` of shape (n_assets, n_assets).
 
         Performance:
-            Delegates to :func:`_ewm_corr_numpy`, which is O(T·N²) in both
+            Delegates to :func:`ewm_corr`, which is O(T·N²) in both
             time and memory.  The returned dict holds *T* references into the
             result tensor (one N*N view per date); no extra copies are made.
             For large *N* or *T*, prefer ``cor_tensor`` to keep a single
@@ -427,7 +427,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         Performance:
             For ``ewma_shrink``: dominant cost is ``self.cor`` (O(T·N²) time,
-            O(T·N²) memory — see :func:`_ewm_corr_numpy`).  The per-timestamp
+            O(T·N²) memory — see :func:`ewm_corr`).  The per-timestamp
             linear solve adds O(N³) per row.
 
             For ``sliding_window``: O(T·W·N·k) for sliding SVDs plus
