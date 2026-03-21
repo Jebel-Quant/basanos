@@ -126,6 +126,89 @@ class _SolveMixin:
         with np.errstate(invalid="ignore"):
             return risk_pos / vola_active
 
+    @staticmethod
+    def _row_early_check(
+        i: int,
+        t: object,
+        mask: np.ndarray,
+        mu_row: np.ndarray,
+    ) -> tuple[np.ndarray, SolveYield | None]:
+        """Validate the price mask and expected-return signal for a single row.
+
+        Returns an ``(expected_mu, early_yield)`` pair.  When ``early_yield``
+        is not ``None``, the caller should ``yield early_yield; continue``
+        immediately — the row is either degenerate (empty mask) or has an
+        all-zero signal.  When ``early_yield`` is ``None`` the row is ready
+        for the mode-specific solve step.
+
+        Args:
+            i: Row index.
+            t: Timestamp.
+            mask: Boolean array of shape ``(n_assets,)`` indicating finite prices.
+            mu_row: Expected-return row of shape ``(n_assets,)``.
+
+        Returns:
+            tuple: ``(expected_mu, early_yield)`` where ``expected_mu`` is
+            ``np.nan_to_num(mu_row[mask])`` and ``early_yield`` is either a
+            complete :data:`SolveYield` tuple (when the caller should yield
+            and continue) or ``None`` (when the caller should proceed to solve).
+        """
+        if not mask.any():
+            return np.zeros(0), (i, t, mask, np.zeros(0), SolveStatus.DEGENERATE)
+        expected_mu = np.nan_to_num(mu_row[mask])
+        sig_status = _SolveMixin._check_signal(mu_row, mask)
+        if sig_status is not None:
+            return expected_mu, (i, t, mask, np.zeros_like(expected_mu), sig_status)
+        return expected_mu, None
+
+    @staticmethod
+    def _denom_guard_yield(
+        i: int,
+        t: object,
+        mask: np.ndarray,
+        expected_mu: np.ndarray,
+        pos_raw: np.ndarray,
+        denom: float,
+        denom_tol: float,
+    ) -> SolveYield:
+        """Apply the normalisation-denominator guard and return the appropriate yield tuple.
+
+        Emits a :data:`~logging.WARNING` and returns a
+        :attr:`~SolveStatus.DEGENERATE` yield when *denom* is non-finite or at
+        or below *denom_tol*; otherwise returns a :attr:`~SolveStatus.VALID`
+        yield with normalised positions ``pos_raw / denom``.
+
+        Args:
+            i: Row index.
+            t: Timestamp.
+            mask: Boolean asset mask of shape ``(n_assets,)``.
+            expected_mu: Masked expected-return vector of shape ``(n_active,)``.
+            pos_raw: Raw (pre-normalisation) position vector of shape ``(n_active,)``.
+            denom: Computed normalisation denominator.
+            denom_tol: Tolerance threshold below which *denom* is treated as degenerate.
+
+        Returns:
+            SolveYield: Either a degenerate or valid ``(i, t, mask, pos, status)`` tuple.
+        """
+        n_active = len(expected_mu)
+        if not np.isfinite(denom) or denom <= denom_tol:
+            _logger.warning(
+                "Positions zeroed at t=%s: normalisation denominator is degenerate "
+                "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
+                t,
+                denom,
+                denom_tol,
+                extra={
+                    "context": {
+                        "t": str(t),
+                        "denom": denom,
+                        "denom_tol": denom_tol,
+                    }
+                },
+            )
+            return i, t, mask, np.zeros(n_active), SolveStatus.DEGENERATE
+        return i, t, mask, pos_raw / denom, SolveStatus.VALID
+
     def _replay_profit_variance(
         self: _EngineProtocol,
         risk_pos_np: np.ndarray,
@@ -215,7 +298,8 @@ class _SolveMixin:
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
             for i, t in enumerate(dates):
                 mask = np.isfinite(prices_num[i])
-                if not mask.any() or i + 1 < win_w:
+                rows_available = i + 1
+                if not mask.any() or rows_available < win_w:
                     yield i, t, mask, None
                     continue
                 window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
@@ -289,13 +373,9 @@ class _SolveMixin:
             cor = self.cor
             for i, t in enumerate(dates):
                 mask = _SolveMixin._compute_mask(prices_num[i])
-                if not mask.any():
-                    yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
-                    continue
-                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
-                expected_mu = np.nan_to_num(mu_np[i][mask])
-                if sig_status is not None:
-                    yield i, t, mask, np.zeros_like(expected_mu), sig_status
+                expected_mu, early = _SolveMixin._row_early_check(i, t, mask, mu_np[i])
+                if early is not None:
+                    yield early
                     continue
                 corr_n = cor[t]
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
@@ -303,29 +383,12 @@ class _SolveMixin:
                     denom = inv_a_norm(expected_mu, matrix)
                 except SingularMatrixError:
                     denom = float("nan")
-                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                    _logger.warning(
-                        "Positions zeroed at t=%s: normalisation denominator is degenerate "
-                        "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
-                        t,
-                        denom,
-                        self.cfg.denom_tol,
-                        extra={
-                            "context": {
-                                "t": str(t),
-                                "denom": denom,
-                                "denom_tol": self.cfg.denom_tol,
-                            }
-                        },
-                    )
-                    yield i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
-                    continue
                 try:
-                    pos = solve(matrix, expected_mu) / denom
+                    pos_raw = solve(matrix, expected_mu)
                 except SingularMatrixError:
                     yield i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
                     continue
-                yield i, t, mask, pos, SolveStatus.VALID
+                yield _SolveMixin._denom_guard_yield(i, t, mask, expected_mu, pos_raw, denom, self.cfg.denom_tol)
         else:
             sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
             win_w: int = sw_config.window
@@ -333,11 +396,19 @@ class _SolveMixin:
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
             for i, t in enumerate(dates):
                 mask = _SolveMixin._compute_mask(prices_num[i])
+                rows_available = i + 1
                 if not mask.any():
                     yield i, t, mask, np.zeros(0), SolveStatus.DEGENERATE
                     continue
-                if i + 1 < win_w:
+                if rows_available < win_w:
                     yield i, t, mask, None, SolveStatus.WARMUP
+                    continue
+                # Signal check comes after the warmup guard so we avoid
+                # computing expected_mu for rows where the factor model
+                # cannot yet be built (insufficient history).
+                expected_mu, early = _SolveMixin._row_early_check(i, t, mask, mu_np[i])
+                if early is not None:
+                    yield early
                     continue
                 window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
                 window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
@@ -346,13 +417,13 @@ class _SolveMixin:
                 try:
                     fm = FactorModel.from_returns(window_ret, k=k_eff)
                 except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.debug("Sliding window SVD failed at t=%s: %s", t, exc)
+                    _logger.warning(
+                        "Sliding window SVD failed at t=%s: %s",
+                        t,
+                        exc,
+                        extra={"context": {"t": str(t), "exc_type": type(exc).__name__}},
+                    )
                     yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
-                    continue
-                sig_status = _SolveMixin._check_signal(mu_np[i], mask)
-                expected_mu = np.nan_to_num(mu_np[i][mask])
-                if sig_status is not None:
-                    yield i, t, mask, np.zeros(n_sub), sig_status
                     continue
                 try:
                     x = fm.solve(expected_mu)
@@ -361,17 +432,7 @@ class _SolveMixin:
                     _logger.warning("Woodbury solve failed at t=%s: %s", t, exc)
                     yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
                     continue
-                if not np.isfinite(denom) or denom <= self.cfg.denom_tol:
-                    _logger.warning(
-                        "Positions zeroed at t=%s (sliding_window): normalisation "
-                        "denominator is degenerate (denom=%s, denom_tol=%s).",
-                        t,
-                        denom,
-                        self.cfg.denom_tol,
-                    )
-                    yield i, t, mask, np.zeros(n_sub), SolveStatus.DEGENERATE
-                    continue
-                yield i, t, mask, x / denom, SolveStatus.VALID
+                yield _SolveMixin._denom_guard_yield(i, t, mask, expected_mu, x, denom, self.cfg.denom_tol)
 
     def warmup_state(self: _EngineProtocol) -> WarmupState:
         """Return the final :class:`WarmupState` after replaying the full batch.
