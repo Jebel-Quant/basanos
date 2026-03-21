@@ -14,21 +14,22 @@ change is introduced.
 
 ## Environment
 
-| Property           | Value                                  |
-|--------------------|----------------------------------------|
-| Date               | 2026-03-21                             |
-| Python             | CPython 3.14.2                         |
-| OS                 | macOS Darwin 24.6.0 (local run)        |
-| CPU                | Apple M4 Pro                           |
-| CPU cores          | 14 physical / 14 logical               |
-| pytest-benchmark   | 5.2.3                                  |
-| basanos version    | 0.5.0                                  |
-| Commit             | `75ebd14`                              |
+| Property           | Value                                              |
+|--------------------|----------------------------------------------------|
+| Date               | 2026-03-21                                         |
+| Python             | CPython 3.12.3                                     |
+| OS                 | Linux 6.14.0-1017-azure (GitHub Actions runner)    |
+| CPU                | AMD EPYC 7763 64-Core Processor                    |
+| CPU cores          | 4 vCPUs (GitHub Actions standard Ubuntu runner)    |
+| pytest-benchmark   | 5.2.3                                              |
+| basanos version    | 0.5.0                                              |
+| Commit             | `06c0877`                                          |
 
-> **Note**: These results were captured on a local Apple M4 Pro.  Absolute
-> timings differ from prior CI baselines (Azure AMD EPYC) but the relative
-> ordering and scaling behaviour are consistent.  CI regression detection
-> compares each run against the stored `baseline.json` on the same runner.
+> **Note**: These results were captured on a standard GitHub Actions Ubuntu
+> runner (AMD EPYC 7763, 4 vCPUs) — the same hardware class used by CI
+> regression detection.  Prior baselines captured on a local Apple M4 Pro have
+> been retired; all future baselines should be re-captured on CI runners so
+> regression thresholds remain meaningful.
 
 Dataset sizes used in the benchmarks:
 
@@ -58,50 +59,50 @@ in [`benchmarks/results/baseline.json`](benchmarks/results/baseline.json).
 
 | Benchmark                     | Mean      | Min       | Std Dev  | OPS    | Rounds |
 | ----------------------------- | --------- | --------- | -------- | ------ | ------ |
-| test_profits_252_5            | 995.3 µs  | 808.6 µs  | 121.6 µs | 1,005  | 90     |
-| test_profits_1260_5           | 989.3 µs  | 784.2 µs  | 146.7 µs | 1,011  | 1020   |
-| test_profits_252_20           | 3.269 ms  | 2.825 ms  | 280.0 µs | 306    | 319    |
-| test_nav_accumulated_252_5    | 1.234 ms  | 951.4 µs  | 146.3 µs | 811    | 236    |
-| test_nav_compounded_252_5     | 1.217 ms  | 954.0 µs  | 159.8 µs | 821    | 816    |
-| test_drawdown_252_5           | 1.418 ms  | 1.078 ms  | 176.3 µs | 705    | 388    |
-| test_drawdown_1260_5          | 1.424 ms  | 1.113 ms  | 220.2 µs | 702    | 735    |
-| test_monthly_252_5            | 1.729 ms  | 1.326 ms  | 207.1 µs | 578    | 127    |
-| test_tilt_timing_decomp_252_5 | 6.156 ms  | 5.034 ms  | 620.4 µs | 162    | 86     |
-| test_all_252_5                | 3.056 ms  | 2.542 ms  | 278.0 µs | 327    | 346    |
+| test_profits_252_5            | 3.232 ms  | 3.075 ms  | 106.0 µs | 309    | 232    |
+| test_profits_1260_5           | 3.245 ms  | 3.115 ms  | 79.5 µs  | 308    | 268    |
+| test_profits_252_20           | 11.921 ms | 11.550 ms | 520.8 µs | 84     | 81     |
+| test_nav_accumulated_252_5    | 3.563 ms  | 3.421 ms  | 77.8 µs  | 281    | 263    |
+| test_nav_compounded_252_5     | 3.663 ms  | 3.499 ms  | 87.4 µs  | 273    | 270    |
+| test_drawdown_252_5           | 3.749 ms  | 3.627 ms  | 54.1 µs  | 267    | 263    |
+| test_drawdown_1260_5          | 3.819 ms  | 3.702 ms  | 87.9 µs  | 262    | 258    |
+| test_monthly_252_5            | 4.320 ms  | 4.175 ms  | 90.1 µs  | 231    | 217    |
+| test_tilt_timing_decomp_252_5 | 15.640 ms | 15.228 ms | 260.8 µs | 64     | 63     |
+| test_all_252_5                | 7.808 ms  | 7.640 ms  | 102.9 µs | 128    | 125    |
 
 ### Stats
 
 | Benchmark              | Mean     | Min      | Std Dev | OPS    | Rounds |
 | ---------------------- | -------- | -------- | ------- | ------ | ------ |
-| test_volatility_252    | 45.2 µs  | 33.6 µs  | 6.8 µs  | 22,114 | 13080  |
-| test_sharpe_252        | 46.0 µs  | 30.9 µs  | 9.0 µs  | 21,756 | 15415  |
-| test_value_at_risk_252 | 19.9 µs  | 17.6 µs  | 2.8 µs  | 50,163 | 993    |
-| test_summary_252       | 1.583 ms | 1.304 ms | 197.5 µs| 632    | 85     |
-| test_summary_1260      | 1.619 ms | 1.299 ms | 137.4 µs| 618    | 511    |
+| test_volatility_252    | 196.3 µs | 180.0 µs | 11.9 µs | 5,095  | 4348   |
+| test_sharpe_252        | 202.0 µs | 184.0 µs | 12.7 µs | 4,949  | 3922   |
+| test_value_at_risk_252 | 73.6 µs  | 68.1 µs  | 7.0 µs  | 13,593 | 3892   |
+| test_summary_252       | 4.131 ms | 3.989 ms | 90.1 µs | 242    | 197    |
+| test_summary_1260      | 4.345 ms | 4.159 ms | 115.9 µs| 230    | 208    |
 
 ### BasanosEngine (ewma_shrink)
 
-| Benchmark                 | Mean      | Min       | Std Dev  | OPS   | Rounds |
-| ------------------------- | --------- | --------- | -------- | ----- | ------ |
-| test_ret_adj_252_5        | 247.8 µs  | 151.0 µs  | 135.9 µs | 4,035 | 598    |
-| test_vola_252_5           | 127.1 µs  | 57.8 µs   | 44.3 µs  | 7,867 | 4596   |
-| test_cor_252_5            | 626.3 µs  | 479.9 µs  | 91.8 µs  | 1,597 | 362    |
-| test_cor_1260_5           | 1.750 ms  | 1.402 ms  | 241.3 µs | 571   | 575    |
-| test_cor_252_20           | 4.232 ms  | 3.638 ms  | 462.0 µs | 236   | 242    |
-| test_cash_position_252_5  | 18.961 ms | 18.082 ms | 390.8 µs | 53    | 47     |
-| test_cash_position_1260_5 | 89.985 ms | 88.583 ms | 631.0 µs | 11    | 12     |
-| test_portfolio_252_5      | 19.131 ms | 18.373 ms | 318.7 µs | 52    | 50     |
+| Benchmark                 | Mean       | Min        | Std Dev  | OPS   | Rounds |
+| ------------------------- | ---------- | ---------- | -------- | ----- | ------ |
+| test_ret_adj_252_5        | 432.4 µs   | 400.7 µs   | 19.0 µs  | 2,312 | 1719   |
+| test_vola_252_5           | 251.8 µs   | 213.6 µs   | 13.7 µs  | 3,971 | 3882   |
+| test_cor_252_5            | 1.256 ms   | 1.195 ms   | 86.8 µs  | 796   | 472    |
+| test_cor_1260_5           | 5.678 ms   | 5.522 ms   | 83.6 µs  | 176   | 177    |
+| test_cor_252_20           | 14.535 ms  | 13.963 ms  | 232.9 µs | 69    | 67     |
+| test_cash_position_252_5  | 69.886 ms  | 69.322 ms  | 410.3 µs | 14    | 14     |
+| test_cash_position_1260_5 | 351.111 ms | 349.679 ms | 1.492 ms | 3     | 5      |
+| test_portfolio_252_5      | 70.143 ms  | 69.495 ms  | 372.5 µs | 14    | 15     |
 
 ### BasanosEngine (sliding_window)
 
 Complexity: O(T·W·N·k) for rolling SVDs, O(T·(k³ + kN)) for Woodbury solves.
 Memory: O(W·N) per step, independent of T.
 
-| Benchmark                         | T    | N  | W  | k | Mean      | Min       | Std Dev  | OPS | Rounds |
-| --------------------------------- | ---- | -- | -- | - | --------- | --------- | -------- | --- | ------ |
-| test_cash_position_sw_252_5_60_3  | 252  | 5  | 60 | 3 | 16.545 ms | 15.990 ms | 276.4 µs | 60  | 58     |
-| test_cash_position_sw_252_20_60_5 | 252  | 20 | 60 | 5 | 29.655 ms | 28.820 ms | 543.3 µs | 34  | 35     |
-| test_cash_position_sw_1260_5_60_3 | 1260 | 5  | 60 | 3 | 93.002 ms | 91.818 ms | 816.9 µs | 11  | 11     |
+| Benchmark                         | T    | N  | W  | k | Mean       | Min        | Std Dev  | OPS | Rounds |
+| --------------------------------- | ---- | -- | -- | - | ---------- | ---------- | -------- | --- | ------ |
+| test_cash_position_sw_252_5_60_3  | 252  | 5  | 60 | 3 | 61.656 ms  | 60.809 ms  | 369.0 µs | 16  | 16     |
+| test_cash_position_sw_252_20_60_5 | 252  | 20 | 60 | 5 | 80.364 ms  | 79.773 ms  | 248.3 µs | 12  | 12     |
+| test_cash_position_sw_1260_5_60_3 | 1260 | 5  | 60 | 3 | 364.392 ms | 362.199 ms | 1.507 ms | 3   | 5      |
 
 ### BasanosStream.from_warmup()
 
@@ -109,13 +110,13 @@ One-time initialisation cost for the incremental streaming API.  Runs the
 O(T·N²) EWM correlation batch pass and extracts the IIR filter state (PR #349
 eliminated the prior redundant lfilter sweeps, halving this cost for large T).
 
-| Benchmark                      | T    | N  | W  | k | Mean      | Min       | Std Dev    | OPS | Rounds |
-| ------------------------------ | ---- | -- | -- | - | --------- | --------- | ---------- | --- | ------ |
-| test_from_warmup_252_5         | 252  | 5  | —  | — | 17.001 ms | 16.352 ms | 285.9 µs   | 59  | 54     |
-| test_from_warmup_1260_5        | 1260 | 5  | —  | — | 87.876 ms | 86.769 ms | 758.9 µs   | 11  | 12     |
-| test_from_warmup_252_20        | 252  | 20 | —  | — | 27.633 ms | 26.821 ms | 458.1 µs   | 36  | 35     |
-| test_from_warmup_sw_252_5_60_3 | 252  | 5  | 60 | 3 | 17.599 ms | 17.080 ms | 257.5 µs   | 57  | 54     |
-| test_from_warmup_sw_1260_5_60_3| 1260 | 5  | 60 | 3 | 97.020 ms | 93.433 ms | 6.405 ms   | 10  | 11     |
+| Benchmark                      | T    | N  | W  | k | Mean       | Min        | Std Dev    | OPS | Rounds |
+| ------------------------------ | ---- | -- | -- | - | ---------- | ---------- | ---------- | --- | ------ |
+| test_from_warmup_252_5         | 252  | 5  | —  | — | 62.781 ms  | 61.419 ms  | 2.402 ms   | 16  | 17     |
+| test_from_warmup_1260_5        | 1260 | 5  | —  | — | 338.479 ms | 337.557 ms | 1.307 ms   | 3   | 5      |
+| test_from_warmup_252_20        | 252  | 20 | —  | — | 93.538 ms  | 92.492 ms  | 494.3 µs   | 11  | 11     |
+| test_from_warmup_sw_252_5_60_3 | 252  | 5  | 60 | 3 | 64.614 ms  | 63.811 ms  | 305.4 µs   | 15  | 16     |
+| test_from_warmup_sw_1260_5_60_3| 1260 | 5  | 60 | 3 | 368.756 ms | 366.942 ms | 1.733 ms   | 3   | 5      |
 
 ---
 
