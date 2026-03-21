@@ -20,13 +20,18 @@ after the notebook was first written, making this gate especially important.
 from __future__ import annotations
 
 import math
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 
 import numpy as np
 import polars as pl
 import pytest
 
 from basanos.math import BasanosConfig, BasanosEngine, SlidingWindowConfig
+
+_NOTEBOOK = Path(__file__).parents[2] / "book/marimo/notebooks/diagnostics.py"
 
 # ─── Shared constants (mirror the notebook) ──────────────────────────────────
 
@@ -348,3 +353,29 @@ class TestSignalUtilisationSw:
     def test_row_count(self, sw_engine: BasanosEngine, notebook_prices: pl.DataFrame) -> None:
         """signal_utilisation must have one row per price timestamp."""
         assert sw_engine.signal_utilisation.height == notebook_prices.height
+
+
+# ─── Direct notebook execution ───────────────────────────────────────────────
+
+
+def test_notebook_executes() -> None:
+    """Execute diagnostics.py directly via marimo export html (no sandbox).
+
+    This catches regressions in notebook cell code itself, not just the API
+    that the mirror tests validate.
+    """
+    result = subprocess.run(  # nosec
+        [sys.executable, "-m", "marimo", "export", "html", str(_NOTEBOOK), "-o", "/dev/null"],
+        capture_output=True,
+        text=True,
+    )
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    failure_keywords = ["cells failed to execute", "marimoexceptionraisederror"]
+    for kw in failure_keywords:
+        assert kw.lower() not in combined.lower(), (
+            f"Notebook {_NOTEBOOK.name} reported cell failures (keyword '{kw}'):\n"
+            f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+        )
+    assert result.returncode == 0, (
+        f"marimo export returned non-zero for {_NOTEBOOK.name}:\nstdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+    )
