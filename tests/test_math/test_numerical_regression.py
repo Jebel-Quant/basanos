@@ -304,3 +304,73 @@ def test_ewma_warmup_phase_structure() -> None:
 
     # ── Full array matches golden (NaN == NaN) ────────────────────────────
     np.testing.assert_allclose(actual, golden, rtol=1e-12, atol=1e-11, equal_nan=True)
+
+
+# ─── 5. EwmaShrink batched vs sequential cross-path consistency ───────────────
+
+
+def test_ewma_batch_and_sequential_paths_agree() -> None:
+    r"""Batched EwmaShrink solve must match sequential ``_compute_position`` exactly.
+
+    ``_iter_solve`` dispatches to two different implementations depending on the
+    covariance mode:
+
+    * :meth:`~basanos.math._engine_solve._SolveMixin._iter_solve_ewma_batched`
+      — vectorised batch ``numpy.linalg.solve`` grouped by mask pattern
+      (:class:`~basanos.math.EwmaShrinkConfig`).
+    * A sequential :meth:`~basanos.math._engine_solve._SolveMixin._compute_position`
+      loop (:class:`~basanos.math.SlidingWindowConfig`).
+
+    This test asserts that both paths produce numerically identical
+    ``(pos, status)`` tuples for every row when fed the same EwmaShrink
+    covariance matrices, independently of the golden-file regression tests.
+    Any future divergence between the two branches — a new edge case, a new
+    :class:`~basanos.math._engine_solve.SolveStatus` value, or a change to
+    denominator logic — will cause this test to fail immediately.
+    """
+    engine, _prices, _mu = _make_2asset_engine(n=80, rng_seed=99, vola=10, corr=20, shrink=0.5)
+    mu_np = engine.mu.select(engine.assets).to_numpy()
+    denom_tol = engine.cfg.denom_tol
+    matrix_yields = list(engine._iter_matrices())
+
+    # ── Batched path (the actual EwmaShrink implementation) ───────────────
+    batched: dict[int, tuple[np.ndarray | None, SolveStatus]] = {
+        i: (pos, status)
+        for i, _t, _mask, pos, status in _SolveMixin._iter_solve_ewma_batched(mu_np, matrix_yields, denom_tol)
+    }
+
+    # ── Sequential path: replicate the SlidingWindow loop using EwmaShrink
+    #    matrix bundles.  This is what _iter_solve would do if EwmaShrinkConfig
+    #    used the sequential branch.
+    sequential: dict[int, tuple[np.ndarray | None, SolveStatus]] = {}
+    for i, t, mask, bundle in matrix_yields:
+        if bundle is None:
+            sequential[i] = (np.zeros(int(mask.sum())), SolveStatus.DEGENERATE)
+            continue
+        expected_mu, early = _SolveMixin._row_early_check(i, t, mask, mu_np[i])
+        if early is not None:
+            _i, _t, _mask, pos, status = early
+            sequential[i] = (pos, status)
+            continue
+        _i, _t, _mask, pos, status = _SolveMixin._compute_position(i, t, mask, expected_mu, bundle, denom_tol)
+        sequential[i] = (pos, status)
+
+    # ── Both paths must cover the same row indices ────────────────────────
+    assert set(batched.keys()) == set(sequential.keys()), (
+        "Batched and sequential paths yielded different row indices: "
+        f"batched={sorted(batched.keys())}, sequential={sorted(sequential.keys())}"
+    )
+
+    # ── Per-row: statuses and positions must agree ─────────────────────────
+    for i in sorted(batched.keys()):
+        b_pos, b_status = batched[i]
+        s_pos, s_status = sequential[i]
+        assert b_status == s_status, f"Row {i}: status mismatch: batched={b_status!r}, sequential={s_status!r}"
+        if b_pos is not None and s_pos is not None:
+            np.testing.assert_allclose(
+                b_pos,
+                s_pos,
+                rtol=1e-12,
+                atol=1e-14,
+                err_msg=f"Row {i}: position vectors differ between batched and sequential paths",
+            )
