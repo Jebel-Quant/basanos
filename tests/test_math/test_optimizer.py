@@ -2141,6 +2141,16 @@ class TestBasanosConfigSlidingWindow:
         with pytest.raises(ValueError, match=r"greater than 0"):
             SlidingWindowConfig(window=40, n_factors=5, max_components=0)
 
+    def test_rejects_max_components_greater_than_n_factors(self):
+        """max_components must not exceed n_factors."""
+        with pytest.raises(ValueError, match=r"max_components \(10\) must not exceed n_factors \(5\)"):
+            SlidingWindowConfig(window=40, n_factors=5, max_components=10)
+
+    def test_accepts_max_components_equal_to_n_factors(self):
+        """max_components == n_factors is the boundary case and must be accepted."""
+        cfg = SlidingWindowConfig(window=40, n_factors=5, max_components=5)
+        assert cfg.max_components == 5
+
     def test_ewma_shrink_does_not_require_window_or_n_factors(self):
         """Default ewma_shrink mode should work without window / n_factors."""
         cfg = BasanosConfig(**self._base)  # should not raise

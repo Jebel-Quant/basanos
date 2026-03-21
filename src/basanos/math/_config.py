@@ -168,6 +168,13 @@ class SlidingWindowConfig(BaseModel):
 
     model_config = {"frozen": True}
 
+    @model_validator(mode="after")
+    def _validate_max_components(self) -> "SlidingWindowConfig":
+        if self.max_components is not None and self.max_components > self.n_factors:
+            msg = f"max_components ({self.max_components}) must not exceed n_factors ({self.n_factors})"
+            raise ValueError(msg)
+        return self
+
 
 CovarianceConfig = Annotated[
     EwmaShrinkConfig | SlidingWindowConfig,
