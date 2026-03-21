@@ -1773,11 +1773,21 @@ class TestDiagnostics:
         )
 
     def test_position_status_degenerate_when_inv_a_norm_raises(self, caplog) -> None:
-        """When inv_a_norm raises SingularMatrixError, status should be 'degenerate'."""
+        """When inv_a_norm raises SingularMatrixError, status should be 'degenerate'.
+
+        The batched EwmaShrink path uses numpy.linalg.solve directly (skipping
+        inv_a_norm).  To exercise the inv_a_norm fallback path we must also
+        force np.linalg.solve to raise LinAlgError so _batched_solve_group
+        falls back to the sequential _compute_position calls where inv_a_norm
+        is still invoked.
+        """
         prices, mu = _make_prices_mu(40)
         cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
         engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-        with patch("basanos.math._engine_solve.inv_a_norm", side_effect=SingularMatrixError()):
+        with (
+            patch.object(np.linalg, "solve", side_effect=np.linalg.LinAlgError("singular")),
+            patch("basanos.math._engine_solve.inv_a_norm", side_effect=SingularMatrixError()),
+        ):
             ps = engine.position_status
         statuses = ps["status"].to_list()
         assert "degenerate" in statuses, "Expected 'degenerate' when inv_a_norm raises SingularMatrixError"

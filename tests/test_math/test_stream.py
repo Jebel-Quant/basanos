@@ -1262,7 +1262,10 @@ def test_warmup_state_ewma_singular_inv_a_norm():
     n = 50
     engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
 
-    with patch("basanos.math._engine_solve.inv_a_norm", side_effect=SingularMatrixError("singular")):
+    with (
+        patch.object(np.linalg, "solve", side_effect=np.linalg.LinAlgError("singular")),
+        patch("basanos.math._engine_solve.inv_a_norm", side_effect=SingularMatrixError("singular")),
+    ):
         ws = engine.warmup_state()
 
     assert isinstance(ws, WarmupState)
@@ -1278,7 +1281,10 @@ def test_warmup_state_ewma_degenerate_denom():
     n = 50
     engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
 
-    with patch("basanos.math._engine_solve.inv_a_norm", return_value=float("nan")):
+    with (
+        patch.object(np.linalg, "solve", side_effect=np.linalg.LinAlgError("singular")),
+        patch("basanos.math._engine_solve.inv_a_norm", return_value=float("nan")),
+    ):
         ws = engine.warmup_state()
 
     assert isinstance(ws, WarmupState)
@@ -1295,8 +1301,11 @@ def test_warmup_state_ewma_singular_solve():
     n = 50
     engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
 
-    # inv_a_norm returns a valid denom; solve then raises
-    with patch("basanos.math._engine_solve.solve", side_effect=SingularMatrixError("singular")):
+    # Force the batched path to fall back to _compute_position, then make solve fail there.
+    with (
+        patch.object(np.linalg, "solve", side_effect=np.linalg.LinAlgError("singular")),
+        patch("basanos.math._engine_solve.solve", side_effect=SingularMatrixError("singular")),
+    ):
         ws = engine.warmup_state()
 
     assert isinstance(ws, WarmupState)

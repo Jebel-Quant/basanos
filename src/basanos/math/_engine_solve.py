@@ -413,6 +413,117 @@ class _SolveMixin:
                     _logger.warning("Factor model fit failed at t=%s: %s", t, exc)
                     yield i, t, mask, None
 
+    @staticmethod
+    def _batched_solve_group(
+        group: list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]],
+        denom_tol: float,
+    ) -> dict[int, SolveYield]:
+        """Solve a batch of linear systems sharing the same active-asset mask.
+
+        Stacks the ``len(group)`` systems into a ``(G, n, n)`` coefficient tensor
+        and a ``(G, n)`` right-hand-side matrix, then dispatches a single
+        ``numpy.linalg.solve`` call (which maps to a single batched LAPACK
+        routine).  Denominators are computed directly from the batch result as
+        ``sqrt(mu_i · pos_i)`` — algebraically identical to the per-row
+        :func:`~basanos.math._linalg.inv_a_norm` call.
+
+        Falls back to row-by-row :meth:`_compute_position` when
+        ``numpy.linalg.solve`` raises ``LinAlgError`` (any matrix in the batch
+        is singular).
+
+        Args:
+            group: List of ``(i, t, mask, expected_mu, matrix)`` tuples; all
+                entries share the same boolean mask and therefore the same
+                ``n_active x n_active`` matrix shape.
+            denom_tol: Passed through to :meth:`_denom_guard_yield`.
+
+        Returns:
+            dict: Mapping from row index ``i`` to its :data:`SolveYield`.
+        """
+        results: dict[int, SolveYield] = {}
+        a_stack = np.stack([row[4] for row in group])  # (G, n, n)
+        mu_stack = np.stack([row[3] for row in group])  # (G, n)
+
+        try:
+            # numpy.linalg.solve requires the RHS to be (..., M, K) when a is (..., M, M).
+            # Reshape mu_stack from (G, n) → (G, n, 1) so core dims match, then squeeze.
+            pos_stack = np.linalg.solve(a_stack, mu_stack[..., np.newaxis])[..., 0]  # (G, n)
+        except np.linalg.LinAlgError:
+            # At least one matrix is singular — fall back to sequential per-row solve.
+            for i, t, mask, expected_mu, matrix in group:
+                results[i] = _SolveMixin._compute_position(
+                    i, t, mask, expected_mu, MatrixBundle(matrix=matrix), denom_tol
+                )
+            return results
+
+        # Denominators: sqrt(mu_i^T A_i^{-1} mu_i) = sqrt(mu_i · pos_i).
+        dots = (mu_stack * pos_stack).sum(axis=1)  # (G,)
+        denoms = np.where(dots > 0.0, np.sqrt(dots), np.nan)
+
+        for (i, t, mask, expected_mu, _matrix), pos, denom in zip(group, pos_stack, denoms, strict=True):
+            results[i] = _SolveMixin._denom_guard_yield(i, t, mask, expected_mu, pos, float(denom), denom_tol)
+
+        return results
+
+    @staticmethod
+    def _iter_solve_ewma_batched(
+        mu_np: np.ndarray,
+        matrix_yields: list[MatrixYield],
+        denom_tol: float,
+    ) -> Generator[SolveYield, None, None]:
+        r"""Vectorised EwmaShrink solve: batch ``numpy.linalg.solve`` across timestamps.
+
+        Groups rows by their boolean asset mask so all systems within a group
+        share the same ``(n_active, n_active)`` shape, then stacks them into a
+        ``(G, n, n)`` tensor and calls ``numpy.linalg.solve`` once per unique
+        mask pattern.  Results are collected in a dict and yielded in original
+        row order.
+
+        Denominators are derived from the batch solution as
+        :math:`\sqrt{\mu_i \cdot \mathbf{pos}_i} = \sqrt{\mu_i^\top \Sigma_i^{-1} \mu_i}`,
+        matching the scalar :func:`~basanos.math._linalg.inv_a_norm` result up
+        to float64 rounding.
+
+        Any group whose batch solve raises ``LinAlgError`` (singular matrix in
+        the batch) falls back to sequential :meth:`_compute_position` for that
+        group only.
+
+        Args:
+            mu_np: Signal matrix, shape ``(T, n_assets)``.
+            matrix_yields: Pre-collected list from :meth:`_iter_matrices`
+                (the EwmaShrinkConfig branch).
+            denom_tol: Denominator guard tolerance.
+
+        Yields:
+            :data:`SolveYield` tuples in original row order.
+        """
+        # First pass: categorise each row as early-exit or a solve candidate.
+        all_results: dict[int, SolveYield] = {}
+        # mask.tobytes() → list of (i, t, mask, expected_mu, matrix)
+        solve_groups: dict[bytes, list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]]] = {}
+
+        for i, t, mask, bundle in matrix_yields:
+            if bundle is None:
+                all_results[i] = (i, t, mask, np.zeros(int(mask.sum())), SolveStatus.DEGENERATE)
+                continue
+            expected_mu, early = _SolveMixin._row_early_check(i, t, mask, mu_np[i])
+            if early is not None:
+                all_results[i] = early
+                continue
+            mask_key = mask.tobytes()
+            if mask_key not in solve_groups:
+                solve_groups[mask_key] = []
+            solve_groups[mask_key].append((i, t, mask, expected_mu, bundle.matrix))
+
+        # Second pass: batch-solve each mask group.
+        for group in solve_groups.values():
+            all_results.update(_SolveMixin._batched_solve_group(group, denom_tol))
+
+        # Yield in original row order.
+        for i in range(len(matrix_yields)):
+            if i in all_results:
+                yield all_results[i]
+
     def _iter_solve(self: _EngineProtocol) -> Generator[SolveYield, None, None]:
         r"""Yield ``(i, t, mask, pos_or_none, status)`` for every timestamp.
 
@@ -428,18 +539,32 @@ class _SolveMixin:
         * Singular or degenerate solve → :attr:`~SolveStatus.DEGENERATE`.
         * Success → :attr:`~SolveStatus.VALID`.
 
+        For the :class:`~basanos.math.EwmaShrinkConfig` path the solve step is
+        vectorised: rows are grouped by their active-asset mask pattern and each
+        group is solved via a single batched ``numpy.linalg.solve`` call (see
+        :meth:`_iter_solve_ewma_batched`).  The :class:`~basanos.math.SlidingWindowConfig`
+        path retains a sequential per-row solve because the factor-model matrices
+        are constructed lazily and may vary in numerical character across rows.
+
         Yields:
             SolveYield: ``(i, t, mask, pos_or_none, status)`` — see
             :data:`SolveYield` for detailed field descriptions.
         """
         mu_np = self.mu.select(self.assets).to_numpy()
         is_sw = isinstance(self.cfg.covariance_config, SlidingWindowConfig)
-        win_w: int = cast(SlidingWindowConfig, self.cfg.covariance_config).window if is_sw else 0
+
+        if not is_sw:
+            # EwmaShrinkConfig path: vectorised batch solve grouped by mask pattern.
+            yield from _SolveMixin._iter_solve_ewma_batched(mu_np, list(self._iter_matrices()), self.cfg.denom_tol)
+            return
+
+        # SlidingWindowConfig path: sequential per-row solve (lazy factor models).
+        win_w: int = cast(SlidingWindowConfig, self.cfg.covariance_config).window
 
         for i, t, mask, bundle in self._iter_matrices():
             if bundle is None:
                 # Distinguish SW warmup (insufficient history) from no-data / model-failure.
-                if is_sw and mask.any() and i + 1 < win_w:
+                if mask.any() and i + 1 < win_w:
                     yield i, t, mask, None, SolveStatus.WARMUP
                 else:
                     yield i, t, mask, np.zeros(int(mask.sum())), SolveStatus.DEGENERATE
