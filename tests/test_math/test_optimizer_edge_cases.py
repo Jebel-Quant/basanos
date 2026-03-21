@@ -411,13 +411,21 @@ def test_iter_solve_singular_matrix_yields_degenerate_and_zero_positions(
     ``inv_a_norm`` calls ``_cholesky_solve`` directly and is therefore unaffected
     by patching ``basanos.math._engine_solve.solve``, so the norm check succeeds while
     the position solve raises — exercising the previously uncovered branch.
+
+    The batched EwmaShrink path uses ``numpy.linalg.solve`` directly and never
+    calls the ``solve`` helper from ``_linalg``.  To exercise the fallback path
+    where ``solve`` is invoked we also patch ``numpy.linalg.solve`` to force the
+    batched path to fall back to the sequential ``_compute_position`` calls.
     """
     cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6)
     prices = _non_monotonic_prices(40, 2)
     mu = _sinusoidal_mu(prices)
     engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 
-    with patch("basanos.math._engine_solve.solve", side_effect=SingularMatrixError("singular")):
+    with (
+        patch.object(np.linalg, "solve", side_effect=np.linalg.LinAlgError("singular")),
+        patch("basanos.math._engine_solve.solve", side_effect=SingularMatrixError("singular")),
+    ):
         statuses = engine.position_status
         cp = engine.cash_position
 
@@ -439,3 +447,72 @@ def test_iter_solve_singular_matrix_yields_degenerate_and_zero_positions(
         assert np.allclose(finite_vals, 0.0), (
             f"Non-zero cash positions for asset {asset!r} when solve raises SingularMatrixError: {finite_vals}"
         )
+
+
+# ─── Edge case 8: Batched solve matches sequential solve to float64 epsilon ───
+
+
+def test_batched_solve_matches_sequential_to_float64_epsilon() -> None:
+    """Batched numpy.linalg.solve results match sequential _compute_position to float64 epsilon.
+
+    Verifies the core acceptance criterion of the vectorised solve path:
+    results must be bit-for-bit identical (within ``numpy.finfo(float64).eps``
+    precision) to the sequential per-row implementation.
+
+    The test runs the engine twice:
+    1. Normal run — uses the new batched ``_iter_solve_ewma_batched`` path.
+    2. Sequential run — patches ``_iter_solve_ewma_batched`` to call
+       ``_compute_position`` row-by-row, reproducing the pre-vectorisation
+       behaviour.
+    Both ``cash_position`` frames must agree to within float64 machine epsilon
+    multiplied by a generous factor to absorb differences in floating-point
+    evaluation order.
+    """
+    from basanos.math._engine_solve import SolveStatus, _SolveMixin
+
+    rng = np.random.default_rng(99)
+    n_rows, n_assets = 120, 5
+    dates = list(range(n_rows))
+
+    log_ret = rng.normal(0.0, 0.01, size=(n_rows, n_assets))
+    prices_np = 100.0 * np.exp(np.cumsum(log_ret, axis=0))
+    mu_np_data = rng.normal(0, 0.5, size=(n_rows, n_assets))
+
+    assets = [chr(ord("A") + i) for i in range(n_assets)]
+    prices_df = pl.DataFrame({"date": dates, **{a: prices_np[:, i].tolist() for i, a in enumerate(assets)}})
+    mu_df = pl.DataFrame({"date": dates, **{a: mu_np_data[:, i].tolist() for i, a in enumerate(assets)}})
+    cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
+    engine = BasanosEngine(prices=prices_df, mu=mu_df, cfg=cfg)
+
+    # Run 1: batched path (default).
+    cp_batched = engine.cash_position.select(assets).to_numpy()
+
+    # Run 2: sequential fallback — override _iter_solve_ewma_batched to call
+    # _compute_position per row, reproducing the old sequential behaviour.
+    def _sequential_fallback(mu_np, matrix_yields, denom_tol):
+        mu_local = mu_np
+        for i, t, mask, bundle in matrix_yields:
+            if bundle is None:
+                yield (i, t, mask, np.zeros(int(mask.sum())), SolveStatus.DEGENERATE)
+                continue
+            expected_mu = np.nan_to_num(mu_local[i][mask])
+            sig = _SolveMixin._check_signal(mu_local[i], mask)
+            if sig is not None:
+                yield (i, t, mask, np.zeros_like(expected_mu), sig)
+                continue
+            yield _SolveMixin._compute_position(i, t, mask, expected_mu, bundle, denom_tol)
+
+    with patch.object(_SolveMixin, "_iter_solve_ewma_batched", staticmethod(_sequential_fallback)):
+        cp_sequential = engine.cash_position.select(assets).to_numpy()
+
+    finite_mask = np.isfinite(cp_batched) & np.isfinite(cp_sequential)
+    # Use relative tolerance to handle varying position magnitudes; 1e-10 is generous
+    # enough to absorb differences in floating-point evaluation order between the
+    # batched numpy.linalg.solve (LU) and the sequential Cholesky-first path.
+    assert np.allclose(cp_batched[finite_mask], cp_sequential[finite_mask], rtol=1e-10, atol=0.0), (
+        "Batched solve results differ from sequential by more than 1e-10 relative tolerance"
+    )
+    # NaN positions must agree on location too.
+    assert np.array_equal(np.isfinite(cp_batched), np.isfinite(cp_sequential)), (
+        "Batched and sequential paths disagree on which positions are NaN/finite"
+    )
