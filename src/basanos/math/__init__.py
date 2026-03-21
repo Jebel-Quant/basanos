@@ -26,6 +26,7 @@ Notes:
 """
 
 # Public re-exports (explicit aliases so linters recognize intent)
+from ._engine_solve import MatrixBundle as MatrixBundle
 from ._engine_solve import SolveStatus as SolveStatus
 from ._engine_solve import WarmupState as WarmupState
 from ._factor_model import FactorModel as FactorModel
