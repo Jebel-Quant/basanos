@@ -15,10 +15,16 @@ Covered API surface:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from basanos.math import FactorModel
+
+_NOTEBOOK = Path(__file__).parents[2] / "book/marimo/notebooks/factor_model_guide.py"
 
 # ─── Manual-example constants (mirror cell_04) ───────────────────────────────
 
@@ -188,3 +194,29 @@ class TestFactorModelWoodburySolve:
         x_woodbury = fm_manual.solve(b)
         x_direct = np.linalg.solve(fm_manual.covariance, b)
         np.testing.assert_allclose(x_woodbury, x_direct, rtol=1e-8, atol=1e-10)
+
+
+# ─── Direct notebook execution ───────────────────────────────────────────────
+
+
+def test_notebook_executes() -> None:
+    """Execute factor_model_guide.py directly via marimo export html (no sandbox).
+
+    This catches regressions in notebook cell code itself, not just the API
+    that the mirror tests validate.
+    """
+    result = subprocess.run(  # nosec
+        [sys.executable, "-m", "marimo", "export", "html", str(_NOTEBOOK), "-o", "/dev/null"],
+        capture_output=True,
+        text=True,
+    )
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    failure_keywords = ["cells failed to execute", "marimoexceptionraisederror"]
+    for kw in failure_keywords:
+        assert kw.lower() not in combined.lower(), (
+            f"Notebook {_NOTEBOOK.name} reported cell failures (keyword '{kw}'):\n"
+            f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+        )
+    assert result.returncode == 0, (
+        f"marimo export returned non-zero for {_NOTEBOOK.name}:\nstdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+    )

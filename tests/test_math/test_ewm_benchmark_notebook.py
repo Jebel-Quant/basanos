@@ -18,11 +18,17 @@ not installed.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 
 from basanos.math import ewm_corr as ewm_corr_numpy
+
+_NOTEBOOK = Path(__file__).parents[2] / "book/marimo/notebooks/ewm_benchmark.py"
 
 # ─── Pandas reference implementation (mirrors notebook setup cell) ────────────
 
@@ -142,3 +148,29 @@ class TestEwmCorrNumpyVsPandas:
         rng = np.random.default_rng(7)
         data = rng.normal(size=(200, 1))
         self._compare(data, 20)
+
+
+# ─── Direct notebook execution ───────────────────────────────────────────────
+
+
+def test_notebook_executes() -> None:
+    """Execute ewm_benchmark.py directly via marimo export html (no sandbox).
+
+    This catches regressions in notebook cell code itself, not just the API
+    that the mirror tests validate.
+    """
+    result = subprocess.run(  # nosec
+        [sys.executable, "-m", "marimo", "export", "html", str(_NOTEBOOK), "-o", "/dev/null"],
+        capture_output=True,
+        text=True,
+    )
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    failure_keywords = ["cells failed to execute", "marimoexceptionraisederror"]
+    for kw in failure_keywords:
+        assert kw.lower() not in combined.lower(), (
+            f"Notebook {_NOTEBOOK.name} reported cell failures (keyword '{kw}'):\n"
+            f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+        )
+    assert result.returncode == 0, (
+        f"marimo export returned non-zero for {_NOTEBOOK.name}:\nstdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+    )

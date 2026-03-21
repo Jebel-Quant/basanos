@@ -16,12 +16,18 @@ Covered API surface:
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
 import plotly.graph_objects as go
 import polars as pl
 import pytest
 
 from basanos.math import BasanosConfig, BasanosEngine
+
+_NOTEBOOK = Path(__file__).parents[2] / "book/marimo/notebooks/demo.py"
 
 # ─── Constants (mirror cell_04 of the notebook) ───────────────────────────────
 
@@ -183,3 +189,29 @@ class TestDemoPortfolioPlots:
     def test_correlation_heatmap_returns_plotly_figure(self, demo_engine: BasanosEngine) -> None:
         fig = demo_engine.portfolio.plots.correlation_heatmap()
         assert isinstance(fig, go.Figure)
+
+
+# ─── Direct notebook execution ───────────────────────────────────────────────
+
+
+def test_notebook_executes() -> None:
+    """Execute demo.py directly via marimo export html (no sandbox).
+
+    This catches regressions in notebook cell code itself, not just the API
+    that the mirror tests validate.
+    """
+    result = subprocess.run(  # nosec
+        [sys.executable, "-m", "marimo", "export", "html", str(_NOTEBOOK), "-o", "/dev/null"],
+        capture_output=True,
+        text=True,
+    )
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    failure_keywords = ["cells failed to execute", "marimoexceptionraisederror"]
+    for kw in failure_keywords:
+        assert kw.lower() not in combined.lower(), (
+            f"Notebook {_NOTEBOOK.name} reported cell failures (keyword '{kw}'):\n"
+            f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+        )
+    assert result.returncode == 0, (
+        f"marimo export returned non-zero for {_NOTEBOOK.name}:\nstdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
+    )
