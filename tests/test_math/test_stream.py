@@ -436,6 +436,32 @@ def test_step_vola_shape():
     assert result.vola.shape == (len(assets),)
 
 
+def test_step_wrong_prices_shape_raises():
+    """step() must raise ValueError with an informative message for wrong-length new_prices."""
+    prices, mu, cfg, assets = _make_prices_mu()
+    warmup_len = 50
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    bad_prices = prices_np[warmup_len, : len(assets) - 1]  # one element too few
+    with pytest.raises(ValueError, match=r"new_prices must have shape"):
+        stream.step(bad_prices, mu_np[warmup_len])
+
+
+def test_step_wrong_mu_shape_raises():
+    """step() must raise ValueError with an informative message for wrong-length new_mu."""
+    prices, mu, cfg, assets = _make_prices_mu()
+    warmup_len = 50
+    prices_np = prices.select(assets).to_numpy()
+    mu_np = mu.select(assets).to_numpy()
+
+    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
+    bad_mu = mu_np[warmup_len, : len(assets) - 1]  # one element too few
+    with pytest.raises(ValueError, match=r"new_mu must have shape"):
+        stream.step(prices_np[warmup_len], bad_mu)
+
+
 def test_step_date_stored():
     """The date passed to step() must appear in StepResult.date."""
     prices, mu, cfg, assets = _make_prices_mu()
