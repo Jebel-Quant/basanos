@@ -3,12 +3,17 @@
 #
 # Mutation testing complements coverage by verifying that tests *assert*
 # on the code they execute — not just that lines are reached.
+#
+# Scope is intentionally limited to _linalg.py: the pure-math utilities are
+# the simplest, fastest-testing, and highest-value target for mutation testing.
+# Expanding to the full basanos.math package would produce hundreds of
+# mutations that take hours to process with the local distributor.
 
 [cosmic-ray]
-module-path = "src/basanos/math"
+module-path = "src/basanos/math/_linalg.py"
 python-version = ""
-timeout = 30.0
-test-command = "python -m pytest tests/test_math/ -x -q --no-header"
+timeout = 10.0
+test-command = "python -m pytest tests/test_math/test_linalg.py tests/test_math/test_linalg_property.py -x -q --no-header"
 
 [cosmic-ray.distributor]
 name = "local"
