@@ -1,4 +1,4 @@
-name: Dependency Compatibility (weekly)
+name: "(RHIZA) DEPENDENCY COMPATIBILITY (WEEKLY)"
 
 # Resolves all dependencies fresh—ignoring the committed lockfile—and runs
 # the full test suite. Failure here means a newly-released package version

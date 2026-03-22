@@ -9,7 +9,7 @@
 # Trigger: This workflow runs on every push and on pull requests to main/master
 #          branches (including from forks)
 
-name: "(RHIZA) LICENSES"
+name: "(RHIZA) LICENSE"
 
 # Permissions: Only read access to repository contents is needed
 permissions:
@@ -22,7 +22,7 @@ on:
     branches: [ main, master ]
 
 jobs:
-  licenses:
+  license:
     name: License compliance scan
     runs-on: ubuntu-latest
 
@@ -42,4 +42,4 @@ jobs:
       - name: Run license check
         env:
           UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
-        run: make licenses
+        run: make license
