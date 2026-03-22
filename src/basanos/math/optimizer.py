@@ -428,7 +428,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     # Internal solve helpers — inherited from _SolveMixin
     # ------------------------------------------------------------------
     # (_compute_mask, _check_signal, _scale_to_cash, _row_early_check,
-    #  _denom_guard_yield, _compute_position, _replay_profit_variance,
+    #  _denom_guard_yield, _compute_position, _replay_positions,
     #  _iter_matrices, _iter_solve, warmup_state)
     # Implementations live in _engine_solve.py; patch targets remain in that
     # module's namespace, e.g. ``patch("basanos.math._engine_solve.solve")``.
@@ -470,16 +470,14 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         """
         assets = self.assets
 
-        # Compute risk positions row-by-row using _replay_profit_variance.
+        # Compute risk positions row-by-row using _replay_positions.
         prices_num = self.prices.select(assets).to_numpy()
-        returns_num = np.zeros_like(prices_num, dtype=float)
-        returns_num[1:] = prices_num[1:] / prices_num[:-1] - 1.0
 
         risk_pos_np = np.full_like(prices_num, fill_value=np.nan, dtype=float)
         cash_pos_np = np.full_like(prices_num, fill_value=np.nan, dtype=float)
         vola_np = self.vola.select(assets).to_numpy()
 
-        self._replay_profit_variance(risk_pos_np, cash_pos_np, vola_np, returns_num)
+        self._replay_positions(risk_pos_np, cash_pos_np, vola_np)
 
         # Build Polars DataFrame for cash positions (numeric columns only)
         cash_position = self.prices.with_columns(

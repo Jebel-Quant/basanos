@@ -281,7 +281,7 @@ class TestNAV:
     def test_final_nav_concrete(self, notebook_portfolio: Any) -> None:
         """Final NAV must match the deterministic expected value (fixed seed 2024)."""
         final = notebook_portfolio.nav_accumulated["NAV_accumulated"][-1]
-        assert final == pytest.approx(28_515_151.968557302, rel=1e-4)
+        assert final == pytest.approx(30_557_566.430894211, rel=1e-4)
 
     def test_nav_starts_near_aum(self, notebook_portfolio: Any, notebook_cfg: BasanosConfig) -> None:
         """On day 1 there are no realised P&L, so NAV must be close to AUM."""

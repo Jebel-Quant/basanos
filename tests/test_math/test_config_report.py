@@ -141,7 +141,7 @@ def test_to_html_contains_current_values(cfg: BasanosConfig) -> None:
 def test_to_html_contains_optional_param_names(cfg: BasanosConfig) -> None:
     """Optional BasanosConfig field names must also appear in the HTML."""
     html = cfg.report.to_html()
-    for param in ("profit_variance_init", "profit_variance_decay", "denom_tol", "position_scale"):
+    for param in ("denom_tol", "position_scale"):
         assert param in html, f"Missing optional parameter: {param}"
 
 

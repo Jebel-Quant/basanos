@@ -252,22 +252,6 @@ class BasanosConfig(BaseModel):
 
     Default rationale
     -----------------
-    ``profit_variance_init = 1.0``
-        Unit variance is a neutral, uninformative starting point for the
-        exponential moving average of realized P&L variance.  Because the
-        normalised risk positions are divided by the square root of this
-        quantity, initialising at 1.0 leaves the first few positions
-        unaffected until the EMA accumulates real data.  Larger values
-        would shrink initial positions; smaller values would inflate them.
-
-    ``profit_variance_decay = 0.99``
-        An EMA decay factor of λ = 0.99 corresponds to a half-life of
-        ``log(0.5) / log(0.99) ≈ 69`` periods and an effective centre-of-
-        mass of ``1 / (1 - 0.99) = 100`` periods.  For daily data this
-        represents approximately 100 trading days (~5 months), a
-        commonly used horizon for medium-frequency regime adaptation in
-        systematic strategies.
-
     ``denom_tol = 1e-12``
         Positions are zeroed when the normalisation denominator
         ``inv_a_norm(μ, Σ)`` falls at or below this threshold.  The
@@ -368,25 +352,6 @@ class BasanosConfig(BaseModel):
         ),
     )
     aum: float = Field(..., gt=0.0, description="Assets under management for portfolio scaling.")
-    profit_variance_init: float = Field(
-        default=1.0,
-        gt=0.0,
-        description=(
-            "Initial value for the profit variance EMA used in position sizing. "
-            "Defaults to 1.0 (unit variance) so that the first positions are unscaled "
-            "until real P&L data accumulates."
-        ),
-    )
-    profit_variance_decay: float = Field(
-        default=0.99,
-        gt=0.0,
-        lt=1.0,
-        description=(
-            "EMA decay factor λ for the realized P&L variance (higher = slower adaptation). "
-            "The default 0.99 gives a half-life of ~69 periods and an effective window of "
-            "100 periods, suitable for daily data."
-        ),
-    )
     denom_tol: float = Field(
         default=1e-12,
         gt=0.0,
@@ -507,8 +472,6 @@ class BasanosConfig(BaseModel):
         clip: float | None = None,
         shrink: float | None = None,
         aum: float | None = None,
-        profit_variance_init: float | None = None,
-        profit_variance_decay: float | None = None,
         denom_tol: float | None = None,
         position_scale: float | None = None,
         min_corr_denom: float | None = None,
@@ -533,8 +496,6 @@ class BasanosConfig(BaseModel):
             clip: Clipping threshold for volatility adjustment.
             shrink: Retention weight λ ∈ [0, 1] for linear shrinkage.
             aum: Assets under management for portfolio scaling.
-            profit_variance_init: Initial value for the profit-variance EMA.
-            profit_variance_decay: EMA decay factor for realized P&L variance.
             denom_tol: Minimum normalisation denominator.
             position_scale: Multiplicative scaling factor for cash positions.
             min_corr_denom: Guard threshold for the EWMA correlation denominator.
@@ -568,10 +529,6 @@ class BasanosConfig(BaseModel):
             clip=self.clip if clip is None else clip,
             shrink=self.shrink if shrink is None else shrink,
             aum=self.aum if aum is None else aum,
-            profit_variance_init=self.profit_variance_init if profit_variance_init is None else profit_variance_init,
-            profit_variance_decay=self.profit_variance_decay
-            if profit_variance_decay is None
-            else profit_variance_decay,
             denom_tol=self.denom_tol if denom_tol is None else denom_tol,
             position_scale=self.position_scale if position_scale is None else position_scale,
             min_corr_denom=self.min_corr_denom if min_corr_denom is None else min_corr_denom,

@@ -68,7 +68,6 @@ def _make_state(n: int = 3) -> _StreamState:
         pct_s_w=np.zeros(n),
         pct_s_w2=np.zeros(n),
         pct_count=np.zeros(n, dtype=int),
-        profit_variance=0.0,
         prev_price=np.zeros(n),
         prev_cash_pos=np.zeros(n),
         step_count=0,
@@ -121,7 +120,6 @@ def test_pct_accumulator_shapes(n: int) -> None:
 def test_scalar_and_vector_fields(n: int) -> None:
     """Scalar and per-asset vector fields must have correct types/shapes."""
     s = _make_state(n)
-    assert isinstance(s.profit_variance, float)
     assert s.prev_price.shape == (n,)
     assert s.prev_cash_pos.shape == (n,)
     assert isinstance(s.step_count, int)
@@ -145,13 +143,6 @@ def test_array_field_replacement() -> None:
     new_zi = np.ones((1, n, n))
     s.corr_zi_x = new_zi
     np.testing.assert_array_equal(s.corr_zi_x, new_zi)
-
-
-def test_profit_variance_mutable() -> None:
-    """profit_variance scalar must be mutable."""
-    s = _make_state(2)
-    s.profit_variance = 1.23
-    assert s.profit_variance == pytest.approx(1.23)
 
 
 def test_not_frozen() -> None:
@@ -201,7 +192,6 @@ def test_field_count() -> None:
         "pct_s_w",
         "pct_s_w2",
         "pct_count",
-        "profit_variance",
         "prev_price",
         "prev_cash_pos",
         "step_count",
@@ -571,11 +561,10 @@ def test_stream_warmup_status_before_min_periods():
 
 
 def test_stream_warmup_skips_solve_state_unchanged():
-    """Warmup step() must not update profit_variance or prev_cash_pos.
+    """Warmup step() must not update prev_cash_pos.
 
     The early-return guard skips the matrix reconstruction and solve block, so
-    *state.profit_variance* must remain exactly unchanged and *state.prev_cash_pos*
-    must remain NaN (no computed position) after every warmup step.
+    *state.prev_cash_pos* must remain NaN (no computed position) after every warmup step.
     """
     warmup_len = 5
     n_total = warmup_len + 5
@@ -597,7 +586,6 @@ def test_stream_warmup_skips_solve_state_unchanged():
     mu_np = mu.select(assets).to_numpy()
 
     # Record state before any streaming step
-    initial_pv = stream._state.profit_variance
     initial_prev_cash = stream._state.prev_cash_pos.copy()
 
     for i in range(n_total - warmup_len):
@@ -605,10 +593,7 @@ def test_stream_warmup_skips_solve_state_unchanged():
         result = stream.step(prices_np[warmup_len + i], mu_np[warmup_len + i])
 
         assert result.status == "warmup"
-        # The early-return path must not touch profit_variance or prev_cash_pos
-        assert stream._state.profit_variance == initial_pv, (
-            f"profit_variance changed during warmup step {i}; solve block may not be short-circuited"
-        )
+        # The early-return path must not touch prev_cash_pos
         assert np.all(np.isnan(stream._state.prev_cash_pos)) or np.array_equal(
             stream._state.prev_cash_pos, initial_prev_cash
         ), "prev_cash_pos changed during warmup; solve block may not be short-circuited"
@@ -760,28 +745,6 @@ def test_stream_degenerate_status_all_nan_prices():
     assert result.status == "degenerate"
 
 
-def test_stream_profit_variance_changes_after_step():
-    """state.profit_variance must change after a valid step with non-zero returns."""
-    prices, mu, cfg, assets = _make_prices_mu()
-    warmup_len = 50
-    prices_np = prices.select(assets).to_numpy()
-    mu_np = mu.select(assets).to_numpy()
-
-    stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
-    initial_pv = stream._state.profit_variance  # direct access to internal state for test
-    result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
-
-    if result.status == "valid":
-        # After a valid step with non-zero returns, profit_variance must change
-        assert stream._state.profit_variance != initial_pv, (
-            "profit_variance must change after a valid step with non-trivial returns"
-        )
-    else:
-        # For warmup/degenerate/zero_signal, profit_variance may or may not change;
-        # we only assert it was updated (not left unmodified by skipping the step).
-        assert stream._state.profit_variance is not None
-
-
 # ─── Hypothesis property tests ────────────────────────────────────────────────
 
 
@@ -849,16 +812,6 @@ def test_warmup_state_returns_warmup_state():
     assert isinstance(ws, WarmupState)
 
 
-def test_warmup_state_profit_variance_is_positive_float():
-    """profit_variance must be a positive finite float."""
-    prices, mu, cfg, _ = _make_prices_mu()
-    engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
-    ws = engine.warmup_state()
-    assert isinstance(ws.profit_variance, float)
-    assert np.isfinite(ws.profit_variance)
-    assert ws.profit_variance > 0.0
-
-
 def test_warmup_state_prev_cash_pos_shape():
     """prev_cash_pos must have shape (n_assets,)."""
     prices, mu, cfg, assets = _make_prices_mu()
@@ -873,18 +826,17 @@ def test_warmup_state_is_frozen():
     engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
     ws = engine.warmup_state()
     with pytest.raises(dataclasses.FrozenInstanceError):
-        ws.profit_variance = 1.0  # type: ignore[misc]
+        ws.prev_cash_pos = np.zeros(2)  # type: ignore[misc]
 
 
 def test_warmup_state_matches_from_warmup_state():
-    """profit_variance and prev_cash_pos from warmup_state() must match the internal stream state."""
+    """prev_cash_pos from warmup_state() must match the internal stream state."""
     prices, mu, cfg, _assets = _make_prices_mu()
     n = 50
     engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
     ws = engine.warmup_state()
 
     stream = BasanosStream.from_warmup(prices.head(n), mu.head(n), cfg)
-    assert ws.profit_variance == stream._state.profit_variance
     np.testing.assert_array_equal(ws.prev_cash_pos, stream._state.prev_cash_pos)
 
 
@@ -1447,7 +1399,7 @@ def test_save_writes_format_version():
         data = np.load(p, allow_pickle=False)
 
     assert "format_version" in data
-    assert int(data["format_version"]) == 1
+    assert int(data["format_version"]) == 2
 
 
 def test_load_raises_on_missing_format_version():

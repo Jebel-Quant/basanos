@@ -88,8 +88,6 @@ class WarmupState:
     coupling to the private :meth:`~_SolveMixin._iter_solve` generator.
 
     Attributes:
-        profit_variance: Final EWMA profit-variance scalar after replaying the
-            full warmup batch.
         prev_cash_pos: Cash positions at the last warmup row, shape
             ``(n_assets,)``.  ``NaN`` for assets that were still in their
             own warmup period.
@@ -100,7 +98,6 @@ class WarmupState:
             warmup data.
     """
 
-    profit_variance: float
     prev_cash_pos: np.ndarray
     corr_iir_state: _EwmCorrState | None = dataclasses.field(default=None)
 
@@ -131,17 +128,15 @@ class _SolveMixin:
         return None
 
     @staticmethod
-    def _scale_to_cash(pos: np.ndarray, profit_variance: float, vola_active: np.ndarray) -> np.ndarray:
+    def _scale_to_cash(pos: np.ndarray, vola_active: np.ndarray) -> np.ndarray:
         """Convert raw solver positions to cash-adjusted positions.
 
-        Divides *pos* by *profit_variance* to get risk positions, then divides
-        by *vola_active* (volatility for the active asset subset) to get cash
-        positions.  ``np.errstate(invalid="ignore")`` is applied internally so
-        NaN volatility values propagate quietly.
+        Divides *pos* by *vola_active* (volatility for the active asset subset)
+        to get cash positions.  ``np.errstate(invalid="ignore")`` is applied
+        internally so NaN volatility values propagate quietly.
         """
-        risk_pos = pos / profit_variance
         with np.errstate(invalid="ignore"):
-            return risk_pos / vola_active
+            return pos / vola_active
 
     @staticmethod
     def _row_early_check(
@@ -301,18 +296,16 @@ class _SolveMixin:
             return prev + delta * scale
         return new_cash
 
-    def _replay_profit_variance(
+    def _replay_positions(
         self: _EngineProtocol,
         risk_pos_np: np.ndarray,
         cash_pos_np: np.ndarray,
         vola_np: np.ndarray,
-        returns_num: np.ndarray,
-    ) -> float:
-        """Replay the profit-variance EMA across all rows, filling position arrays.
+    ) -> None:
+        """Replay positions across all rows, filling position arrays.
 
         Iterates :meth:`_iter_solve`, writes risk and cash positions into the
-        provided pre-allocated arrays, and returns the final
-        ``profit_variance`` scalar.  Both arrays are mutated **in-place**.
+        provided pre-allocated arrays.  Both arrays are mutated **in-place**.
 
         When :attr:`BasanosConfig.max_turnover` is set, the L1 norm of the
         position change ``sum(|x_t - x_{t-1}|)`` is capped at that value by
@@ -323,31 +316,15 @@ class _SolveMixin:
             risk_pos_np: Pre-allocated ``(T, N)`` array for risk positions.
             cash_pos_np: Pre-allocated ``(T, N)`` array for cash positions.
             vola_np: ``(T, N)`` EWMA volatility array.
-            returns_num: ``(T, N)`` percentage-return array (row 0 is zeros).
-
-        Returns:
-            float: Final EWMA profit-variance scalar after processing all rows.
         """
-        profit_variance: float = self.cfg.profit_variance_init
-        lamb = self.cfg.profit_variance_decay
         max_to: float | None = self.cfg.max_turnover
         for i, _t, mask, pos, _status in self._iter_solve():
-            if i > 0:
-                ret_mask = np.isfinite(returns_num[i]) & mask
-                if ret_mask.any():
-                    with np.errstate(invalid="ignore"):
-                        cash_pos_np[i - 1] = risk_pos_np[i - 1] / vola_np[i - 1]
-                    lhs = np.nan_to_num(cash_pos_np[i - 1, ret_mask], nan=0.0)
-                    rhs = np.nan_to_num(returns_num[i, ret_mask], nan=0.0)
-                    profit = float(lhs @ rhs)
-                    profit_variance = lamb * profit_variance + (1 - lamb) * profit**2
             if pos is not None:
-                new_cash = _SolveMixin._scale_to_cash(pos, profit_variance, vola_np[i, mask])
+                new_cash = _SolveMixin._scale_to_cash(pos, vola_np[i, mask])
                 if max_to is not None and i > 0:
                     new_cash = _SolveMixin._apply_turnover_constraint(new_cash, cash_pos_np[i - 1, mask], max_to)
                 risk_pos_np[i, mask] = new_cash * vola_np[i, mask]
                 cash_pos_np[i, mask] = new_cash
-        return profit_variance
 
     def _iter_matrices(self: _EngineProtocol) -> Generator[MatrixYield, None, None]:
         r"""Yield ``(i, t, mask, bundle)`` for every timestamp.
@@ -596,15 +573,14 @@ class _SolveMixin:
     def warmup_state(self: _EngineProtocol) -> WarmupState:
         """Return the final :class:`WarmupState` after replaying the full batch.
 
-        Encapsulates the profit-variance EMA replay loop that was previously
-        duplicated inside :meth:`BasanosStream.from_warmup`.  By centralising
-        the loop here, :meth:`~BasanosStream.from_warmup` no longer needs to
-        call the private :meth:`_iter_solve` generator directly.
+        Encapsulates the position replay loop that was previously duplicated
+        inside :meth:`BasanosStream.from_warmup`.  By centralising the loop
+        here, :meth:`~BasanosStream.from_warmup` no longer needs to call the
+        private :meth:`_iter_solve` generator directly.
 
         Returns:
             WarmupState: A frozen dataclass with:
 
-            * ``profit_variance`` - final EWMA profit-variance scalar.
             * ``prev_cash_pos`` - cash-position vector at the last row,
               shape ``(n_assets,)``.
 
@@ -627,23 +603,15 @@ class _SolveMixin:
             >>> cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
             >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
             >>> ws = engine.warmup_state()
-            >>> isinstance(ws.profit_variance, float)
-            True
             >>> ws.prev_cash_pos.shape
             (2,)
         """
         assets = self.assets
-        n_assets = len(assets)
         n_rows = self.prices.height
-        prices_np = self.prices.select(assets).to_numpy()
         vola_np = self.vola.select(assets).to_numpy()
 
-        returns_num = np.zeros((n_rows, n_assets), dtype=float)
-        if n_rows > 1:
-            returns_num[1:] = prices_np[1:] / prices_np[:-1] - 1.0
-
-        risk_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
-        cash_pos_np = np.full((n_rows, n_assets), np.nan, dtype=float)
+        risk_pos_np = np.full((n_rows, len(assets)), np.nan, dtype=float)
+        cash_pos_np = np.full((n_rows, len(assets)), np.nan, dtype=float)
 
         if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
             # Compute the IIR filter state in a single pass over the warmup data
@@ -659,10 +627,9 @@ class _SolveMixin:
         else:
             iir_state = None
 
-        profit_variance = _SolveMixin._replay_profit_variance(self, risk_pos_np, cash_pos_np, vola_np, returns_num)
+        _SolveMixin._replay_positions(self, risk_pos_np, cash_pos_np, vola_np)
         prev_cash_pos = cash_pos_np[-1].copy()
         return WarmupState(
-            profit_variance=profit_variance,
             prev_cash_pos=prev_cash_pos,
             corr_iir_state=iir_state,
         )
