@@ -75,7 +75,7 @@ _logger = logging.getLogger(__name__)
 #: a backward-incompatible way.  :func:`BasanosStream.load` asserts the stored
 #: value matches before deserialising anything, so callers get a clear error
 #: instead of a silent ``KeyError`` or wrong state.
-_SAVE_FORMAT_VERSION: int = 1
+_SAVE_FORMAT_VERSION: int = 2
 
 
 @dataclasses.dataclass
@@ -131,12 +131,10 @@ class _StreamState:
         pct_s_w2:   EWM squared-weight sum for pct accumulators; shape ``(N,)``.
         pct_count:  Cumulative finite observation count for pct-return vol;
             shape ``(N,)`` dtype int.
-        profit_variance: EMA of squared realised profit; initialised to
-            ``cfg.profit_variance_init``.
         prev_price:    Last price row seen, used to compute returns on the next
             step; shape ``(N,)``.
-        prev_cash_pos: Last cash position, used to compute profit on the next
-            step; shape ``(N,)``.
+        prev_cash_pos: Last cash position, used to apply the turnover constraint
+            on the next step; shape ``(N,)``.
         step_count: Number of steps processed so far (0 before first step).
     """
 
@@ -162,9 +160,8 @@ class _StreamState:
     pct_count: np.ndarray  # (N,) int
 
     # ── Scalars ───────────────────────────────────────────────────────────────
-    profit_variance: float  # EMA of squared profit; initialised to cfg.profit_variance_init
     prev_price: np.ndarray  # (N,) last price row (to compute returns at next step)
-    prev_cash_pos: np.ndarray  # (N,) last cash position (to compute profit at next step)
+    prev_cash_pos: np.ndarray  # (N,) last cash position (for turnover constraint at next step)
     step_count: int
 
     # ── SlidingWindowConfig state — None for EwmaShrinkConfig ────────────────
@@ -544,8 +541,7 @@ class BasanosStream:
             pct_ret, beta_vola, beta_vola_sq
         )
 
-        # 5. Extract profit_variance and prev_cash_pos from WarmupState ------
-        profit_variance: float = ws.profit_variance
+        # 5. Extract prev_cash_pos from WarmupState --------------------------
         prev_cash_pos: np.ndarray = ws.prev_cash_pos
         prev_price: np.ndarray = prices_np[-1].copy()
 
@@ -566,7 +562,6 @@ class BasanosStream:
             pct_s_w=pct_s_w,
             pct_s_w2=pct_s_w2,
             pct_count=pct_count,
-            profit_variance=profit_variance,
             prev_price=prev_price,
             prev_cash_pos=prev_cash_pos,
             step_count=n_rows,
@@ -753,22 +748,11 @@ class BasanosStream:
         # ── Compute EWMA volatility (pct-return std) — shared ───────────────
         vola_vec = _ewm_std_from_state(pct_s_x, pct_s_x2, pct_s_w, pct_s_w2, pct_count, min_samples=cfg.vola)
 
-        # ── Update profit_variance — shared ─────────────────────────────────
-        profit_variance = state.profit_variance
-        lamb_pv = cfg.profit_variance_decay
-        prev_cash_pos = state.prev_cash_pos
-
-        mask = np.isfinite(new_p)
-        ret_mask = fin_pct & mask
-        if ret_mask.any():
-            lhs = np.nan_to_num(prev_cash_pos[ret_mask], nan=0.0)
-            rhs = np.nan_to_num(pct_ret[ret_mask], nan=0.0)
-            profit = float(lhs @ rhs)
-            profit_variance = lamb_pv * profit_variance + (1 - lamb_pv) * profit**2
-
         # ── Solve for position ───────────────────────────────────────────────
         new_cash_pos = np.full(n_assets, np.nan, dtype=float)
         status = SolveStatus.DEGENERATE
+
+        mask = np.isfinite(new_p)
 
         if isinstance(cfg.covariance_config, SlidingWindowConfig):
             # ── SW path: FactorModel solve via Woodbury identity ─────────────
@@ -818,7 +802,7 @@ class BasanosStream:
                                 new_cash_pos[mask] = 0.0
                                 status = SolveStatus.DEGENERATE
                             else:
-                                risk_pos = (x / denom_val) / profit_variance
+                                risk_pos = x / denom_val
                                 vola_sub = vola_vec[mask]
                                 with np.errstate(invalid="ignore"):
                                     new_cash_pos[mask] = risk_pos / vola_sub
@@ -885,7 +869,7 @@ class BasanosStream:
                             new_cash_pos[mask] = 0.0
                             status = SolveStatus.DEGENERATE
                         else:
-                            risk_pos = pos / profit_variance
+                            risk_pos = pos
                             vola_sub = vola_vec[mask]
                             with np.errstate(invalid="ignore"):
                                 new_cash_pos[mask] = risk_pos / vola_sub
@@ -917,7 +901,6 @@ class BasanosStream:
         state.pct_count = pct_count
         state.prev_price = new_p.copy()
         state.prev_cash_pos = new_cash_pos.copy()
-        state.profit_variance = profit_variance
         state.step_count += 1
 
         return StepResult(
@@ -988,7 +971,6 @@ class BasanosStream:
             pct_s_w=state.pct_s_w,
             pct_s_w2=state.pct_s_w2,
             pct_count=state.pct_count,
-            profit_variance=np.array(state.profit_variance),
             prev_price=state.prev_price,
             prev_cash_pos=state.prev_cash_pos,
             step_count=np.array(state.step_count),
@@ -1071,7 +1053,6 @@ class BasanosStream:
             pct_s_w=data["pct_s_w"],
             pct_s_w2=data["pct_s_w2"],
             pct_count=data["pct_count"],
-            profit_variance=float(data["profit_variance"]),
             prev_price=data["prev_price"],
             prev_cash_pos=data["prev_cash_pos"],
             step_count=int(data["step_count"]),

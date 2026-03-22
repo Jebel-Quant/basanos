@@ -149,18 +149,12 @@ def test_2asset_diagonal_shrink_zero_first_valid_row() -> None:
 
     The scenario is constructed so that only row ``corr`` (= first valid row)
     carries a non-zero signal (``mu = [3, 4]``).  All prior rows have zero
-    signal, so all prior cash positions are zero, and the profit-variance EMA
-    decays monotonically from ``profit_variance_init``:
+    signal, so all prior positions are zero.  At the first valid row the
+    expected cash position is simply:
 
     .. math::
 
-       \text{pv}_{\text{corr}} = \text{init} \times \text{decay}^{\text{corr}}
-
-    The expected cash position at the first valid row is then:
-
-    .. math::
-
-       \text{cash\_pos}_{\text{corr}} = \frac{\mu / \|\mu\|_2}{\text{pv}_{\text{corr}} \times \sigma_{\text{corr}}}
+       \text{cash\_pos}_{\text{corr}} = \frac{\mu / \|\mu\|_2}{\sigma_{\text{corr}}}
 
     This is verified to within float64 relative error (~machine epsilon).
     """
@@ -186,14 +180,9 @@ def test_2asset_diagonal_shrink_zero_first_valid_row() -> None:
     assert np.all(cp[vola_span:first_valid] == 0.0), "Expected zero during corr warmup"
 
     # ── Verify first valid row against analytical formula ─────────────────
-    decay = engine.cfg.profit_variance_decay
-    pv_init = engine.cfg.profit_variance_init
-    # pv decays once per row for rows 1 .. first_valid (= first_valid iterations)
-    pv_analytical = pv_init * (decay**first_valid)
-
     mu_active = np.array([3.0, 4.0])
     pos_raw = mu_active / np.linalg.norm(mu_active)  # = [0.6, 0.8]
-    expected = pos_raw / (pv_analytical * vola[first_valid])
+    expected = pos_raw / vola[first_valid]
 
     np.testing.assert_allclose(cp[first_valid], expected, rtol=1e-12, atol=0)
 
