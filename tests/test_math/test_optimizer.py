@@ -35,6 +35,7 @@ from basanos.exceptions import (
     SingularMatrixError,
 )
 from basanos.math import BasanosConfig, BasanosEngine
+from basanos.math._engine_solve import SolveStatus, _SolveMixin
 from basanos.math.optimizer import SlidingWindowConfig, _validate_inputs
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -2853,3 +2854,26 @@ class TestMaxTurnoverConstraint:
         assert to_tight <= to_base + 1e-6, (
             f"Tight max_turnover ({to_tight:.2f}) produced more turnover than unconstrained ({to_base:.2f})"
         )
+
+
+# ── _SolveMixin unit tests ────────────────────────────────────────────────────
+
+
+def test_row_early_check_empty_mask_returns_degenerate():
+    """_row_early_check with an all-False mask must return a DEGENERATE early yield."""
+    mask = np.array([False, False, False])
+    mu_row = np.array([0.1, 0.2, 0.3])
+    expected_mu, early = _SolveMixin._row_early_check(0, date(2020, 1, 1), mask, mu_row)
+    assert early is not None
+    assert early[4] == SolveStatus.DEGENERATE
+    assert len(expected_mu) == 0
+
+
+def test_apply_turnover_constraint_scales_when_delta_exceeds_max():
+    """_apply_turnover_constraint must proportionally scale the delta when total_delta > max_turnover."""
+    prev = np.array([0.0, 0.0])
+    new = np.array([3.0, 4.0])  # L1 = 7.0
+    max_turnover = 3.5
+    result = _SolveMixin._apply_turnover_constraint(new, prev, max_turnover)
+    total_delta = float(np.sum(np.abs(result - prev)))
+    assert total_delta == pytest.approx(max_turnover, rel=1e-9)
