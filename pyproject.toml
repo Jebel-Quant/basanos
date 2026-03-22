@@ -16,6 +16,8 @@ dependencies = [
     "pydantic>=2.12.5",
     "scipy>=1.17.0",
 ]
+license = "MIT"
+license-files = ["LICENSE"]
 
 [project.urls]
 Homepage = "https://github.com/Jebel-Quant/basanos"
