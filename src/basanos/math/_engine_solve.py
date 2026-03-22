@@ -546,6 +546,24 @@ class _SolveMixin:
         path retains a sequential per-row solve because the factor-model matrices
         are constructed lazily and may vary in numerical character across rows.
 
+        .. note::
+
+            **Dual-path maintenance obligation**: this method dispatches to two
+            fundamentally different implementations.  Any change to solve
+            semantics — a new edge case, a new :class:`SolveStatus` value, or a
+            change to denominator logic — **must be applied to both branches**:
+
+            * :meth:`_iter_solve_ewma_batched` / :meth:`_batched_solve_group`
+              (EwmaShrink vectorised path)
+            * The sequential ``_compute_position`` loop below
+              (SlidingWindow path)
+
+            The cross-path numerical consistency test
+            ``test_ewma_batch_and_sequential_paths_agree`` in
+            ``tests/test_math/test_numerical_regression.py`` will fail
+            whenever the two paths drift apart, surfacing the divergence
+            before it reaches production.
+
         Yields:
             SolveYield: ``(i, t, mask, pos_or_none, status)`` — see
             :data:`SolveYield` for detailed field descriptions.

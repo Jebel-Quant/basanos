@@ -52,8 +52,10 @@ Why this pattern?
    b. Write the method in the appropriate helper module with
       ``self: _EngineProtocol`` (imported under ``TYPE_CHECKING`` to avoid a
       circular import at runtime).
-   c. Assign the descriptor directly in :class:`~basanos.math.optimizer.BasanosEngine`
-      under the matching section — see ``CONTRIBUTING.md`` for details.
+   c. The method is automatically available on
+      :class:`~basanos.math.optimizer.BasanosEngine` via inheritance —
+      no changes to ``optimizer.py`` are needed.  See ``CONTRIBUTING.md``
+      for details.
 
    .. code-block:: python
 
