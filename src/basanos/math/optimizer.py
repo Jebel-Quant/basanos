@@ -218,29 +218,32 @@ __all__ = [
 
 
 @dataclasses.dataclass(frozen=True)
-class BasanosEngine:
+class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     """Engine to compute correlation matrices and optimize risk positions.
 
     Encapsulates price data and configuration to build EWM-based
     correlations, apply shrinkage, and solve for normalized positions.
 
-    All public methods are defined directly in this class, organised into
-    clearly delimited sections:
+    Public methods are organised into clearly delimited sections (some
+    inherited from the private mixin classes):
 
     * **Core data access** — :attr:`assets`, :attr:`ret_adj`, :attr:`vola`,
       :attr:`cor`, :attr:`cor_tensor`
     * **Solve / position logic** — :attr:`cash_position`,
       :attr:`position_status`, :attr:`risk_position`,
       :attr:`position_leverage`, :meth:`warmup_state`
+      (solve helpers inherited from :class:`~._engine_solve._SolveMixin`)
     * **Portfolio and performance** — :attr:`portfolio`,
       :attr:`naive_sharpe`, :meth:`sharpe_at_shrink`,
       :meth:`sharpe_at_window_factors`
     * **Matrix diagnostics** — :attr:`condition_number`,
       :attr:`effective_rank`, :attr:`solver_residual`,
       :attr:`signal_utilisation`
+      (inherited from :class:`~._engine_diagnostics._DiagnosticsMixin`)
     * **Signal evaluation** — :attr:`ic`, :attr:`rank_ic`, :attr:`ic_mean`,
       :attr:`ic_std`, :attr:`icir`, :attr:`rank_ic_mean`,
       :attr:`rank_ic_std`
+      (inherited from :class:`~._engine_ic._SignalEvaluatorMixin`)
     * **Reporting** — :attr:`config_report`
 
     Data-flow diagram
@@ -422,22 +425,13 @@ class BasanosEngine:
         return np.stack(list(self.cor.values()), axis=0)
 
     # ------------------------------------------------------------------
-    # Internal solve helpers — directly assigned from _engine_solve
+    # Internal solve helpers — inherited from _SolveMixin
     # ------------------------------------------------------------------
-    # These descriptors retain their original function objects so that
-    # ``patch("basanos.math._engine_solve.solve", ...)`` in tests continues
-    # to intercept calls made inside these methods.
-
-    _compute_mask = _SolveMixin.__dict__["_compute_mask"]
-    _check_signal = _SolveMixin.__dict__["_check_signal"]
-    _scale_to_cash = _SolveMixin.__dict__["_scale_to_cash"]
-    _row_early_check = _SolveMixin.__dict__["_row_early_check"]
-    _denom_guard_yield = _SolveMixin.__dict__["_denom_guard_yield"]
-    _compute_position = _SolveMixin.__dict__["_compute_position"]
-    _replay_profit_variance = _SolveMixin.__dict__["_replay_profit_variance"]
-    _iter_matrices = _SolveMixin.__dict__["_iter_matrices"]
-    _iter_solve = _SolveMixin.__dict__["_iter_solve"]
-    warmup_state = _SolveMixin.__dict__["warmup_state"]
+    # (_compute_mask, _check_signal, _scale_to_cash, _row_early_check,
+    #  _denom_guard_yield, _compute_position, _replay_profit_variance,
+    #  _iter_matrices, _iter_solve, warmup_state)
+    # Implementations live in _engine_solve.py; patch targets remain in that
+    # module's namespace, e.g. ``patch("basanos.math._engine_solve.solve")``.
 
     # ------------------------------------------------------------------
     # Position properties
@@ -770,26 +764,16 @@ class BasanosEngine:
         return ConfigReport(config=self.cfg, engine=self)
 
     # ------------------------------------------------------------------
-    # Matrix diagnostics — directly assigned from _engine_diagnostics
+    # Matrix diagnostics — inherited from _DiagnosticsMixin
     # ------------------------------------------------------------------
-    # These descriptors retain their original function objects so that
-    # ``patch("basanos.math._engine_diagnostics.solve", ...)`` in tests
-    # continues to intercept calls made inside these methods.
-
-    condition_number = _DiagnosticsMixin.__dict__["condition_number"]
-    effective_rank = _DiagnosticsMixin.__dict__["effective_rank"]
-    solver_residual = _DiagnosticsMixin.__dict__["solver_residual"]
-    signal_utilisation = _DiagnosticsMixin.__dict__["signal_utilisation"]
+    # (condition_number, effective_rank, solver_residual, signal_utilisation)
+    # Implementations live in _engine_diagnostics.py; patch targets remain in
+    # that module's namespace, e.g.
+    # ``patch("basanos.math._engine_diagnostics.solve")``.
 
     # ------------------------------------------------------------------
-    # Signal evaluation — directly assigned from _engine_ic
+    # Signal evaluation — inherited from _SignalEvaluatorMixin
     # ------------------------------------------------------------------
-
-    _ic_series = _SignalEvaluatorMixin.__dict__["_ic_series"]
-    ic = _SignalEvaluatorMixin.__dict__["ic"]
-    rank_ic = _SignalEvaluatorMixin.__dict__["rank_ic"]
-    ic_mean = _SignalEvaluatorMixin.__dict__["ic_mean"]
-    ic_std = _SignalEvaluatorMixin.__dict__["ic_std"]
-    icir = _SignalEvaluatorMixin.__dict__["icir"]
-    rank_ic_mean = _SignalEvaluatorMixin.__dict__["rank_ic_mean"]
-    rank_ic_std = _SignalEvaluatorMixin.__dict__["rank_ic_std"]
+    # (_ic_series, ic, rank_ic, ic_mean, ic_std, icir,
+    #  rank_ic_mean, rank_ic_std)
+    # Implementations live in _engine_ic.py.

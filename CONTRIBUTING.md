@@ -163,38 +163,40 @@ of the unit tests to fail.
 
 ## Engine architecture
 
-`BasanosEngine` is a single, flat `@dataclasses.dataclass(frozen=True)` class.
-All public methods are defined directly in the class body — there is no
-multiple-inheritance mixin chain.  The class is organised into clearly
-delimited sections:
+`BasanosEngine` is a `@dataclasses.dataclass(frozen=True)` class that inherits
+from three private mixin classes to keep `optimizer.py` focused on core
+position-solving logic.  The class is organised into clearly delimited
+sections:
 
 ```
 BasanosEngine
 ├── Core data access      (assets, ret_adj, vola, cor, cor_tensor)
 ├── Solve helpers         (_compute_mask, _iter_matrices, _iter_solve,
-│                          warmup_state, …)
+│                          warmup_state, …)       [from _SolveMixin]
 ├── Position properties   (cash_position, position_status, risk_position,
 │                          position_leverage)
 ├── Portfolio / perf.     (portfolio, sharpe_at_shrink, naive_sharpe, …)
 ├── Matrix diagnostics    (condition_number, effective_rank,
-│                          solver_residual, signal_utilisation)
-├── Signal evaluation     (ic, rank_ic, icir, ic_mean, …)
+│                          solver_residual,        [from _DiagnosticsMixin]
+│                          signal_utilisation)
+├── Signal evaluation     (ic, rank_ic, icir, ic_mean, …) [from _SignalEvaluatorMixin]
 └── Reporting             (config_report)
 ```
 
 The private modules (`_engine_solve`, `_engine_diagnostics`, `_engine_ic`)
-still hold the implementation code.  Each method is *assigned* directly into
-`BasanosEngine` using its original function/descriptor object:
+hold the implementation code.  `BasanosEngine` inherits directly from each
+mixin:
 
 ```python
-# In optimizer.py, inside the BasanosEngine class body:
-condition_number = _DiagnosticsMixin.__dict__["condition_number"]
+@dataclasses.dataclass(frozen=True)
+class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
+    ...
 ```
 
-This technique preserves the method's original `__globals__` reference (the
-`_engine_diagnostics` module's namespace), so patches like
-`patch("basanos.math._engine_diagnostics.solve", …)` continue to work in
-tests even though `condition_number` now lives directly on `BasanosEngine`.
+Because each method's `__globals__` still points to its originating module's
+namespace, mock patches like
+`patch("basanos.math._engine_diagnostics.solve", …)` continue to intercept
+calls made inside those methods.
 
 **Adding a new engine method**
 
@@ -205,13 +207,8 @@ tests even though `condition_number` now lives directly on `BasanosEngine`.
    imports at runtime).
 2. Check whether any new required attributes need to be declared on
    `_EngineProtocol` (`src/basanos/math/_engine_protocol.py`).
-3. Assign the new descriptor directly in `BasanosEngine` under the matching
-   section:
-
-```python
-# In the BasanosEngine class body, in the appropriate section:
-my_new_property = _DiagnosticsMixin.__dict__["my_new_property"]
-```
+3. No changes to `BasanosEngine` are needed — the method is automatically
+   available via inheritance.
 
 The `_EngineProtocol` in `_engine_protocol.py` remains the single source of
 truth for the attributes that private-module implementations may access on
