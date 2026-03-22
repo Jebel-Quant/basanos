@@ -133,8 +133,9 @@ class _StreamState:
             shape ``(N,)`` dtype int.
         prev_price:    Last price row seen, used to compute returns on the next
             step; shape ``(N,)``.
-        prev_cash_pos: Last cash position, used to apply the turnover constraint
-            on the next step; shape ``(N,)``.
+        prev_cash_pos: Last cash position vector, tracked for continuity;
+            used by the turnover constraint when ``cfg.max_turnover`` is set;
+            shape ``(N,)``.
         step_count: Number of steps processed so far (0 before first step).
     """
 
@@ -161,7 +162,7 @@ class _StreamState:
 
     # ── Scalars ───────────────────────────────────────────────────────────────
     prev_price: np.ndarray  # (N,) last price row (to compute returns at next step)
-    prev_cash_pos: np.ndarray  # (N,) last cash position (for turnover constraint at next step)
+    prev_cash_pos: np.ndarray  # (N,) last cash position (for turnover constraint and continuity)
     step_count: int
 
     # ── SlidingWindowConfig state — None for EwmaShrinkConfig ────────────────

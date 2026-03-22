@@ -564,7 +564,8 @@ def test_stream_warmup_skips_solve_state_unchanged():
     """Warmup step() must not update prev_cash_pos.
 
     The early-return guard skips the matrix reconstruction and solve block, so
-    *state.prev_cash_pos* must remain NaN (no computed position) after every warmup step.
+    *state.prev_cash_pos* must remain unchanged (all-NaN from warmup or equal
+    to its initial value) after every warmup step.
     """
     warmup_len = 5
     n_total = warmup_len + 5
