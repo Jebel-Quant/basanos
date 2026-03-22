@@ -4,6 +4,9 @@
 .ruff_cache
 .ty_cache
 
+# HTML outputs from docstring examples (e.g. report.save("output/..."))
+output/
+
 ### Don't expose API keys, etc.
 .env
 
@@ -122,5 +125,3 @@ cython_debug/
 local.mk
 
 .bandit-baseline.json
-
-output/

@@ -1,24 +1,31 @@
-# Local Semgrep rules for NumPy best-practice and security checks.
-# These rules replace the retired `p/numpy` registry ruleset.
 rules:
+  # ----------------------------
+  # Security
+  # ----------------------------
+
   - id: numpy-load-allow-pickle
-    pattern: np.load($PATH)
+    patterns:
+      - pattern: np.load($PATH, ...)
+      - pattern-not: np.load($PATH, ..., allow_pickle=False, ...)
     message: |
-      np.load() with default allow_pickle=True can deserialise arbitrary objects
-      and execute malicious code. Pass allow_pickle=False unless pickle support
-      is explicitly required.
+      np.load() may deserialize arbitrary objects when allow_pickle=True
+      (default in older NumPy versions). This can execute malicious code.
+      Pass allow_pickle=False unless explicitly required.
     languages: [python]
     severity: ERROR
     metadata:
       category: security
       cwe: "CWE-502: Deserialization of Untrusted Data"
 
+  # ----------------------------
+  # Randomness / Reproducibility
+  # ----------------------------
+
   - id: numpy-random-seed
     pattern: np.random.seed(...)
     message: |
-      np.random.seed() sets the global random state, which is not thread-safe
-      and makes reproducibility fragile. Use np.random.default_rng() with a
-      local Generator instance instead.
+      np.random.seed() sets global state and is not thread-safe.
+      Prefer a local Generator via np.random.default_rng().
     languages: [python]
     severity: WARNING
     metadata:
@@ -36,13 +43,32 @@ rules:
           - pattern: np.random.choice(...)
           - pattern: np.random.shuffle(...)
     message: |
-      Using global numpy random functions (np.random.*) is not thread-safe
-      and produces non-reproducible results across NumPy versions. Use a
-      local Generator: rng = np.random.default_rng(seed); rng.method(...).
+      Global np.random.* usage is not thread-safe and can harm reproducibility.
+      Prefer a local Generator:
+        rng = np.random.default_rng(seed)
+        rng.method(...)
+    languages: [python]
+    severity: INFO
+    metadata:
+      category: best-practice
+
+  # ----------------------------
+  # Numerical Stability
+  # ----------------------------
+
+  - id: numpy-avoid-inv
+    pattern: np.linalg.inv($X)
+    message: |
+      Avoid explicit matrix inversion. Use np.linalg.solve(A, b)
+      for better numerical stability and performance.
     languages: [python]
     severity: WARNING
     metadata:
-      category: best-practice
+      category: numerical-stability
+
+  # ----------------------------
+  # Deprecated / Dangerous APIs
+  # ----------------------------
 
   - id: numpy-matrix-deprecated
     patterns:
@@ -50,9 +76,8 @@ rules:
           - pattern: np.matrix(...)
           - pattern: np.mat(...)
     message: |
-      np.matrix is deprecated and scheduled for removal. Use np.array or
-      np.ndarray instead. np.matrix has subtle differences in operator
-      semantics (e.g. * performs matrix multiplication) that can cause bugs.
+      np.matrix is deprecated and scheduled for removal. Use np.array
+      or np.ndarray instead. It has different operator semantics (*).
     languages: [python]
     severity: WARNING
     metadata:

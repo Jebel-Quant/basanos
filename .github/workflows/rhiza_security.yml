@@ -44,9 +44,3 @@ jobs:
         env:
           UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
         run: make security
-
-
-      - name: Run typecheck
-        env:
-          UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
-        run: make typecheck

@@ -4,7 +4,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Welcome! Use this space to ask questions, share how you're using Basanos, or explore ideas with the community.
+        Welcome! Use this space to ask questions, share how your use-case, or explore ideas with the community.
 
   - type: textarea
     id: question
