@@ -42,7 +42,7 @@ mutation-test: install ## run cosmic-ray mutation testing against tests/test_mat
 	@mkdir -p _tests/mutation
 	@${UV_BIN} run --with cosmic-ray cosmic-ray init cosmic-ray.toml _tests/mutation/session.sqlite
 	@${UV_BIN} run --with cosmic-ray cosmic-ray exec cosmic-ray.toml _tests/mutation/session.sqlite
-	@${UV_BIN} run --with cosmic-ray cr-report _tests/mutation/session.sqlite | tee _tests/mutation/report.txt
+	@${UV_BIN} run --with cosmic-ray cr-report _tests/mutation/session.sqlite > _tests/mutation/report.txt
 	@printf "${GREEN}[INFO] Mutation testing complete. Report: _tests/mutation/report.txt${RESET}\n"
 
 ##@ Paper
