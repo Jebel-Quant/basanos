@@ -123,4 +123,4 @@ jobs:
         if: always()
         with:
           name: mutation-test-results
-          path: _tests/mutation/
+          path: _tests/mutation/report.txt
