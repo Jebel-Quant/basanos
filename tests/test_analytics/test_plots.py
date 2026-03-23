@@ -31,6 +31,21 @@ def test_snapshot_returns_figure_with_expected_traces_and_log_scale(portfolio: P
     _ = fig_log.to_dict()
 
 
+def test_snapshot_includes_net_cost_nav_trace_when_cost_per_unit_positive():
+    """snapshot() must add a Net-of-Cost NAV trace when cost_per_unit > 0."""
+    n = 10
+    start = date(2020, 1, 1)
+    end = start + timedelta(days=n - 1)
+    dates = pl.date_range(start=start, end=end, interval="1d", eager=True).cast(pl.Date)
+    prices = pl.DataFrame({"date": dates, "A": pl.Series([100.0 + i for i in range(n)], dtype=pl.Float64)})
+    positions = pl.DataFrame({"date": dates, "A": pl.Series([1000.0] * n, dtype=pl.Float64)})
+    pf = Portfolio.from_cash_position(prices=prices, cash_position=positions, aum=1e5, cost_per_unit=0.01)
+
+    fig = pf.plots.snapshot()
+    trace_names = [t.name for t in fig.data]
+    assert "Net-of-Cost NAV" in trace_names
+
+
 # ─── Lagged performance ───────────────────────────────────────────────────────
 
 
