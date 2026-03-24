@@ -87,8 +87,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
+from jquantstats import Portfolio
 
-from ..analytics import Portfolio
 from ..exceptions import (
     ColumnMismatchError,
     ExcessiveNullsError,
@@ -572,8 +572,8 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         Converts the computed cash positions into a Portfolio using the
         configured AUM.  The ``cost_per_unit`` from :attr:`cfg` is forwarded
-        so that :attr:`~basanos.analytics.Portfolio.net_cost_nav` and
-        :attr:`~basanos.analytics.Portfolio.position_delta_costs` work out
+        so that :attr:`~jquantstats.Portfolio.net_cost_nav` and
+        :attr:`~jquantstats.Portfolio.position_delta_costs` work out
         of the box without any further configuration.
 
         Returns:

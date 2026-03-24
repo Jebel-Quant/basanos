@@ -261,7 +261,7 @@ class BasanosConfig(BaseModel):
 
     ``position_scale = 1e6``
         The dimensionless risk position is multiplied by this factor
-        before being passed to :class:`~basanos.analytics.Portfolio`.
+        before being passed to :class:`~jquantstats.Portfolio`.
         A value of 1e6 means positions are expressed in units of one
         million of the base currency, a conventional denomination for
         institutional-scale portfolios where AUM is measured in hundreds
