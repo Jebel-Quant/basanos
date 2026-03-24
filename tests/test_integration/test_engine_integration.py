@@ -29,8 +29,8 @@ from datetime import date, timedelta
 import numpy as np
 import polars as pl
 import pytest
+from jquantstats import Portfolio
 
-from basanos.analytics import Portfolio
 from basanos.math import BasanosConfig, BasanosEngine
 
 # ─── shared helpers ──────────────────────────────────────────────────────────

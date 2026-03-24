@@ -11,9 +11,9 @@ from datetime import date, timedelta
 import numpy as np
 import polars as pl
 import pytest
+from jquantstats import Portfolio
+from jquantstats._stats import Stats
 
-from basanos.analytics import Portfolio
-from basanos.analytics._stats import Stats
 from basanos.math import BasanosStream, SlidingWindowConfig
 from basanos.math.optimizer import BasanosConfig, BasanosEngine
 

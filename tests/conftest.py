@@ -10,8 +10,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 import pytest
-
-from basanos.analytics import Portfolio
+from jquantstats import Portfolio
 
 
 @pytest.fixture(scope="session")

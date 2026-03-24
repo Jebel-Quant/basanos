@@ -191,7 +191,7 @@ positions = engine.cash_position
 ```python
 import numpy as np
 import polars as pl
-from basanos.analytics import Portfolio
+from jquantstats import Portfolio
 
 n_days = 60
 dates = pl.date_range(
@@ -712,10 +712,12 @@ from basanos.math import EwmaShrinkConfig, SlidingWindowConfig, CovarianceMode
 
 ---
 
-### `basanos.analytics`
+### `jquantstats`
+
+Portfolio analytics are now provided by the [jquantstats](https://github.com/tschm/jquantstats) package.
 
 ```python
-from basanos.analytics import Portfolio
+from jquantstats import Portfolio
 ```
 
 | Class | Description |
@@ -860,7 +862,7 @@ engine.config_report.to_html()  # above + interactive lambda-sweep chart
 
 ---
 
-### `basanos.analytics.Report`
+### `jquantstats.Report`
 
 Accessed via `portfolio.report`.  Produces a self-contained HTML document with
 dark-themed styling, a statistics table, and embedded interactive Plotly charts.
