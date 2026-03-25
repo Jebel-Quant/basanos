@@ -103,7 +103,7 @@ class TestEwmCorrNumpyShape:
             mat = result[t]
             finite = np.isfinite(mat)
             if finite.any():
-                np.testing.assert_allclose(mat[finite], mat.T[finite], atol=1e-10)
+                np.testing.assert_array_equal(mat[finite], mat.T[finite])
 
 
 # ─── Correctness vs pandas ────────────────────────────────────────────────────

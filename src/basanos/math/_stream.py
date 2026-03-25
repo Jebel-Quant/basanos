@@ -835,6 +835,7 @@ class BasanosStream:
             corr[corr_count < cfg.corr] = np.nan
             diag_idx = np.arange(n_assets)
             corr[diag_idx, diag_idx] = np.where(corr_count[diag_idx, diag_idx] >= cfg.corr, 1.0, np.nan)
+            corr = (corr + corr.T) / 2.0
 
             matrix = shrink2id(corr, lamb=cfg.shrink)
 

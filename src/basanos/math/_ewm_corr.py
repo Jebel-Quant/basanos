@@ -126,6 +126,8 @@ def _ewm_corr_with_final_state(
     diag_count = count[:, diag_idx, diag_idx]
     result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
 
+    result = (result + result.swapaxes(1, 2)) / 2.0
+
     return result, iir_state
 
 
