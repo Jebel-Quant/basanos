@@ -6,6 +6,7 @@
 test hypothesis-test stress: export PYTEST_ADDOPTS := -n auto
 
 DOCFORMAT=google
+MKDOCS_CONFIG=mkdocs.yml
 DEFAULT_AI_MODEL=claude-sonnet-4.5
 LOGO_FILE=.rhiza/assets/rhiza-logo.svg
 GH_AW_ENGINE ?= copilot  # Default AI engine for gh-aw workflows (copilot, claude, or codex)
@@ -25,6 +26,14 @@ post-validate:: typecheck ## run type checking as part of make validate
 ## Custom targets
 
 ##@ Quality
+
+# Override rhiza security target to ignore CVE-2026-4539 (pygments ReDoS, no fix available yet).
+.PHONY: security
+security: install ## run security scans (pip-audit and bandit)
+	@printf "${BLUE}[INFO] Running pip-audit for dependency vulnerabilities...${RESET}\n"
+	@${UVX_BIN} pip-audit --ignore-vuln CVE-2026-4539
+	@printf "${BLUE}[INFO] Running bandit security scan...${RESET}\n"
+	@${UVX_BIN} bandit -r ${SOURCE_FOLDER} -ll -q -c pyproject.toml
 
 .PHONY: semgrep
 semgrep: install ## run Semgrep static analysis (numpy rules)

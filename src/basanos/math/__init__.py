@@ -2,8 +2,7 @@
 
 Provides correlation-aware optimization utilities and related helpers.
 This package exposes a minimal, stable public API while keeping internal
-implementation details in private modules so documentation remains clean
-and links are hierarchical in pdoc.
+implementation details in private modules so documentation remains clean.
 
 Public API:
 - basanos.math.optimizer
@@ -38,3 +37,18 @@ from .optimizer import CovarianceConfig as CovarianceConfig
 from .optimizer import CovarianceMode as CovarianceMode
 from .optimizer import EwmaShrinkConfig as EwmaShrinkConfig
 from .optimizer import SlidingWindowConfig as SlidingWindowConfig
+
+__all__ = [
+    "BasanosConfig",
+    "BasanosEngine",
+    "BasanosStream",
+    "CovarianceConfig",
+    "CovarianceMode",
+    "EwmaShrinkConfig",
+    "FactorModel",
+    "MatrixBundle",
+    "SlidingWindowConfig",
+    "SolveStatus",
+    "StepResult",
+    "WarmupState",
+]

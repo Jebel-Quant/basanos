@@ -14,12 +14,16 @@ __marimo__
 
 _tests
 _book
-_pdoc
-_marimushka
 _mkdocs
 _benchmarks
 _jupyter
 _site
+
+# Auto-generated MkDocs docs pages
+docs/notebooks.md
+docs/notebooks/
+docs/reports.md
+docs/reports/
 
 # Marimo notebook validation artefacts
 results/
