@@ -33,6 +33,7 @@ plugins:
             show_signature_annotations: true
 
 markdown_extensions:
+  - md_in_html
   - pymdownx.highlight
   - pymdownx.superfences
   - pymdownx.snippets:
@@ -44,4 +45,6 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Notebooks: notebooks.md
+  - Reports: reports.md
   - API Reference: api.md

@@ -19,6 +19,12 @@ _benchmarks
 _jupyter
 _site
 
+# Auto-generated MkDocs docs pages
+docs/notebooks.md
+docs/notebooks/
+docs/reports.md
+docs/reports/
+
 # Marimo notebook validation artefacts
 results/
 # …but keep committed benchmark baseline results
