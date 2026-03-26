@@ -234,7 +234,6 @@ flowchart TB
         subgraph other["Other Directories"]
             direction LR
             docs_dir[docs/<br/>7 MD files]
-            templates_dir[templates/<br/>minibook]
             assets_dir[assets/<br/>Logo]
         end
     end

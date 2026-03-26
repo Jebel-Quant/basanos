@@ -28,7 +28,7 @@ hierarchy. The root `Makefile` includes `.rhiza/rhiza.mk`, which auto-loads all
 | `bootstrap.mk` | `install`, `clean` | Environment setup (uv, venv, deps) |
 | `quality.mk` | `fmt`, `deptry`, `todos` | Formatting and dependency checks |
 | `test.mk` | `test`, `typecheck`, `security`, `benchmark` | Testing and static analysis |
-| `docs.mk` | `docs`, `mkdocs-serve` | API documentation (pdoc / MkDocs) |
+| `docs.mk` | `mkdocs-serve`, `mkdocs-build` | API documentation (MkDocs) |
 | `book.mk` | `book` | Companion documentation book |
 | `marimo.mk` | `marimo` | Interactive Marimo notebooks |
 | `releasing.mk` | `bump`, `release`, `publish` | Version bumping and releases |
