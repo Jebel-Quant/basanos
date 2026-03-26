@@ -6,6 +6,7 @@
 test hypothesis-test stress: export PYTEST_ADDOPTS := -n auto
 
 DOCFORMAT=google
+MKDOCS_CONFIG=mkdocs.yml
 DEFAULT_AI_MODEL=claude-sonnet-4.5
 LOGO_FILE=.rhiza/assets/rhiza-logo.svg
 GH_AW_ENGINE ?= copilot  # Default AI engine for gh-aw workflows (copilot, claude, or codex)
