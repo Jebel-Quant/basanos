@@ -40,6 +40,18 @@ license: install ## run license compliance scan (fail on GPL, LGPL, AGPL)
 	@printf "${BLUE}[INFO] Running license compliance scan...${RESET}\n"
 	@${UV_BIN} run --with pip-licenses pip-licenses --fail-on="GPL;LGPL;AGPL"
 
+# Override the template 'security' target to suppress a known unfixable CVE.
+# CVE-2026-4539 (GHSA-5239-wwwm-4pmq): ReDoS in pygments AdlLexer archetype.py.
+# Fix versions: none available as of the current pygments release (2.19.2).
+# Risk: local access only; not exploitable via basanos's public API surface.
+# Remove this override once a patched pygments release is available.
+.PHONY: security
+security: install ## run security scans (pip-audit and bandit)
+	@printf "${BLUE}[INFO] Running pip-audit for dependency vulnerabilities...${RESET}\n"
+	@${UVX_BIN} pip-audit --ignore-vuln CVE-2026-4539
+	@printf "${BLUE}[INFO] Running bandit security scan...${RESET}\n"
+	@${UVX_BIN} bandit -r ${SOURCE_FOLDER} -ll -q -c pyproject.toml
+
 ##@ Paper
 
 .PHONY: paper
