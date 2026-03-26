@@ -174,6 +174,7 @@ class SlidingWindowConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_max_components(self) -> "SlidingWindowConfig":
+        """Validate that max_components does not exceed n_factors."""
         if self.max_components is not None and self.max_components > self.n_factors:
             msg = f"max_components ({self.max_components}) must not exceed n_factors ({self.n_factors})"
             raise ValueError(msg)

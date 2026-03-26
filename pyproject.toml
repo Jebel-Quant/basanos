@@ -27,6 +27,11 @@ Issues = "https://github.com/Jebel-Quant/basanos/issues"
 
 
 [dependency-groups]
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.25.0",
+]
 dev = [
     "hypothesis>=6.0.0",
     "marimo>=0.21.0",
@@ -60,6 +65,12 @@ omit = [
     # Pure type-stubs file; only imported under TYPE_CHECKING
     "src/basanos/math/_engine_protocol.py",
 ]
+
+[tool.interrogate]
+fail-under = 100
+ignore-init-method = true
+ignore-magic = true
+exclude = ["book"]
 
 [tool.ty.environment]
 python-version = "3.12"
