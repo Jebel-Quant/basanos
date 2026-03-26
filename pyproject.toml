@@ -27,20 +27,10 @@ Issues = "https://github.com/Jebel-Quant/basanos/issues"
 
 
 [dependency-groups]
-docs = [
-    "mkdocs>=1.6.0",
-    "mkdocs-material>=9.5.0",
-    "mkdocstrings[python]>=0.25.0",
-]
 dev = [
-    "hypothesis>=6.0.0",
     "marimo>=0.21.0",
     "pandas>=2.0",
-    "pyarrow>=14.0",
-    "pytest>=9.0.2",
-    "pytest-cov>=7.0.0",
-    "pytest-xdist>=3.0",
-    "ty>=0.0.23,<1",
+    "pyarrow>=14.0"
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -48,7 +38,18 @@ packages = ["src/basanos"]
 
 [tool.deptry]
 # Explicit module name map so deptry doesn't need to inspect installed packages
-package_module_name_map = { "jinja2" = "jinja2", "jquantstats" = "jquantstats", "numpy" = "numpy", "plotly" = "plotly", "polars" = "polars", "pydantic" = "pydantic", "scipy" = "scipy", "hypothesis" = "hypothesis", "marimo" = "marimo", "pandas" = "pandas", "pyarrow" = "pyarrow", "ty" = "ty" }
+
+[tool.deptry.package_module_name_map]
+"jinja2" = "jinja2"
+"jquantstats" = "jquantstats"
+"numpy" = "numpy"
+"plotly" = "plotly"
+"polars" = "polars"
+"pydantic" = "pydantic"
+"scipy" = "scipy"
+"marimo" = "marimo"
+"pandas" = "pandas"
+"pyarrow" = "pyarrow"
 
 [tool.coverage.report]
 fail_under = 90
