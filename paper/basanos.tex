@@ -18,6 +18,7 @@
 \usepackage{listings}
 \usepackage{caption}
 \usepackage{subcaption}
+\usepackage{tikz}
 
 % ─── Hyperref setup ──────────────────────────────────────────────────────────
 \hypersetup{
@@ -248,8 +249,8 @@ Basanos computes cash positions through a three-step pipeline:
     time-varying EWMA correlation matrix and regularise it toward the
     identity.
   \item \textbf{Normalised linear solve} --- solve $\C_t\,\x_t = \muvec_t$
-    for the risk position vector, then scale by realised P\&L variance and
-    divide by per-asset volatility to obtain cash positions.
+    for the normalised risk position vector, then divide by per-asset
+    volatility to obtain cash positions.
 \end{enumerate}
 
 \subsection{Volatility Adjustment}
@@ -394,30 +395,15 @@ giving the normalised risk position
   \hat{\x}_t = \frac{\tilde{\C}_t^{-1}\muvec_t}{\nu_t}.
 \end{equation}
 Doubling $\muvec_t$ leaves $\hat{\x}_t$ unchanged because both numerator
-and denominator scale identically.  This separates position sizing (handled
-by the dynamic risk scalar below) from signal direction.
-
-\paragraph{Dynamic risk scaling.}
-A running EMA of realised squared portfolio P\&L,
-\begin{equation}
-  V_t = \beta\,(\hat{\x}_{t-1}^\top \mathbf{r}_t)^2 + (1-\beta)\,V_{t-1},
-  \quad V_0 = V_\text{init},
-\end{equation}
-is maintained with decay factor $\beta$ (\texttt{cfg.profit\_variance\_decay},
-default $0.99$).  Positions are further divided by $V_t$:
-\begin{equation}
-  \label{eq:risk_scaling}
-  \tilde{\x}_t = \frac{\hat{\x}_t}{V_t}.
-\end{equation}
-This adapts risk dynamically: in regimes of high realised P\&L variance the
-system reduces exposure, and in calm regimes it scales up.
+and denominator scale identically.  This separates signal direction from
+position magnitude, which is controlled by \texttt{cfg.position\_scale}.
 
 \paragraph{Cash positions.}
 Converting risk positions to dollar notionals requires dividing by per-asset
 volatility:
 \begin{equation}
   \label{eq:cash_position}
-  p_{i,t} = \frac{\tilde{x}_{i,t}}{\sigma_{i,t}} \times \delta,
+  p_{i,t} = \frac{\hat{x}_{i,t}}{\sigma_{i,t}} \times \delta,
 \end{equation}
 where $\delta$ is a position-scale constant (\texttt{cfg.position\_scale},
 default $10^6$).
@@ -428,7 +414,65 @@ default $10^6$).
   the direction in signal space that maximises the portfolio's
   information ratio under the given correlation structure.  This is the
   Markowitz efficient direction in the unconstrained, full-information limit.
+  Figure~\ref{fig:ellipsoid} illustrates this for $n = 2$ assets.
 \end{remark}
+
+\begin{figure}[h]
+  \centering
+  \begin{tikzpicture}[scale=1.5]
+    \clip (-2.2, -2.0) rectangle (2.4, 2.2);
+
+    % Blue ellipse: x^T C x = 1 with C = [[1, 0.8], [0.8, 1]], rho = 0.8.
+    % Eigenvalues: lambda_+ = 1.8 along (1,1)/sqrt2 (compressed direction),
+    %              lambda_- = 0.2 along (1,-1)/sqrt2 (stretched direction).
+    % Semi-axes: 1/sqrt(1.8) ~ 0.7454 and 1/sqrt(0.2) ~ 2.2361.
+    \begin{scope}[rotate=45]
+      \fill[blue!8] (0,0) ellipse (0.7454 and 2.2361);
+      \draw[blue!55!black, thick] (0,0) ellipse (0.7454 and 2.2361);
+    \end{scope}
+
+    % Grey circle: x^T I x = 1 (identity / proportional baseline).
+    \fill[gray!12] (0,0) circle (1);
+    \draw[dashed, gray!55, thick] (0,0) circle (1);
+
+    % Axes.
+    \draw[->] (-2.0, 0) -- (2.2, 0) node[right] {$x_1$};
+    \draw[->] (0, -1.8) -- (0, 2.0) node[above] {$x_2$};
+
+    % Signal vector mu = (1, 0.8).
+    \draw[->, line width=1.2pt, red!65!black] (0,0) -- (1.0, 0.8)
+      node[right, font=\small] {$\bm{\mu}_t$};
+
+    % Proportional solution: mu/||mu|| ~ (0.7809, 0.6247).
+    \fill[gray!65] (0.7809, 0.6247) circle (2.2pt);
+    \node[gray!65, above left, font=\small] at (0.7809, 0.6247)
+      {$\bm{\mu}_t/\|\bm{\mu}_t\|$};
+
+    % Correlation-adjusted solution: hat_x = (1, 0).
+    \fill[blue!65!black] (1.0, 0.0) circle (2.2pt);
+    \node[blue!55!black, below right, font=\small] at (1.05, -0.05)
+      {$\hat{\x}_t$};
+
+    % Curve labels.
+    \node[gray!55, font=\small\itshape] at (0.52, -0.72)
+      {$\tilde{\C}_t = \I$};
+    \node[blue!55!black, font=\small\itshape] at (1.72, 1.05)
+      {$\rho = 0.8$};
+  \end{tikzpicture}
+  \caption{Geometric interpretation for $n = 2$ assets with signal
+    $\bm{\mu}_t = (1,\,0.8)^\top$ (red arrow).
+    \textbf{Grey circle}: feasible set under no correlation adjustment
+    ($\tilde{\C}_t = \I$); the proportional solution $\bm{\mu}_t/\|\bm{\mu}_t\|$
+    (grey dot) lies in the signal direction.
+    \textbf{Blue ellipse}: feasible set $\{\x : \x^\top\tilde{\C}_t\x = 1\}$
+    for $\rho = 0.8$; the correlation-adjusted solution
+    $\hat{\x}_t = (1,\,0)^\top$ (blue dot) eliminates the position in
+    asset~2, whose contribution to portfolio risk is already captured
+    through the highly correlated asset~1.
+    The ellipse is compressed in the correlated direction $(1,1)^\top$
+    and stretched in the anti-correlated direction $(1,-1)^\top$.}
+  \label{fig:ellipsoid}
+\end{figure}
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Factor Risk Models}
@@ -760,6 +804,43 @@ It is returned as a \texttt{DataFrame} with the same shape as
 \texttt{cash\_position}, and is useful for cross-asset comparison on a
 common volatility-adjusted scale.
 
+\subsection{Signal Quality Metrics}
+\label{sec:signal_quality}
+
+The following properties are available on a \texttt{BasanosEngine} instance
+and evaluate the signal's cross-sectional predictive content independently
+of any portfolio construction.  Each IC observation is computed as a
+cross-sectional statistic over the active assets at each timestamp.
+
+\subsubsection{Information Coefficient (IC)}
+
+The IC at timestamp $t$ is the Pearson correlation between the signal
+$\muvec_t$ and the one-step-ahead asset returns $\mathbf{r}_{t+1}$:
+\begin{equation}
+  \mathrm{IC}_t = \operatorname{corr}(\muvec_t,\, \mathbf{r}_{t+1}).
+\end{equation}
+The property \texttt{engine.ic} returns a Polars \texttt{DataFrame} of
+per-timestamp IC values.
+
+\subsubsection{Rank IC}
+
+The Rank IC is the Spearman rank correlation between $\muvec_t$ and
+$\mathbf{r}_{t+1}$.  It is more robust to outliers than the Pearson IC and
+is the standard metric for evaluating signal quality in the quantitative
+finance literature.  Available as \texttt{engine.rank\_ic}.
+
+\subsubsection{Summary Statistics}
+
+\begin{itemize}
+  \item \texttt{engine.icir} --- Information Coefficient Information Ratio:
+    $\mathrm{ICIR} = \bar{\mathrm{IC}} / \hat{\sigma}_\mathrm{IC}$, where
+    $\bar{\mathrm{IC}}$ is the mean and $\hat{\sigma}_\mathrm{IC}$ the
+    standard deviation of the IC time series.
+  \item \texttt{engine.rank\_ic\_mean} --- Mean of the Rank IC series.
+  \item \texttt{engine.rank\_ic\_std} --- Standard deviation of the Rank IC
+    series.
+\end{itemize}
+
 \subsection{Portfolio-Level Analytics}
 \label{sec:portfolio_analytics}
 
@@ -978,6 +1059,12 @@ eff_rank = engine.effective_rank       # Effective rank over time
 residual = engine.solver_residual      # Solve residual over time
 utilisation = engine.signal_utilisation  # Per-asset signal utilisation
 
+# --- Signal quality metrics ---
+ic_series = engine.ic                  # Per-timestamp Pearson IC
+rank_ic   = engine.rank_ic            # Per-timestamp Rank IC
+print(engine.icir)                    # IC Information Ratio
+print(engine.naive_sharpe)            # Sharpe under proportional sizing
+
 # --- Portfolio analytics ---
 portfolio = engine.portfolio
 print(portfolio.stats.sharpe())        # Annualised Sharpe ratio
@@ -1001,6 +1088,13 @@ a direct measurement of how much value correlation adjustment adds.
 Basanos exposes this as the method
 \texttt{engine.sharpe\_at\_shrink($\lambda$)}, which re-runs the optimiser
 with a given $\lambda$ and returns the annualised Sharpe ratio.
+
+A complementary baseline is \texttt{engine.naive\_sharpe}, which computes the
+Sharpe ratio when each asset is positioned proportionally to its signal
+with no correlation adjustment (equivalent to $\lambda = 0$).  Together,
+\texttt{naive\_sharpe}, \texttt{sharpe\_at\_shrink(0.0)}, and
+\texttt{sharpe\_at\_shrink(cfg.shrink)} form a three-point diagnostic that
+separates raw signal skill from the value added by correlation routing.
 
 A typical sweep over $\lambda \in [0, 1]$ with fixed prices and signals
 yields a Sharpe curve that either:
@@ -1097,10 +1191,13 @@ friction of a full production system.
     clip   & Clipping threshold for vol-adjusted returns ($> 0$). Required. & --- \\
     shrink & Shrinkage retention weight $\lambda \in [0,1]$. Required. & --- \\
     aum    & Assets under management for position scaling ($> 0$). Required. & --- \\
-    profit\_variance\_init  & Initial value for P\&L variance EMA. & 1.0 \\
-    profit\_variance\_decay & EMA decay factor for realised P\&L variance. & 0.99 \\
     denom\_tol & Zero threshold for normalisation denominator. & $10^{-12}$ \\
-    position\_scale & Scaling factor applied before AUM normalisation. & $10^6$ \\
+    position\_scale & Multiplicative scaling applied to risk positions. & $10^6$ \\
+    min\_corr\_denom & Guard threshold for EWMA correlation denominator. & $10^{-14}$ \\
+    max\_nan\_fraction & Maximum tolerated null fraction per asset column. & $0.9$ \\
+    cost\_per\_unit & One-way trading cost per unit of position change. & $0.0$ \\
+    max\_turnover & Optional L1 turnover budget per period (cash units). & \texttt{None} \\
+    covariance\_config & Covariance mode: \texttt{EwmaShrinkConfig} or \texttt{SlidingWindowConfig}. & \texttt{EwmaShrinkConfig()} \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -1131,6 +1228,12 @@ friction of a full production system.
     cor\_tensor       & All correlation matrices as an $(T, N, N)$ NumPy array. \\
     vola              & Per-asset EWMA volatility estimates. \\
     ret\_adj          & Volatility-adjusted, clipped log returns. \\
+    ic                & Per-timestamp Pearson IC (signal vs.\ forward returns). \\
+    rank\_ic          & Per-timestamp Spearman Rank IC. \\
+    icir              & Scalar IC Information Ratio: mean IC / std IC. \\
+    rank\_ic\_mean    & Mean of the Rank IC time series. \\
+    rank\_ic\_std     & Standard deviation of the Rank IC time series. \\
+    naive\_sharpe     & Sharpe ratio under signal-proportional sizing (no correlation adjustment). \\
     \bottomrule
   \end{tabular}
 \end{table}
