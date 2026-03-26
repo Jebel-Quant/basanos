@@ -1073,8 +1073,8 @@ print(engine.naive_sharpe)            # Sharpe under proportional sizing
 
 # --- Portfolio analytics ---
 portfolio = engine.portfolio
-print(portfolio.stats.sharpe())        # Annualised Sharpe ratio
-print(portfolio.stats.max_drawdown())  # Maximum drawdown
+print(portfolio.stats.sharpe()["returns"])        # Annualised Sharpe ratio
+print(portfolio.stats.max_drawdown()["returns"])  # Maximum drawdown
 decomp = portfolio.tilt_timing_decomp  # Tilt vs. timing NAV curves
 
 # --- Visualisation ---
