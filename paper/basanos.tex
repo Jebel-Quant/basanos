@@ -282,7 +282,9 @@ positions when volatility is temporarily suppressed.
 
 The EWMA correlation matrix $\hat{\C}_t$ with half-life $h_\rho$
 (\texttt{cfg.corr}, required $\geq h_\sigma$) is computed component-wise.
-For each pair $(i,j)$:
+Because $\hat{C}_{ij,t} = \hat{C}_{ji,t}$, it is sufficient to update only
+the $n(n+1)/2$ pairs with $j \geq i$; the lower triangle is then filled by
+symmetry.  For each such pair:
 \begin{align}
   E_{i,t}   &= \alpha_\rho\,\tilde{r}_{i,t}   + (1-\alpha_\rho)\,E_{i,t-1}, \\
   E_{ij,t}  &= \alpha_\rho\,\tilde{r}_{i,t}\tilde{r}_{j,t}
@@ -295,8 +297,8 @@ where $\alpha_\rho = 1 - e^{-\ln 2/h_\rho}$.  The correlation is
                         {\sqrt{(E_{i^2,t} - E_{i,t}^2)
                                (E_{j^2,t} - E_{j,t}^2)}}.
 \end{equation}
-The full set of five running moments ($E_i$, $E_j$, $E_{i^2}$, $E_{j^2}$,
-$E_{ij}$) is computed in parallel across all $n^2$ pairs using
+The five running moments ($E_i$, $E_j$, $E_{i^2}$, $E_{j^2}$, $E_{ij}$)
+are advanced in parallel across all $n(n+1)/2$ upper-triangular pairs using
 \texttt{scipy.signal.lfilter}, making the step $O(T n^2)$ in both time and
 memory \citep{hunter1986}.
 
@@ -311,8 +313,8 @@ the EWMA cross-moment matrix can be written compactly as
 \end{equation}
 i.e.\ the exponentially weighted sum of rank-1 outer products
 $\tilde{\mathbf{r}}_t\tilde{\mathbf{r}}_t^\top$.  Each outer product
-contributes all $n^2$ cross-moment estimates simultaneously with a single
-pass over the data.  The correlation matrix $\hat{\C}_t$ is then obtained
+contributes all $n(n+1)/2$ upper-triangular cross-moment estimates
+simultaneously with a single pass over the data.  The correlation matrix $\hat{\C}_t$ is then obtained
 by mean-centering $\mathbf{M}_t$ and normalising each entry by the
 corresponding diagonal elements, as in the component-wise update above.
 This outer-product structure makes the construction equivalent to an
