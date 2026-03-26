@@ -835,8 +835,14 @@ class BasanosStream:
             corr[corr_count < cfg.corr] = np.nan
             diag_idx = np.arange(n_assets)
             corr[diag_idx, diag_idx] = np.where(corr_count[diag_idx, diag_idx] >= cfg.corr, 1.0, np.nan)
-            corr = (corr + corr.T) / 2.0
 
+            # Symmetrise corr in place to avoid allocating a new (N, N) array.
+            # Average strict lower/upper triangle entries, leave diagonal as set above.
+            i_lower = np.tril_indices(n_assets, k=-1)
+            upper_vals = corr.T[i_lower]
+            corr[i_lower] = (corr[i_lower] + upper_vals) / 2.0
+            i_upper = (i_lower[1], i_lower[0])
+            corr[i_upper] = corr[i_lower]
             matrix = shrink2id(corr, lamb=cfg.shrink)
 
             if not mask.any():

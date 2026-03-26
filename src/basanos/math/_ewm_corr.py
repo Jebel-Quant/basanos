@@ -126,7 +126,14 @@ def _ewm_corr_with_final_state(
     diag_count = count[:, diag_idx, diag_idx]
     result[:, diag_idx, diag_idx] = np.where(diag_count >= min_periods, 1.0, np.nan)
 
-    result = (result + result.swapaxes(1, 2)) / 2.0
+    # Enforce symmetry without allocating an extra (T, N, N) temporary:
+    # average only over strict triangle pairs and mirror in place.
+    tril_i, tril_j = np.tril_indices(n_assets, k=-1)
+    upper_vals = result[:, tril_j, tril_i]
+    lower_vals = result[:, tril_i, tril_j]
+    avg_vals = 0.5 * (upper_vals + lower_vals)
+    result[:, tril_i, tril_j] = avg_vals
+    result[:, tril_j, tril_i] = avg_vals
 
     return result, iir_state
 
