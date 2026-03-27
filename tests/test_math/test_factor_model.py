@@ -5,10 +5,12 @@ Tests cover:
 - __post_init__ shape and positivity validation
 - Properties: n_assets, n_factors, covariance
 - from_returns classmethod: shapes, unit diagonal, SVD identity, edge cases
-- solve method: Woodbury identity correctness, edge cases, error handling
+- solve method: Woodbury identity correctness, edge cases, error handling,
+  and IllConditionedMatrixWarning for ill-conditioned factor_covariance
 """
 
 import dataclasses
+import warnings
 from unittest.mock import patch
 
 import numpy as np
@@ -17,9 +19,11 @@ import pytest
 from basanos.exceptions import (
     DimensionMismatchError,
     FactorModelError,
+    IllConditionedMatrixWarning,
     SingularMatrixError,
 )
 from basanos.math._factor_model import FactorModel
+from basanos.math._linalg import _DEFAULT_COND_THRESHOLD
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -354,3 +358,53 @@ def test_solve_raises_singular_matrix_error_when_cholesky_fails():
         pytest.raises(SingularMatrixError),
     ):
         fm.solve(rhs)
+
+
+# ─── condition-number checks on factor_covariance ────────────────────────────
+
+
+def test_solve_warns_ill_conditioned_factor_covariance():
+    """IllConditionedMatrixWarning must fire when factor_covariance is ill-conditioned.
+
+    A diagonal factor_covariance with entries (1.0, 1e-13) has condition
+    number 1e13 > _DEFAULT_COND_THRESHOLD (1e12).  The warning must be
+    emitted before the Woodbury solve proceeds.
+    """
+    n, k = 4, 2
+    rng = np.random.default_rng(0)
+    b_mat = rng.standard_normal((n, k))
+    # Diagonal F with κ(F) ≈ 1e13 > 1e12.
+    f_mat = np.diag([1.0, 1e-13])
+    d = np.ones(n)
+    fm = FactorModel(factor_loadings=b_mat, factor_covariance=f_mat, idiosyncratic_var=d)
+
+    assert float(np.linalg.cond(f_mat)) > _DEFAULT_COND_THRESHOLD
+
+    rhs = rng.standard_normal(n)
+    with pytest.warns(IllConditionedMatrixWarning, match="condition number"):
+        fm.solve(rhs)
+
+
+def test_solve_does_not_warn_well_conditioned_factor_covariance():
+    """No IllConditionedMatrixWarning for a well-conditioned factor_covariance."""
+    fm = _make_fm(n=4, k=2)  # factor_covariance = np.eye(2), κ = 1
+    rhs = np.ones(4)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", IllConditionedMatrixWarning)
+        fm.solve(rhs)  # must not raise
+
+
+def test_solve_suppresses_warning_with_high_cond_threshold():
+    """Setting cond_threshold=inf must suppress the IllConditionedMatrixWarning."""
+    n, k = 4, 2
+    rng = np.random.default_rng(1)
+    b_mat = rng.standard_normal((n, k))
+    f_mat = np.diag([1.0, 1e-13])  # κ ≈ 1e13, normally would trigger warning
+    d = np.ones(n)
+    fm = FactorModel(factor_loadings=b_mat, factor_covariance=f_mat, idiosyncratic_var=d)
+
+    rhs = rng.standard_normal(n)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", IllConditionedMatrixWarning)
+        # cond_threshold=np.inf disables the condition-number guard entirely
+        fm.solve(rhs, cond_threshold=np.inf)  # must not raise
