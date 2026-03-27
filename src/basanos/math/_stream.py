@@ -64,9 +64,9 @@ from scipy.signal import lfilter
 
 from ..exceptions import MissingDateColumnError
 from ._config import BasanosConfig, EwmaShrinkConfig, SlidingWindowConfig
-from ._engine_solve import SolveStatus, _SolveMixin
+from ._engine_solve import MatrixBundle, SolveStatus, _SolveMixin
+from ._ewm_corr import _corr_from_ewm_accumulators
 from ._factor_model import FactorModel
-from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id
 
 _logger = logging.getLogger(__name__)
@@ -808,79 +808,38 @@ class BasanosStream:
                                     new_cash_pos[mask] = risk_pos / vola_sub
                                 status = SolveStatus.VALID
         else:
-            # ── EWM path: shrink2id correlation matrix solve ─────────────────
-            # Reconstruct the EWM correlation matrix from filter outputs.
+            # ── EWM path: shared _corr_from_ewm_accumulators + _SolveMixin solve ──
+            # Reconstruct the EWM correlation matrix from filter outputs using
+            # the shared helper — the same formula as _ewm_corr_with_final_state
+            # but operating on (N, N) slices instead of (T, N, N) tensors.
             # Use y_*[0] (the filter OUTPUT for this step), not zf[0].
-            s_x = y_x[0]
-            s_x2 = y_x2[0]
-            s_xy = y_xy[0]
-            s_w = y_w[0]
-
-            with np.errstate(divide="ignore", invalid="ignore"):
-                pos_w = s_w > 0
-                ewm_x = np.where(pos_w, s_x / s_w, np.nan)
-                ewm_y = np.where(pos_w, s_x.T / s_w, np.nan)
-                ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)
-                ewm_y2 = np.where(pos_w, s_x2.T / s_w, np.nan)
-                ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)
-
-            var_x = np.maximum(ewm_x2 - ewm_x**2, 0.0)
-            var_y = np.maximum(ewm_y2 - ewm_y**2, 0.0)
-            denom_corr = np.sqrt(var_x * var_y)
-            cov = ewm_xy - ewm_x * ewm_y
-
-            with np.errstate(divide="ignore", invalid="ignore"):
-                corr = np.where(denom_corr > cfg.min_corr_denom, cov / denom_corr, np.nan)
-            corr = np.clip(corr, -1.0, 1.0)
-            corr[corr_count < cfg.corr] = np.nan
-            diag_idx = np.arange(n_assets)
-            corr[diag_idx, diag_idx] = np.where(corr_count[diag_idx, diag_idx] >= cfg.corr, 1.0, np.nan)
-
-            # Symmetrise corr in place to avoid allocating a new (N, N) array.
-            # Average strict lower/upper triangle entries, leave diagonal as set above.
-            i_lower = np.tril_indices(n_assets, k=-1)
-            upper_vals = corr.T[i_lower]
-            corr[i_lower] = (corr[i_lower] + upper_vals) / 2.0
-            i_upper = (i_lower[1], i_lower[0])
-            corr[i_upper] = corr[i_lower]
+            corr = _corr_from_ewm_accumulators(
+                y_x[0],
+                y_x2[0],
+                y_xy[0],
+                y_w[0],
+                corr_count,
+                min_periods=cfg.corr,
+                min_corr_denom=cfg.min_corr_denom,
+            )
             matrix = shrink2id(corr, lamb=cfg.shrink)
 
-            if not mask.any():
-                status = SolveStatus.DEGENERATE
+            # Delegate the signal check and linear solve to _SolveMixin so that
+            # any algorithm change (denominator guard, status labels, etc.) only
+            # needs to be applied in _engine_solve.py.
+            expected_mu, early = _SolveMixin._row_early_check(state.step_count, date, mask, new_m)
+            if early is not None:
+                _, _, _, pos, status = early
+                new_cash_pos[mask] = pos
             else:
                 corr_sub = matrix[np.ix_(mask, mask)]
-                expected_mu = np.nan_to_num(new_m[mask])
-                if np.allclose(expected_mu, 0.0):
-                    new_cash_pos[mask] = 0.0
-                    status = SolveStatus.ZERO_SIGNAL
+                _, _, _, pos, status = _SolveMixin._compute_position(
+                    state.step_count, date, mask, expected_mu, MatrixBundle(matrix=corr_sub), cfg.denom_tol
+                )
+                if status == SolveStatus.VALID:
+                    new_cash_pos[mask] = _SolveMixin._scale_to_cash(pos, vola_vec[mask])
                 else:
-                    try:
-                        denom_val = inv_a_norm(expected_mu, corr_sub)
-                    except SingularMatrixError:
-                        denom_val = float("nan")
-
-                    if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
-                        _logger.warning(
-                            "Positions zeroed at date=%s: normalisation denominator "
-                            "degenerate (denom=%s, denom_tol=%s).",
-                            date,
-                            denom_val,
-                            cfg.denom_tol,
-                        )
-                        new_cash_pos[mask] = 0.0
-                        status = SolveStatus.DEGENERATE
-                    else:
-                        try:
-                            pos = solve(corr_sub, expected_mu) / denom_val
-                        except SingularMatrixError:
-                            new_cash_pos[mask] = 0.0
-                            status = SolveStatus.DEGENERATE
-                        else:
-                            risk_pos = pos
-                            vola_sub = vola_vec[mask]
-                            with np.errstate(invalid="ignore"):
-                                new_cash_pos[mask] = risk_pos / vola_sub
-                            status = SolveStatus.VALID
+                    new_cash_pos[mask] = pos
 
         # ── Apply turnover constraint ─────────────────────────────────────────
         if cfg.max_turnover is not None and status == SolveStatus.VALID:

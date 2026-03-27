@@ -1296,7 +1296,9 @@ def test_step_singular_inv_a_norm_yields_degenerate():
 
     stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
 
-    with patch("basanos.math._stream.inv_a_norm", side_effect=SingularMatrixError("singular")):
+    # The EWM solve now delegates to _SolveMixin._compute_position in
+    # _engine_solve.py, so the patch target has moved to that module's namespace.
+    with patch("basanos.math._engine_solve.inv_a_norm", side_effect=SingularMatrixError("singular")):
         result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
 
     assert result.status == "degenerate"
@@ -1314,7 +1316,9 @@ def test_step_singular_solve_yields_degenerate():
 
     stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
 
-    with patch("basanos.math._stream.solve", side_effect=SingularMatrixError("singular")):
+    # The EWM solve now delegates to _SolveMixin._compute_position in
+    # _engine_solve.py, so the patch target has moved to that module's namespace.
+    with patch("basanos.math._engine_solve.solve", side_effect=SingularMatrixError("singular")):
         result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
 
     assert result.status == "degenerate"
