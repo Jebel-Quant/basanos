@@ -44,6 +44,9 @@ from basanos.exceptions import (
 from basanos.exceptions import (
     SingularMatrixError as SingularMatrixError,
 )
+from basanos.exceptions import (
+    StreamStateCorruptError as StreamStateCorruptError,
+)
 
 __all__ = [
     "BasanosError",
@@ -59,5 +62,6 @@ __all__ = [
     "NonSquareMatrixError",
     "ShapeMismatchError",
     "SingularMatrixError",
+    "StreamStateCorruptError",
     "warn_deprecated",
 ]
