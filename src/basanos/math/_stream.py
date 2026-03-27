@@ -62,7 +62,7 @@ import numpy as np
 import polars as pl
 from scipy.signal import lfilter
 
-from ..exceptions import MissingDateColumnError
+from ..exceptions import MissingDateColumnError, StreamStateCorruptError
 from ._config import BasanosConfig, EwmaShrinkConfig, SlidingWindowConfig
 from ._engine_solve import MatrixBundle, SolveStatus, _SolveMixin
 from ._ewm_corr import _corr_from_ewm_accumulators
@@ -169,6 +169,18 @@ class _StreamState:
     # using EwmaShrinkConfig.  The corr_zi_* fields above are unused (zeros)
     # in this mode; sw_ret_buf carries all the correlation state instead.
     sw_ret_buf: np.ndarray | None = None  # (W, N) rolling buffer, or None
+
+
+#: Keys that :meth:`BasanosStream.save` writes to the ``.npz`` archive for
+#: :class:`_StreamState` fields.  Derived automatically from
+#: :func:`dataclasses.fields` so that adding a new field to ``_StreamState``
+#: is sufficient — no manual update here is required.
+#:
+#: The three non-state keys (``format_version``, ``cfg_json``, ``assets``) are
+#: added explicitly because they are not fields of ``_StreamState`` itself.
+_REQUIRED_KEYS: frozenset[str] = frozenset(
+    {f.name for f in dataclasses.fields(_StreamState)} | {"format_version", "cfg_json", "assets"}
+)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -919,30 +931,25 @@ class BasanosStream:
             True
         """
         state = self._state
+        # Build the per-field dict automatically from _StreamState so that any
+        # new field added to the dataclass is included without manual updates.
+        state_arrays: dict[str, np.ndarray] = {}
+        for field in dataclasses.fields(_StreamState):
+            value = getattr(state, field.name)
+            if field.name == "sw_ret_buf":
+                # Sentinel: use an empty (0, 0) array to represent None so the
+                # key is always present in the archive and load() can detect it.
+                state_arrays[field.name] = value if value is not None else np.empty((0, 0), dtype=float)
+            elif field.name == "step_count":
+                state_arrays[field.name] = np.array(value)
+            else:
+                state_arrays[field.name] = value
         np.savez(
             path,
             format_version=np.array(_SAVE_FORMAT_VERSION),
-            corr_zi_x=state.corr_zi_x,
-            corr_zi_x2=state.corr_zi_x2,
-            corr_zi_xy=state.corr_zi_xy,
-            corr_zi_w=state.corr_zi_w,
-            corr_count=state.corr_count,
-            vola_s_x=state.vola_s_x,
-            vola_s_x2=state.vola_s_x2,
-            vola_s_w=state.vola_s_w,
-            vola_s_w2=state.vola_s_w2,
-            vola_count=state.vola_count,
-            pct_s_x=state.pct_s_x,
-            pct_s_x2=state.pct_s_x2,
-            pct_s_w=state.pct_s_w,
-            pct_s_w2=state.pct_s_w2,
-            pct_count=state.pct_count,
-            prev_price=state.prev_price,
-            prev_cash_pos=state.prev_cash_pos,
-            step_count=np.array(state.step_count),
             cfg_json=np.array(self._cfg.model_dump_json()),
             assets=np.array(self._assets),
-            sw_ret_buf=(state.sw_ret_buf if state.sw_ret_buf is not None else np.empty((0, 0), dtype=float)),
+            **state_arrays,
         )
 
     @classmethod
@@ -1001,27 +1008,24 @@ class BasanosStream:
                 f"but the current version is {_SAVE_FORMAT_VERSION}. "
                 "Re-generate it via BasanosStream.from_warmup()."
             )
+        # Validate that every required key is present.  This catches archives
+        # that were produced by an older codebase missing a newly added field,
+        # or archives that have been manually edited, with a descriptive error
+        # instead of a bare KeyError.
+        archive_keys = frozenset(data.files)
+        missing = _REQUIRED_KEYS - archive_keys
+        if missing:
+            raise StreamStateCorruptError(missing)
         cfg = BasanosConfig.model_validate_json(data["cfg_json"].item())
         assets: list[str] = list(data["assets"])
-        state = _StreamState(
-            corr_zi_x=data["corr_zi_x"],
-            corr_zi_x2=data["corr_zi_x2"],
-            corr_zi_xy=data["corr_zi_xy"],
-            corr_zi_w=data["corr_zi_w"],
-            corr_count=data["corr_count"],
-            vola_s_x=data["vola_s_x"],
-            vola_s_x2=data["vola_s_x2"],
-            vola_s_w=data["vola_s_w"],
-            vola_s_w2=data["vola_s_w2"],
-            vola_count=data["vola_count"],
-            pct_s_x=data["pct_s_x"],
-            pct_s_x2=data["pct_s_x2"],
-            pct_s_w=data["pct_s_w"],
-            pct_s_w2=data["pct_s_w2"],
-            pct_count=data["pct_count"],
-            prev_price=data["prev_price"],
-            prev_cash_pos=data["prev_cash_pos"],
-            step_count=int(data["step_count"]),
-            sw_ret_buf=data["sw_ret_buf"] if data["sw_ret_buf"].size > 0 else None,
-        )
+        state_kwargs: dict[str, object] = {}
+        for field in dataclasses.fields(_StreamState):
+            raw = data[field.name]
+            if field.name == "sw_ret_buf":
+                state_kwargs[field.name] = raw if raw.size > 0 else None
+            elif field.name == "step_count":
+                state_kwargs[field.name] = int(raw)
+            else:
+                state_kwargs[field.name] = raw
+        state = _StreamState(**state_kwargs)
         return cls(cfg=cfg, assets=assets, state=state)

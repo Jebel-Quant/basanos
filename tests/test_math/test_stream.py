@@ -31,7 +31,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from basanos.exceptions import MissingDateColumnError
+from basanos.exceptions import MissingDateColumnError, StreamStateCorruptError
 from basanos.math import (
     BasanosConfig,
     BasanosEngine,
@@ -40,12 +40,17 @@ from basanos.math import (
     StepResult,
     WarmupState,
 )
-from basanos.math._stream import StepResult as StepResultDirect
 
 # _StreamState, _ewm_std_from_state, and _ewm_vol_accumulators_from_batch are
 # imported from the private module to enable isolation testing of the state
 # extraction logic independently of the public API.
-from basanos.math._stream import _ewm_std_from_state, _ewm_vol_accumulators_from_batch, _StreamState
+from basanos.math._stream import (
+    _REQUIRED_KEYS,
+    _ewm_std_from_state,
+    _ewm_vol_accumulators_from_batch,
+    _StreamState,
+)
+from basanos.math._stream import StepResult as StepResultDirect
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -1850,3 +1855,108 @@ def test_step_tight_max_turnover_reduces_total_turnover():
     assert total_l1(pos_constrained) <= total_l1(pos_unconstrained) + 1e-6, (
         "Constrained stream produced more total turnover than unconstrained stream"
     )
+
+
+# ─── schema validation (_REQUIRED_KEYS / StreamStateCorruptError) ─────────────
+
+
+def test_required_keys_covers_all_stream_state_fields():
+    """_REQUIRED_KEYS must contain every _StreamState field name."""
+    state_field_names = {f.name for f in dataclasses.fields(_StreamState)}
+    assert state_field_names <= _REQUIRED_KEYS, (
+        f"_REQUIRED_KEYS is missing _StreamState fields: {state_field_names - _REQUIRED_KEYS}"
+    )
+
+
+def test_required_keys_includes_non_state_archive_keys():
+    """_REQUIRED_KEYS must also cover format_version, cfg_json, and assets."""
+    for key in ("format_version", "cfg_json", "assets"):
+        assert key in _REQUIRED_KEYS, f"_REQUIRED_KEYS is missing non-state archive key '{key}'"
+
+
+def test_load_raises_stream_state_corrupt_error_on_missing_state_key():
+    """`load` must raise StreamStateCorruptError when a required state key is absent."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, _assets = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "stream.npz"
+        stream.save(p)
+
+        # Remove a required state key to simulate a corrupt / stale archive.
+        data = dict(np.load(p, allow_pickle=False))
+        del data["vola_s_x"]
+        np.savez(p, **data)
+
+        with pytest.raises(StreamStateCorruptError, match="vola_s_x"):
+            BasanosStream.load(p)
+
+
+def test_stream_state_corrupt_error_lists_all_missing_keys():
+    """StreamStateCorruptError.missing must contain every absent key."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, _assets = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "stream.npz"
+        stream.save(p)
+
+        data = dict(np.load(p, allow_pickle=False))
+        del data["vola_s_x"]
+        del data["pct_s_x"]
+        np.savez(p, **data)
+
+        exc = None
+        try:
+            BasanosStream.load(p)
+        except StreamStateCorruptError as e:
+            exc = e
+
+        assert exc is not None
+        assert "vola_s_x" in exc.missing
+        assert "pct_s_x" in exc.missing
+
+
+def test_load_tolerates_extra_keys_in_archive():
+    """Extra keys in the archive (beyond _REQUIRED_KEYS) must not cause an error."""
+    import pathlib
+    import tempfile
+
+    prices, mu, cfg, _assets = _make_prices_mu()
+    stream = BasanosStream.from_warmup(prices.head(50), mu.head(50), cfg)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        p = pathlib.Path(tmp) / "stream.npz"
+        stream.save(p)
+
+        data = dict(np.load(p, allow_pickle=False))
+        # Inject a dummy extra key that the current schema does not know about.
+        data["_extra_future_key"] = np.array(42)
+        np.savez(p, **data)
+
+        # Should load without raising.
+        restored = BasanosStream.load(p)
+        assert restored.assets == stream.assets
+
+
+def test_stream_state_corrupt_error_is_basanos_error():
+    """StreamStateCorruptError must inherit from BasanosError."""
+    from basanos.exceptions import BasanosError
+
+    exc = StreamStateCorruptError({"some_key"})
+    assert isinstance(exc, BasanosError)
+    assert isinstance(exc, ValueError)
+
+
+def test_stream_state_corrupt_error_exported_from_basanos():
+    """StreamStateCorruptError must be importable directly from basanos."""
+    import basanos
+
+    assert hasattr(basanos, "StreamStateCorruptError")
+    assert basanos.StreamStateCorruptError is StreamStateCorruptError

@@ -264,3 +264,32 @@ class FactorModelError(BasanosError, ValueError):
             ...
         basanos.exceptions.FactorModelError: factor_loadings must be 2-D, got ndim=1.
     """
+
+
+class StreamStateCorruptError(BasanosError, ValueError):
+    """Raised when a saved stream archive is missing required state keys.
+
+    This is raised by :meth:`BasanosStream.load` when the ``.npz`` archive
+    does not contain one or more keys that the current :class:`_StreamState`
+    schema requires.  The error message lists the missing keys so callers
+    can diagnose schema mismatches immediately rather than seeing a bare
+    ``KeyError`` with no context.
+
+    Args:
+        missing: Collection of key names absent from the archive.
+
+    Examples:
+        >>> raise StreamStateCorruptError({"vola_s_x", "corr_zi_x"})  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        basanos.exceptions.StreamStateCorruptError: Stream archive is missing required keys: ...
+    """
+
+    def __init__(self, missing: set[str] | frozenset[str]) -> None:
+        """Initialize with the set of missing archive keys."""
+        keys = ", ".join(sorted(missing))
+        super().__init__(
+            f"Stream archive is missing required keys: {keys}. "
+            "Re-generate the archive via BasanosStream.from_warmup() and save()."
+        )
+        self.missing = frozenset(missing)
