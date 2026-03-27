@@ -44,6 +44,80 @@ class _EwmCorrState:
     count: np.ndarray  # (N, N) int64
 
 
+def _corr_from_ewm_accumulators(
+    s_x: np.ndarray,
+    s_x2: np.ndarray,
+    s_xy: np.ndarray,
+    s_w: np.ndarray,
+    count: np.ndarray,
+    min_periods: int,
+    min_corr_denom: float = 1e-14,
+) -> np.ndarray:
+    """Compute a single EWM correlation matrix from running accumulators.
+
+    Single-timestep equivalent of :func:`_ewm_corr_with_final_state`: applies
+    the same formula to ``(N, N)`` arrays instead of ``(T, N, N)`` tensors.
+    Called by :meth:`BasanosStream.step` after advancing the IIR filter state
+    by one row to reconstruct the current correlation matrix without revisiting
+    history.
+
+    This is the **canonical** implementation of the EWM correlation formula
+    shared by both the batch and the incremental paths.  Any change to the
+    formula (e.g. symmetrisation, denominator guard, NaN-masking) must be made
+    here only — :func:`_ewm_corr_with_final_state` delegates its inner
+    computation to this function so that a single definition is maintained.
+
+    Args:
+        s_x:  Running EWM sum of x; shape ``(N, N)``.
+        s_x2: Running EWM sum of x²; shape ``(N, N)``.
+        s_xy: Running EWM sum of x·y; shape ``(N, N)``.
+        s_w:  Running EWM sum of weights; shape ``(N, N)``.
+        count: Cumulative joint-finite observation count; shape ``(N, N)``
+            dtype int.
+        min_periods: Minimum joint-finite observations before a value is
+            reported; earlier entries are ``NaN``.
+        min_corr_denom: Guard threshold below which the correlation denominator
+            is treated as zero and the result is set to ``NaN``.
+
+    Returns:
+        np.ndarray of shape ``(N, N)``: symmetric correlation matrix with
+        diagonal ``1.0`` (or ``NaN`` during warm-up) and off-diagonal entries
+        in ``[-1, 1]``.
+    """
+    n_assets = s_x.shape[0]
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        pos_w = s_w > 0
+        ewm_x = np.where(pos_w, s_x / s_w, np.nan)
+        ewm_y = np.where(pos_w, s_x.T / s_w, np.nan)
+        ewm_x2 = np.where(pos_w, s_x2 / s_w, np.nan)
+        ewm_y2 = np.where(pos_w, s_x2.T / s_w, np.nan)
+        ewm_xy = np.where(pos_w, s_xy / s_w, np.nan)
+
+    var_x = np.maximum(ewm_x2 - ewm_x**2, 0.0)
+    var_y = np.maximum(ewm_y2 - ewm_y**2, 0.0)
+    denom_corr = np.sqrt(var_x * var_y)
+    cov = ewm_xy - ewm_x * ewm_y
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr = np.where(denom_corr > min_corr_denom, cov / denom_corr, np.nan)
+    corr = np.clip(corr, -1.0, 1.0)
+    corr[count < min_periods] = np.nan
+
+    diag_idx = np.arange(n_assets)
+    corr[diag_idx, diag_idx] = np.where(count[diag_idx, diag_idx] >= min_periods, 1.0, np.nan)
+
+    # Enforce symmetry: average strict lower/upper triangle pairs in place.
+    tril_i, tril_j = np.tril_indices(n_assets, k=-1)
+    upper_vals = corr[tril_j, tril_i]
+    lower_vals = corr[tril_i, tril_j]
+    avg_vals = 0.5 * (upper_vals + lower_vals)
+    corr[tril_i, tril_j] = avg_vals
+    corr[tril_j, tril_i] = avg_vals
+
+    return corr
+
+
 def _ewm_corr_with_final_state(
     data: np.ndarray,
     com: int,
