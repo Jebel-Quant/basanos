@@ -9,6 +9,7 @@
 [![Python versions](https://img.shields.io/badge/Python-3.11%20•%203.12%20•%203.13%20•%203.14-blue?logo=python)](https://www.python.org/)
 [![CI](https://github.com/Jebel-Quant/basanos/actions/workflows/rhiza_ci.yml/badge.svg?event=push)](https://github.com/Jebel-Quant/basanos/actions/workflows/rhiza_ci.yml)
 [![Coverage](https://raw.githubusercontent.com/Jebel-Quant/basanos/refs/heads/gh-pages/coverage-badge.svg)](https://jebel-quant.github.io/basanos/tests/html-coverage/index.html)
+[![PyPI version](https://img.shields.io/pypi/v/basanos.svg)](https://pypi.org/project/basanos/)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg?logo=ruff)](https://github.com/astral-sh/ruff)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 ![Last Updated](https://img.shields.io/github/last-commit/jebel-quant/basanos/main?label=Last%20updated&color=blue)
