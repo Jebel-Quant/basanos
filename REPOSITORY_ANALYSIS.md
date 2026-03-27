@@ -808,3 +808,210 @@ However, three factors lower the score from 9/10:
 
 The repository remains production-grade and is significantly better than most scientific Python libraries at this stage of maturity. The weaknesses are manageable and likely addressable in a v0.7 patch. The score reflects "solid with minor concerns" rather than "exemplary across the board."
 
+
+---
+
+## 2026-03-27 — Critical Architecture & Quality Review
+
+### Summary
+
+Basanos 0.6.0 is a **production-grade scientific computing library** for correlation-aware portfolio optimization. The codebase demonstrates exceptional engineering discipline: 100% test coverage (686 passing tests with 1.9x test-to-source ratio), comprehensive type annotations (PEP 561 compliant), rigorous documentation (100% docstring requirement enforced), and a mature CI/CD pipeline (15+ workflows covering security, performance, type checking, and multi-platform compatibility). The core architecture uses clean mixin separation, Pydantic-validated immutable configuration, and dual covariance modes (EWMA shrinkage + factor model) with both batch and incremental streaming APIs. Technical implementation is sophisticated yet accessible, with careful attention to numerical stability, memory constraints, and performance characteristics explicitly documented in docstrings.
+
+**Key Achievement**: The 0.6.0 release successfully addresses the streaming API gap flagged in prior reviews while maintaining code quality and expanding documentation infrastructure (MkDocs migration, per-class API reference).
+
+### Strengths
+
+1. **Exemplary Test Engineering**
+   - **686 passing tests** covering unit, integration, property-based (Hypothesis), numerical regression, and stress scenarios
+   - **100% coverage** on core math modules (1,255 statements, 0 missed)
+   - **Property-based testing** with Hypothesis ensures correctness across random inputs (8 property test modules)
+   - **Numerical regression suite** validates solver output against analytical baselines with tolerance-based assertions
+   - **Benchmark automation** with CI regression detection (200% degradation threshold) and baseline tracking (`BENCHMARKS.md`)
+   - Evidence: `tests/test_math/test_optimizer.py` (187 tests, 134 KB), `tests/property/` (8 files), pytest output shows "Required test coverage of 90% reached. Total coverage: 100.00%"
+
+2. **Production-Grade Type System**
+   - **Full PEP 561 compliance** (`py.typed` marker present) enabling IDE/mypy integration
+   - **Protocol-based mixin typing** (`_EngineProtocol`) for structural subtyping without ABC overhead
+   - **Pydantic v2 BaseModel** for config with discriminated unions (`EwmaShrinkConfig | SlidingWindowConfig`)
+   - **Modern Python 3.11+ syntax** (`|` union operator, `TYPE_CHECKING` guards, `TypeAlias`)
+   - Evidence: `src/basanos/math/_engine_protocol.py`, `src/basanos/math/_config.py` (Pydantic validators), `.github/workflows/rhiza_typecheck.yml`
+
+3. **Sophisticated Numerical Engineering**
+   - **Cholesky-first fallback to LU** for positive-definite matrix solving with explicit condition-number warnings
+   - **IIR filter state management** enables bit-identical batch vs. incremental results (scipy.signal.lfilter zi/zf pattern)
+   - **Vectorized EWM correlation** across all N² pairs via batched `lfilter` on (T, N, N) tensors
+   - **Factor model via truncated SVD** with Woodbury identity for O(k³) complexity in sliding-window mode
+   - **Explicit memory/complexity bounds** documented in optimizer.py docstring (O(T·N²), peak RAM table)
+   - Evidence: `src/basanos/math/_linalg.py:45-85` (Cholesky/LU fallback), `src/basanos/math/_stream.py:20-48` (IIR state model), `src/basanos/math/optimizer.py:35-48` (memory table)
+
+4. **Dual-Mode Incremental & Batch APIs**
+   - **`BasanosEngine`**: batch API for vectorized multi-period analysis (cash_position returns full DataFrame)
+   - **`BasanosStream`**: O(N²) streaming API with `step()` method for online inference (no history replay)
+   - **State persistence**: `save()`/`load()` with format versioning for stream checkpointing
+   - **Covariance mode parity**: both EWMA shrinkage and sliding-window factor models supported in streaming
+   - Evidence: `src/basanos/math/_stream.py` (337 lines), `tests/test_math/test_stream.py` (91 tests, 76.8 KB)
+
+5. **Comprehensive Security & Compliance Infrastructure**
+   - **Multi-layer security scanning**: pip-audit (dependency CVEs), bandit (static analysis), Semgrep (numpy patterns), CodeQL (GitHub scanning)
+   - **License enforcement**: CI fails on AGPL/LGPL/GPL dependencies (only MIT/BSD/Apache-2.0 allowed)
+   - **Pre-commit hooks**: 14 checks including ruff, actionlint, validate-pyproject, uv-lock, Rhiza template consistency
+   - **Automated vulnerability response**: pip-audit ignores CVE-2026-4539 (ReDoS in Pygments, non-exploitable in docs context)
+   - Evidence: `.github/workflows/rhiza_security.yml`, `.github/workflows/rhiza_semgrep.yml`, `.github/workflows/rhiza_license.yml`, `.pre-commit-config.yaml` (77 lines)
+
+6. **Documentation Excellence**
+   - **100% docstring requirement** enforced via `interrogate` (fail-under=100 in pyproject.toml)
+   - **Google-style docstrings** with Args/Returns/Raises/Examples and embedded LaTeX mathematics
+   - **56 KB research paper** (`paper/basanos.tex`) with full derivations, Sherman-Morrison identity, sliding-window SVD
+   - **MkDocs-based docs** with per-class API reference via mkdocstrings, architecture diagrams, testing philosophy, glossary
+   - **8 interactive Marimo notebooks** for demos, diagnostics, shrinkage tuning, factor models
+   - Evidence: `pyproject.toml:70-74` (interrogate config), `docs/` (19 markdown files), `paper/basanos.tex` (55 KB), `book/` (6 .py notebooks)
+
+7. **Mature Rhiza-Based Build System**
+   - **Template-managed Makefiles** (`.rhiza/make.d/*.mk`) with hook points for customization
+   - **UV package manager** with locked dependencies (`uv.lock`), Python version auto-install (`.python-version` = 3.13)
+   - **15+ CI workflows** covering matrix testing (3 Python versions × 2 OSes), benchmarks, docs, security, type checking, release automation
+   - **Pre-commit hook validation** via CI (`rhiza_pre-commit.yml`) ensuring consistency
+   - Evidence: `.github/workflows/` (23 YAML files), `.rhiza/make.d/` (modular Makefile fragments), `Makefile` (9 lines delegating to `.rhiza/rhiza.mk`)
+
+### Weaknesses
+
+1. **Incomplete Cross-Path Consistency Testing**
+   - **Dual solve paths** (`ewma_shrink` vs. `sliding_window` modes) are tested independently, but no integration test validates they produce numerically consistent results on identical input under equivalent hyperparameters
+   - **Batch vs. streaming** paths share logic via mixins but lack explicit regression test asserting bit-identical output
+   - **Risk**: Silent divergence between paths if one is refactored without updating the other
+   - Evidence: `tests/test_math/test_optimizer.py` has separate test classes per mode; `tests/test_math/test_stream.py` tests streaming in isolation; no `test_batch_vs_stream_identical.py` found
+
+2. **Missing Condition-Number Checks in Woodbury Path**
+   - **Factor model solve** (`_factor_model.py:solve()`) uses Woodbury identity without pre-solve condition-number validation
+   - **Contrast**: `_linalg.py:inv_a_norm()` explicitly checks `κ(A)` and emits `IllConditionedMatrixWarning` before Cholesky/LU
+   - **Risk**: Silent numerical instability if k is too large relative to N or factor covariance is near-singular
+   - Evidence: `src/basanos/math/_factor_model.py:162-213` (no `κ(F)` or `κ(D)` check before inversion), `src/basanos/math/_linalg.py:45-85` (explicit condition-number monitoring)
+
+3. **Memory-Bound Scalability Limits**
+   - **Hard limit**: N=500 assets × T=2,520 days requires ~70 GB RAM (exceeds typical workstation capacity)
+   - **Documentation exists** (optimizer.py docstring table) but no runtime memory estimation or warnings
+   - **Mitigation gap**: No "chunked" or "out-of-core" mode for large portfolios; sliding-window mode reduces T memory but not N² footprint
+   - Evidence: `src/basanos/math/optimizer.py:35-48` (memory table), no `_estimate_memory()` function or runtime checks in code
+
+4. **Test-Only Coverage for Several Code Paths**
+   - **`BasanosStream.save()`/`load()`** format versioning tested but actual multi-version migration logic is minimal (just a version-mismatch exception)
+   - **Future-proofing claim** in docstring not validated with cross-version compatibility tests
+   - **Hypothesis tests** cover randomized inputs but do not validate invariants across format versions
+   - Evidence: `src/basanos/math/_stream.py:78` (format version = 2), `tests/test_math/test_stream.py:684-726` (save/load tests), no `test_format_v1_to_v2_migration.py`
+
+5. **Incomplete Type Narrowing in Discriminated Unions**
+   - **`BasanosConfig.covariance_config`** is correctly discriminated (`EwmaShrinkConfig | SlidingWindowConfig`)
+   - **Runtime branching** in `_iter_matrices()` uses `isinstance()` checks but does not narrow the union type for mypy
+   - **Evidence**: Type checkers may not infer that `cfg.covariance_config.window` is safe after `isinstance(cfg.covariance_config, SlidingWindowConfig)` without explicit `assert` or type guard
+   - Evidence: `src/basanos/math/_engine_solve.py:104-139` (generator branches on `isinstance`), no `typing.TypeGuard` decorators found
+
+6. **Opaque Factor Model Rank Selection**
+   - **`n_factors`** hyperparameter requires domain knowledge; no automated elbow-detection or scree-plot guidance in code
+   - **Guidance exists** in paper (`basanos.tex`) and config report HTML but not exposed as a programmatic method
+   - **Contrast**: Shrinkage guidance table in `_signal.py` provides λ recommendations based on N/T ratio
+   - Evidence: `src/basanos/math/_factor_model.py` (no `suggest_k()` method), `src/basanos/math/_signal.py:14-24` (shrinkage table), `paper/basanos.tex` (scree plot discussion but not in API)
+
+### Risks / Technical Debt
+
+1. **Incremental State Serialization Format Brittleness**
+   - **`BasanosStream.save()`** uses `np.savez()` with string keys (`"format_version"`, `"cfg"`, `"corr_zi_x"`, etc.)
+   - **Fragility**: Adding/removing state fields breaks deserialization; no schema validation beyond format version int
+   - **Mitigation missing**: No JSONSchema or Pydantic model for `_StreamState` serialization structure
+   - **Impact**: Production systems using checkpointing must maintain version-specific loaders or force full re-warmup on upgrade
+   - Evidence: `src/basanos/math/_stream.py:270-370` (save/load implementation), dataclass fields manually enumerated in save dict
+
+2. **Silent NaN Propagation in Warmup Phase**
+   - **Early timesteps** (t < cfg.corr) return `StepResult(status="warmup", position=None)` but still update all accumulators
+   - **Diagnostic properties** (`condition_number`, `solver_residual`) are NaN during warmup but no explicit masking in downstream analytics
+   - **Risk**: Aggregation functions (mean, std) over diagnostics include NaN rows unless user manually filters by `status != "warmup"`
+   - Evidence: `src/basanos/math/_stream.py:573` (warmup check), `tests/test_math/test_optimizer.py:1402-1448` (diagnostics tests), no `.filter(pl.col("status") != "warmup")` in property implementations
+
+3. **Tight Coupling to Polars DataFrame Structure**
+   - **Implicit date-column requirement**: `BasanosEngine` expects `.select(pl.all().exclude("date"))` but no explicit validation
+   - **Error handling**: `MissingDateColumnError` exists but only raised in stream path, not batch path
+   - **Risk**: Batch API silently treats "date" as a regular column if present in mu/prices, leading to unexpected solve behavior
+   - Evidence: `src/basanos/exceptions.py:248-264` (`MissingDateColumnError`), `src/basanos/math/optimizer.py:406-437` (no date-column check in `__init__`), `src/basanos/math/_stream.py:461-470` (explicit check in `from_warmup`)
+
+4. **Performance Regression Risk from Mixin Refactor**
+   - **v0.5.1 changelog**: "Mixin inheritance restored to fix IDE Go-to-Definition"
+   - **Trade-off**: Multiple inheritance (`_DiagnosticsMixin`, `_SignalEvaluatorMixin`, `_SolveMixin`) may introduce method-resolution-order overhead vs. flat class
+   - **Missing**: No benchmark comparison before/after mixin refactor to quantify overhead
+   - **Mitigation**: Benchmark suite exists but baseline is post-refactor (v0.5.0 baselines not retained)
+   - Evidence: `CHANGELOG.md:35-51` (v0.5.1 mixin restore), `BENCHMARKS.md:25` (baseline from v0.5.0), no `benchmarks/results/v0.4.3/` for pre-mixin comparison
+
+5. **Dependency on Private SciPy `lfilter` State Semantics**
+   - **Incremental API** relies on `scipy.signal.lfilter(zi=..., zf=...)` behavior being stable across scipy versions
+   - **SciPy versioning**: `scipy>=1.17.0` required but no upper bound; breaking change to lfilter state shape would break streaming
+   - **Mitigation**: Regression tests validate numerics but do not detect API signature changes (would fail at runtime, not in CI)
+   - Evidence: `pyproject.toml:18` (scipy>=1.17.0, no upper bound), `src/basanos/math/_stream.py:26-48` (lfilter zi/zf usage), no mocks or version-guarded fallback
+
+6. **Untested Cross-Platform Numerical Precision**
+   - **CI matrix**: Ubuntu × macOS but numerical regression tests use default `numpy.allclose` tolerances
+   - **Risk**: BLAS/LAPACK implementation differences (OpenBLAS vs. Accelerate) may cause test failures on non-Linux platforms
+   - **Evidence**: `tests/test_math/test_numerical_regression.py` uses `np.allclose(rtol=1e-9)` without platform-specific adjustments
+   - **Observed**: CI passes on both platforms (indicating tolerance is adequate) but no explicit regression test for cross-platform reproducibility
+   - Evidence: `.github/workflows/rhiza_ci.yml:37-39` (matrix: ubuntu, macos), `tests/test_math/test_numerical_regression.py:78-92` (fixed tolerances)
+
+### Notable Design Decisions
+
+1. **Immutability via Frozen Dataclasses + Pydantic**
+   - Public API (`BasanosEngine`, `BasanosConfig`, `FactorModel`, `MatrixBundle`, `StepResult`) all frozen/immutable
+   - Internal state (`_StreamState`, `_EwmCorrState`) deliberately mutable for in-place array updates
+   - **Rationale**: Thread safety + functional purity for public API; performance for hot loops
+   - Evidence: `src/basanos/math/optimizer.py:406` (`@dataclasses.dataclass(frozen=True)`), `src/basanos/math/_stream.py:82` (`_StreamState` not frozen)
+
+2. **Discriminated Union for Covariance Modes**
+   - Pre-v0.4: Flat config with `covariance_mode` enum + optional `window`/`n_factors` fields (validation nightmare)
+   - Post-v0.4: `covariance_config: EwmaShrinkConfig | SlidingWindowConfig` with Pydantic discriminator
+   - **Rationale**: Type-safe branching, eliminates "mode X but field Y is invalid" errors at construction time
+   - **Migration path**: `BasanosConfig.__init__` raises `TypeError` with copy-pasteable migration recipe for old kwargs
+   - Evidence: `src/basanos/math/_config.py:246-320` (discriminated union), `CHANGELOG.md:92-95` (v0.4.3 migration error)
+
+3. **Mixin-Based Separation of Concerns**
+   - `BasanosEngine` inherits from `_DiagnosticsMixin`, `_SignalEvaluatorMixin`, `_SolveMixin`
+   - **Rationale**: Modular development (each mixin in separate file), clean namespace, IDE-friendly Go-to-Definition
+   - **Trade-off**: Method-resolution-order complexity vs. monolithic class
+   - Evidence: `src/basanos/math/optimizer.py:406-437`, `CHANGELOG.md:44` (v0.5.1 mixin restore for IDE)
+
+4. **Manual Shrinkage Parameter (No Ledoit-Wolf Oracle)**
+   - **User-controlled** `cfg.shrink` ∈ [0, 1] instead of automated oracle shrinkage (Ledoit-Wolf, Rao-Blackwell)
+   - **Rationale**: Simplicity, transparency, and stability (oracle estimators can be unstable in small samples)
+   - **Guidance provided**: Shrinkage table in `_signal.py:14-24` maps N/T ratios to recommended λ values
+   - Evidence: `src/basanos/math/_signal.py:14-24`, paper discussion of shrinkage trade-offs
+
+5. **Dual Batch & Incremental APIs with Shared Logic**
+   - Batch (`BasanosEngine`) and streaming (`BasanosStream`) use same core mixins (`_SolveMixin`)
+   - **Design tension**: Maximizing code reuse vs. maintaining bit-identical numerics (achieved via IIR state equivalence)
+   - **Validation**: Property tests ensure incremental path produces same results as batch warmup + rolling
+   - Evidence: `src/basanos/math/_stream.py:461-523` (`from_warmup` uses shared `_iter_solve` logic), tests validate equivalence
+
+6. **Performance Over Abstraction in Hot Paths**
+   - **No abstraction layer** for linear algebra (directly calls `scipy.linalg.cho_factor`, `solve`)
+   - **No pluggable solver backend** (e.g., no adapter pattern for cuBLAS, JAX)
+   - **Rationale**: YAGNI (you ain't gonna need it) — GPU acceleration not in scope, SciPy suffices for target portfolio sizes
+   - Evidence: `src/basanos/math/_linalg.py:45-85` (direct scipy calls), no `_AbstractSolver` class
+
+### Score
+
+**8.5 / 10** — Excellent production-grade library with minor refinement opportunities
+
+**Rationale**:
+
+This is an **exemplary scientific computing library** that exceeds industry standards for Python quantitative finance. The combination of 100% test coverage, rigorous type safety, comprehensive documentation (including a research paper), sophisticated numerical engineering, and mature CI/CD infrastructure places it in the top tier of open-source quant libraries. The dual batch/incremental API design is particularly well-executed, with careful attention to numerical equivalence via IIR filter state management.
+
+**Why not 9–10 (exemplary)?**
+
+Three categories of issues prevent the highest rating:
+
+1. **Cross-path validation gaps**: No integration test validates batch vs. streaming produce identical results across all covariance modes, and EWMA vs. factor-model paths are tested in isolation without cross-mode consistency checks.
+
+2. **Incomplete numerical safeguards**: Woodbury-based factor model solve lacks condition-number monitoring (present in Cholesky/LU path), and no runtime memory estimation warns users before OOM on large portfolios.
+
+3. **Serialization brittleness**: Streaming state persistence relies on manual field enumeration in `save()`/`load()` without schema validation, creating upgrade fragility for production checkpoints.
+
+**Why 8.5 (not 7–8)?**
+
+The weaknesses are **addressable in a patch release** and do not compromise the library's core correctness or usability. The test suite, type coverage, and documentation are world-class. The paper demonstrates deep domain expertise. The CI/CD setup is production-grade with security scanning, license enforcement, and automated benchmarking. This is a library I would confidently deploy in a production trading system after addressing the cross-path validation gap.
+
+**Comparison to prior entry (2026-03-27 earlier)**: This review agrees with the prior assessment's score but provides more detailed evidence. The prior entry correctly flagged coverage regression (100% → 90%) as a concern, but the current CI output shows **100% coverage restored** (pyproject.toml requires 90%, actual is 100%), so that concern is resolved. The dual-API synchronization risk and Woodbury inverse weakness are confirmed and expanded with specific file references.
+
