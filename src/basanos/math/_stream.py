@@ -933,7 +933,7 @@ class BasanosStream:
         state = self._state
         # Build the per-field dict automatically from _StreamState so that any
         # new field added to the dataclass is included without manual updates.
-        state_arrays: dict[str, np.ndarray] = {}
+        state_arrays: dict[str, Any] = {}
         for field in dataclasses.fields(_StreamState):
             value = getattr(state, field.name)
             if field.name == "sw_ret_buf":
@@ -1018,7 +1018,7 @@ class BasanosStream:
             raise StreamStateCorruptError(missing)
         cfg = BasanosConfig.model_validate_json(data["cfg_json"].item())
         assets: list[str] = list(data["assets"])
-        state_kwargs: dict[str, object] = {}
+        state_kwargs: dict[str, Any] = {}
         for field in dataclasses.fields(_StreamState):
             raw = data[field.name]
             if field.name == "sw_ret_buf":
