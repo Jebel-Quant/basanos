@@ -970,6 +970,8 @@ make fmt && make test && make typecheck
 
 For architectural decisions and their rationale, see [docs/adr/](docs/adr/).
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style, commit conventions, and PR expectations.
+
 ## License
 
 See [LICENSE](LICENSE) for details.
