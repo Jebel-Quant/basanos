@@ -75,3 +75,9 @@ exclude = ["book"]
 
 [tool.ty.environment]
 python-version = "3.12"
+
+[tool.ty.rules]
+# Catch calls where argument types do not match the declared parameter types.
+call-non-callable = "error"
+# Catch overload resolution failures.
+no-matching-overload = "error"

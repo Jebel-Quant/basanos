@@ -1,3 +1,133 @@
+# Architecture
+
+## Engine mixin architecture
+
+This section documents the internal design of `BasanosEngine` and the
+`self: _EngineProtocol` convention that keeps the engine codebase
+statically verifiable by type checkers (`ty`, `mypy`, `pyright`) while
+preserving clean IDE navigation (Go-to-Definition, auto-complete).
+
+### Overview
+
+`BasanosEngine` is a **frozen dataclass** that inherits from three private
+mixin classes, each defined in its own module:
+
+| Mixin | Module | Responsibility |
+|---|---|---|
+| `_SolveMixin` | `_engine_solve.py` | `_iter_matrices`, `_iter_solve`, `warmup_state` |
+| `_DiagnosticsMixin` | `_engine_diagnostics.py` | `condition_number`, `effective_rank`, `solver_residual`, `signal_utilisation` |
+| `_SignalEvaluatorMixin` | `_engine_ic.py` | `ic`, `rank_ic`, IC summary statistics |
+
+```python
+@dataclasses.dataclass(frozen=True)
+class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
+    prices: pl.DataFrame
+    mu: pl.DataFrame
+    cfg: BasanosConfig
+```
+
+Splitting the implementation across modules keeps each file focused and
+independently testable, while `BasanosEngine` remains a thin facade that
+wires them together.
+
+### The `_EngineProtocol` contract
+
+The private module `_engine_protocol.py` defines `_EngineProtocol`, a
+[`typing.Protocol`](https://peps.python.org/pep-0544/) that enumerates the
+attributes and methods that mixin implementations may access on `self`:
+
+```python
+class _EngineProtocol(Protocol):
+    assets: list[str]
+    prices: pl.DataFrame
+    mu: pl.DataFrame
+    cfg: BasanosConfig
+    cor: dict[datetime.date, np.ndarray]
+    ret_adj: pl.DataFrame
+    vola: pl.DataFrame
+
+    def _iter_matrices(self) -> ...: ...
+    def _iter_solve(self) -> ...: ...
+    def _ic_series(self, use_rank: bool) -> ...: ...
+```
+
+### The `self: _EngineProtocol` helper pattern
+
+Every mixin method that accesses engine attributes must annotate its `self`
+parameter with `_EngineProtocol`:
+
+```python
+# _engine_diagnostics.py
+from __future__ import annotations
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ._engine_protocol import _EngineProtocol
+
+
+class _DiagnosticsMixin:
+    @property
+    def condition_number(self: _EngineProtocol) -> pl.DataFrame:
+        # self.assets, self.prices, self._iter_matrices() are fully typed
+        ...
+```
+
+**Why this works:**
+
+1. The `TYPE_CHECKING` guard keeps the import out of the runtime critical path
+   (avoiding circular imports).
+2. At type-check time, `ty`/`mypy`/`pyright` see the full `_EngineProtocol`
+   type for `self`, so every attribute access is validated.
+3. At runtime, Python resolves `self` through normal MRO without ever needing
+   the import.
+
+**When to use plain `self` instead:**
+
+Methods that only access attributes or properties defined *on the mixin
+itself* (e.g. `ic_mean` calling `self.ic` where `ic` is a property on
+`_SignalEvaluatorMixin`) should use plain `self`.  Adding
+`self: _EngineProtocol` to such methods would be incorrect because
+`_EngineProtocol` does not declare the mixin's own properties.
+
+### Adding a new engine method
+
+1. Decide which private module owns the implementation
+   (`_engine_solve.py`, `_engine_diagnostics.py`, or `_engine_ic.py`).
+2. Check whether any new attributes your method needs are already in
+   `_EngineProtocol`.  If not, add them there first.
+3. Write the method with `self: _EngineProtocol` (imported under
+   `TYPE_CHECKING`) if it accesses engine attributes.
+4. No changes to `optimizer.py` are needed — the method is automatically
+   available on `BasanosEngine` via inheritance.
+5. Run `make typecheck` to confirm zero type-check errors.
+
+The tests in `tests/test_math/test_engine_protocol.py` enforce that every
+method listed in the `_MUST_USE_PROTOCOL` table carries the correct `self`
+annotation.  When you add a new method, add it to that table as well.
+
+### Module dependency graph
+
+```
+optimizer.py (BasanosEngine)
+    │
+    ├── _engine_solve.py  (_SolveMixin)       ──► _engine_protocol.py
+    ├── _engine_diagnostics.py (_DiagnosticsMixin) ──► _engine_protocol.py
+    ├── _engine_ic.py (_SignalEvaluatorMixin)  ──► _engine_protocol.py
+    │
+    ├── _config.py (BasanosConfig, covariance configs)
+    ├── _ewm_corr.py (ewm_corr, shared EWM math)
+    ├── _factor_model.py (FactorModel)
+    ├── _linalg.py (solve, inv_a_norm, valid)
+    └── _signal.py (vol_adj, shrink2id)
+```
+
+`_engine_protocol.py` is imported **only** under `TYPE_CHECKING` in each
+private module.  It is excluded from test coverage because its body consists
+entirely of `Protocol` stubs (structural type annotations, not executable
+code).
+
+---
+
 # Rhiza Architecture
 
 Visual diagrams of Rhiza's architecture and component interactions.
