@@ -6,8 +6,8 @@ We actively support the following versions with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.2.x   | :white_check_mark: |
-| < 0.2   | :x:                |
+| 0.6.x   | :white_check_mark: |
+| < 0.6   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -49,10 +49,9 @@ Please include the following information in your report:
 
 This security policy applies to:
 
-- The Rhiza template system and configuration files
+- The `basanos` Python package and its public API
 - GitHub Actions workflows provided by this repository
-- Shell scripts in `.rhiza/scripts/`
-- Python utilities in `.rhiza/utils/`
+- Shell scripts and utilities in `.rhiza/`
 
 ### Out of Scope
 
@@ -84,16 +83,32 @@ This project implements several security measures:
 - **Signed Commits**: GPG signing supported for releases
 - **Tag Protection**: Releases require version tag validation
 
+## Deprecation Policy
+
+To give users adequate time to adapt to breaking changes, we follow this policy:
+
+- A feature or API is **deprecated** in release `0.x` by emitting a `DeprecationWarning`
+  via `basanos.warn_deprecated`.
+- The deprecated feature is **removed** no earlier than release `0.x+2`.
+- Any bump to `_SAVE_FORMAT_VERSION` in `BasanosStream` (i.e. a breaking change to the
+  serialised stream format) is treated as a deprecation event: the old format is still
+  loadable with a `DeprecationWarning` for at least two minor releases.
+- Breaking changes are listed in `CHANGELOG.md` under the `### Deprecated` heading and
+  noted in the GitHub release notes.
+- `SECURITY.md` (this file) **must be updated** as part of the release checklist whenever
+  a new minor version becomes the supported release.
+
 ## Security Best Practices for Users
 
-When using Rhiza templates in your projects:
+When using `basanos` in your projects:
 
-1. **Keep Updated**: Regularly sync with upstream templates
-2. **Review Changes**: Review template sync PRs before merging
+1. **Keep Updated**: Upgrade to the latest supported minor release promptly
+2. **Watch for DeprecationWarnings**: Run your tests with `python -W error::DeprecationWarning`
+   to surface any use of deprecated APIs before they are removed
 3. **Enable Security Features**: Enable CodeQL, secret scanning, and Dependabot in your repositories
 4. **Use Locked Dependencies**: Always commit `uv.lock` for reproducible builds
 5. **Configure Branch Protection**: Require PR reviews and status checks
 
 ## Acknowledgments
 
-We thank the security researchers and community members who help keep Rhiza secure.
+We thank the security researchers and community members who help keep Basanos secure.
