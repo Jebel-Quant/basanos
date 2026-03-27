@@ -38,7 +38,7 @@ jobs:
         uses: ./.github/actions/configure-git-auth
         with:
           token: ${{ secrets.GH_PAT }}
-          
+
       - id: versions
         env:
           UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
@@ -90,6 +90,36 @@ jobs:
           name: coverage-report
           path: _tests/coverage.xml
           if-no-files-found: ignore
+
+
+  typecheck:
+    needs: generate-matrix
+    name: Type checking (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7.6.0
+        with:
+          version: "0.11.2"
+          python-version: ${{ matrix.python-version }}
+
+      - name: Configure git auth for private packages
+        uses: ./.github/actions/configure-git-auth
+        with:
+          token: ${{ secrets.GH_PAT }}
+
+      - name: Run ty type checker
+        # Overrides [tool.ty.environment].python-version in pyproject.toml
+        # to check against each supported Python version.
+        env:
+          UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
+        run: make ty
 
 
   docs-coverage:
