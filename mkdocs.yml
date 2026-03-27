@@ -49,4 +49,10 @@ nav:
   - Home: index.md
   - Notebooks: notebooks.md
   - Reports: reports.md
-  - API Reference: api.md
+  - API Reference:
+    - Overview: api.md
+    - Engine: api/engine.md
+    - Configuration: api/config.md
+    - Streaming API: api/stream.md
+    - Risk Models & Helpers: api/models.md
+    - Exceptions: api/exceptions.md
