@@ -171,8 +171,10 @@ class FactorModel:
             rhs: Right-hand side vector :math:`\mathbf{b}`, shape ``(n,)``.
             cond_threshold: Condition-number threshold above which an
                 :class:`~basanos.exceptions.IllConditionedMatrixWarning` is
-                emitted for the inner :math:`k \times k` system.  Defaults to
-                ``1e12``.
+                emitted.  The check is applied to both ``factor_covariance``
+                (:math:`\mathbf{F}`) and to the inner :math:`k \times k`
+                Woodbury matrix :math:`\mathbf{F}^{-1} + \mathbf{B}^\top
+                \mathbf{D}^{-1}\mathbf{B}`.  Defaults to ``1e12``.
 
         Returns:
             np.ndarray: Solution vector :math:`\mathbf{x}`, shape ``(n,)``.
@@ -206,8 +208,11 @@ class FactorModel:
         # Solve mid * w = B^T D^{-1} b, where mid = F^{-1} + B^T D^{-1} B.
         # F^{-1} is obtained via a Cholesky solve rather than an explicit
         # inversion, consistent with the Cholesky-first discipline in _linalg.py.
+        # A condition-number check on factor_covariance is applied first so
+        # that ill-conditioned F is flagged before its inverse enters mid.
         rhs_k = self.factor_loadings.T @ d_inv_rhs  # (k,)
         try:
+            _check_and_warn_condition(self.factor_covariance, cond_threshold)
             mid = (
                 _cholesky_solve(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
             )  # (k, k)
