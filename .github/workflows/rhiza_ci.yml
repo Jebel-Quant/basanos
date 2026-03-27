@@ -119,7 +119,7 @@ jobs:
         # to check against each supported Python version.
         env:
           UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
-        run: make ty
+        run: make typecheck
 
 
   docs-coverage:
