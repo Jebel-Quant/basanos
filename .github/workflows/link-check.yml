@@ -2,8 +2,6 @@ name: Link Check
 
 on:
   push:
-    branches: [main]
-    paths: [README.md]
   pull_request:
     paths: [README.md]
   schedule:

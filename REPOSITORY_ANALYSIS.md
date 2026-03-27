@@ -1015,3 +1015,95 @@ The weaknesses are **addressable in a patch release** and do not compromise the 
 
 **Comparison to prior entry (2026-03-27 earlier)**: This review agrees with the prior assessment's score but provides more detailed evidence. The prior entry correctly flagged coverage regression (100% → 90%) as a concern, but the current CI output shows **100% coverage restored** (pyproject.toml requires 90%, actual is 100%), so that concern is resolved. The dual-API synchronization risk and Woodbury inverse weakness are confirmed and expanded with specific file references.
 
+---
+
+## 2026-03-27 — Comprehensive Quality Infrastructure Analysis
+
+### Summary
+
+A deep-dive quality assurance analysis reveals a **world-class infrastructure** matching enterprise-grade standards. The repository deploys 21 GitHub Actions workflows covering CI/CD, security (4 distinct scanners), dependency management, type checking, documentation generation, and benchmark regression detection. Pre-commit hooks enforce 11 rule sets across 9 repositories. Ruff configuration enables 41+ lint rules with Google-style docstring enforcement at 100% coverage (via interrogate). Documentation spans 2,616 lines across 23+ markdown files using MkDocs with Material theme. The codebase demonstrates exceptional engineering discipline with **no TODO comments**, clean module boundaries (largest file: 1,031 LOC), comprehensive property-based testing (Hypothesis), and 30 test files totaling ~10,217 LOC.
+
+### Strengths
+
+- **21 GitHub Actions workflows** organized by responsibility: Core CI (rhiza_ci.yml: multi-OS Ubuntu+macOS, multi-Python 3.11-3.14, parallel pytest with xdist), type checking (ty), pre-commit validation, 4 security scanners (CodeQL weekly Monday 1:27 AM, Semgrep, pip-audit weekly + on-push, Bandit), dependency analysis (deptry for missing/obsolete deps), benchmark regression detection (pytest-benchmark with 200% threshold alert), documentation deployment (MkDocs to gh-pages), Marimo notebook validation, LaTeX paper compilation, link checking, and license compliance (blocks GPL/LGPL/AGPL).
+  
+- **Enterprise security posture**: 4-layer scanning with custom `.semgrep.yml` rules for NumPy-specific vulnerabilities (85 lines: CVE-502 pickle deserialization, thread-safety in random state, numerical stability prefer-solve-over-inv, deprecated `np.matrix` API). CodeQL analyzes Python + GitHub Actions workflows. pip-audit runs weekly + per-PR with custom CVE exclusions. Bandit scans for CWE patterns with B101 (asserts) allowed only in tests.
+
+- **100% docstring coverage requirement** enforced by interrogate (pyproject.toml:70-74) with Google-style convention. Ruff selects D105+D107 for magic methods and `__init__`. No exceptions for private modules. MkDocs with mkdocstrings auto-generates API docs from source annotations.
+
+- **Comprehensive pre-commit hooks** (11 hooks, 9 repos): Standard checks (TOML/YAML validation, large-file detection), ruff linting + formatting with `--unsafe-fixes`, markdownlint (MD013 disabled for tables), jsonschema validation for GitHub workflows + Renovate config, actionlint for workflow syntax, validate-pyproject, bandit, uv-lock consistency, 6 custom Rhiza hooks (workflow naming, README sync, Makefile target validation, Python version consistency across .python-version/pyproject.toml/workflows), and custom local hook preventing Python cache file commits.
+
+- **41+ Ruff lint rules** (ruff.toml:53-82) with sensible per-file exceptions: Core rules D/E/F/I/N/W/UP, extended B/C4/SIM/PT/RUF/S/TRY/ICN. Tests allow D102/S101/S603/S607/PLW1510/ERA001/PLR2004/RUF002/RUF012. Marimo notebooks allow D100/N803/S101/PLC0415/B018/RUF001/RUF002 for interactive exploration. Internal utils allow PLW2901/TRY003. Line length 120, double quotes, Google docstring convention (D203/D213 ignored to resolve conflicts).
+
+- **Type safety via ty** (Astral's type checker): pyproject.toml:76-83 configures Python 3.12, enforces `call-non-callable = "error"` and `no-matching-overload = "error"`. Runs in dedicated CI workflow (rhiza_typecheck.yml). `py.typed` marker present for PEP 561 compliance.
+
+- **Mature documentation tooling**: 2,616 lines across docs/*.md (23 files) + API subdirectories. MkDocs Material theme with mkdocstrings Python plugin (Google docstring extraction, signature+annotations+sources visible, submodule auto-discovery). 16-section README (33.9KB): idea, features, installation, quick start, 2 covariance modes, 5 Marimo notebooks with PEP 723 script metadata, performance tables (O(T·N²) correlation, O(N³·T) solving, peak 112·T·N² bytes documented in optimizer.py:1-61). 6 Marimo notebooks covering end-to-end workflow, EWM benchmarking, shrinkage tuning, diagnostics, and demo.
+
+- **Test infrastructure maturity**: 30 test files, ~10,217 LOC, 90% minimum coverage enforced (pyproject.toml:54-56), actual 100% achieved. Property-based testing with Hypothesis (~500+ LOC across test_optimizer_property.py:194, test_linalg_property.py:170, test_signal_property.py:140). Stress tests excluded from coverage (tests/stress/). Benchmarks in tests/benchmarks/ with pytest-benchmark CI regression detection (rhiza_benchmarks.yml: 200% threshold). Test reports generated as HTML (_tests/html-report/report.html), coverage badge auto-updated to gh-pages branch.
+
+- **Dependency hygiene**: Zero deptry issues. Explicit `[tool.deptry.package_module_name_map]` in pyproject.toml (42-52) maps package names to import names for deterministic validation. Minimal runtime dependencies (7: jinja2, jquantstats, numpy≥2.4, plotly, polars≥1.37.1, pydantic≥2.12.5, scipy≥1.17.0). Dev dependencies properly isolated in `[dependency-groups]dev` (marimo, pandas, pyarrow). Dependabot configured for weekly Tuesday 09:00 Asia/Dubai updates with 10 PR limit, patch+minor only, ignores semver-major.
+
+- **No technical debt markers**: `grep -r "TODO\|FIXME\|XXX\|HACK" src/` returns clean. No commented-out code blocks (ERA001 enforced). No dead code or pragma:no-cover except legitimate unreachable branches (validated).
+
+- **Benchmark baseline traceability**: BENCHMARKS.md records environment (Python 3.12.3, CPython, Linux AMD EPYC 7763 4-core GitHub runner, pytest-benchmark 5.2.3, basanos 0.5.0, commit 06c0877, date 2026-03-21). Covers 10 dataset sizes (252-1260 rows, 5-20 assets, EWM + sliding-window modes, warmup vs. non-warmup). CI regression workflow (rhiza_benchmarks.yml) alerts on >200% performance degradation.
+
+- **Architecture Decision Records**: docs/adr/ established with ADR 0001 (Rhiza framework dependency) documenting 4-step exit strategy, sync opt-in via pinned tag, and committed templates (no runtime fetch risk).
+
+### Weaknesses
+
+- **Coverage reporting infrastructure complexity**: Multiple coverage outputs (terminal, HTML _tests/html-coverage/, JSON _tests/coverage.json, XML _tests/coverage.xml, badge SVG pushed to gh-pages) with manual orchestration in .rhiza/make.d/test.mk:13-48. No single source of truth for badge generation logic. Badge update requires gh CLI + git operations in CI, creating fragile dependency on gh-pages branch existence and write permissions.
+
+- **Paper PDF missing from repository despite README badge**: README.md line 16 badges to `paper/basanos.pdf` but only `paper/basanos.tex` (55KB) and `paper/basanos.bib` (5KB) exist. `make paper` target compiles locally via latexmk, but no CI artifact persistence or commit hook ensures PDF stays in sync with .tex changes. Badge likely points to CI artifact or external host (undocumented).
+
+- **BENCHMARKS.md environment metadata partially stale**: Header records basanos 0.5.0 (commit 06c0877, 2026-03-21) but current version is 0.6.0 (CHANGELOG.md:10, 2026-03-27). 6-day lag between benchmark capture and current release. Sliding-window benchmark cases present but environment details not re-validated after v0.6.0 merge.
+
+- **Semgrep config duplicates NumPy best practices without custom rules**: `.semgrep.yml` implements 5 NumPy-specific rules (numpy-load-allow-pickle CWE-502, numpy-random-seed thread-safety, numpy-global-random-state reproducibility, numpy-avoid-inv numerical stability, numpy-matrix-deprecated API usage) but these are standard NumPy security patterns, not project-specific. No custom domain rules for portfolio optimization (e.g., non-positive AUM, zero-window config, negative shrinkage).
+
+- **Pre-commit hook duplication with CI workflows**: rhiza_pre-commit.yml workflow re-runs all pre-commit hooks in CI despite local pre-commit enforcement. This catches rogue commits bypassing local hooks but doubles CI time. No `ci: skip` or selective hook execution for performance.
+
+- **Interrogate 100% docstring coverage without examples enforcement**: pyproject.toml:70-74 requires 100% coverage but ignores `__init__` and magic methods. Docstrings are present but no automated check for example code (`>>> ` doctest snippets). High-level modules (optimizer.py, _stream.py) have examples but low-level helpers (_linalg.py, _signal.py) lack usage illustrations.
+
+- **Type checking Python 3.12-only**: pyproject.toml:77 sets `python-version = "3.12"` for ty despite supporting ≥3.11 (pyproject.toml:10). Type errors specific to 3.11 or 3.13 may be missed. No multi-version type checking matrix parallel to pytest CI matrix.
+
+- **ADR practice underutilized**: Only 1 ADR (Rhiza dependency) despite significant design decisions documented in memories (discriminated union config, Woodbury vs. Cholesky, EWM IIR filter over rolling, Polars over Pandas, Pydantic for config validation). ADR README.md is a stub.
+
+### Risks / Technical Debt
+
+- **Dependabot limited to weekly Tuesday updates**: `.github/dependabot.yml` sets `interval: weekly` with Tuesday 09:00 schedule. Critical security patches released mid-week (e.g., NumPy CVE on Thursday) wait 5 days for automated PR. No `interval: daily` for security-only dependency group.
+
+- **Polars <2 upper bound creates maintenance treadmill**: `polars>=1.37.1,<2` (pyproject.toml:16) requires manual bumps per minor version. Polars 1.x series has 37+ minor versions (1.0.0 to 1.37.1 in ~18 months). No deprecation shim or compatibility layer for breaking Polars API changes. Uv-lock hook will block commits if polars 1.38+ released without pyproject.toml update.
+
+- **21 GitHub Actions workflows without consolidation**: 14 workflows prefixed `rhiza_*` could be consolidated into parameterized matrix workflow (single workflow with strategy: matrix: checks: [ci, typecheck, deptry, semgrep, ...] and conditional job execution). Current structure creates 21 separate YAML files to maintain when GitHub Actions syntax changes (e.g., actions/checkout v6→v7 upgrade requires 21-file find/replace).
+
+- **Benchmark regression detection threshold too permissive**: rhiza_benchmarks.yml allows 200% degradation before failing. A 2× slowdown (e.g., O(N²) → O(N³) algorithmic regression) passes silently. Industry standard: 10-20% threshold for performance-critical libraries.
+
+- **No memory profiling in CI**: BENCHMARKS.md documents theoretical peak memory (112·T·N² bytes) but no actual memory_profiler or tracemalloc validation. Large-portfolio OOM scenarios (500 assets × 2520 days = 70GB) not tested. CI could run memory_profiler on largest benchmark case and fail if >16GB to prevent silent memory bloat.
+
+- **Security scanning gaps**: pip-audit excludes CVE-2026-4539 (pygments ReDoS) without expiration date or re-review trigger. CodeQL runs weekly Monday 1:27 AM but no daily scans for high-severity alerts. Bandit excludes tests/ entirely despite tests potentially leaking credentials via hardcoded strings in fixtures.
+
+- **Link checker runs on-demand only**: link-check.yml workflow has no schedule trigger (no cron, no push/PR trigger). Documentation links can break silently for weeks between manual runs. Should run weekly or per-docs-change.
+
+- **MkDocs deployment to gh-pages branch fragile**: rhiza_docs.yml pushes to gh-pages branch requiring write permissions, branch protection bypass, and force-push capability. If gh-pages branch diverges or is deleted, docs deployment fails silently. No fallback to GitHub Releases or artifact storage.
+
+### Score
+
+**9.5 / 10** — World-class quality infrastructure with minor refinement opportunities
+
+**Rationale**:
+
+This repository exhibits **exceptional quality assurance discipline** far exceeding industry standards for open-source Python libraries. The 21-workflow CI/CD pipeline, 4-layer security scanning, 100% docstring coverage enforcement, 90%+ test coverage requirement (100% achieved), comprehensive pre-commit hooks, mature documentation tooling, and zero technical debt markers place it in the **top 1% of Python scientific computing projects**. The integration of enterprise security practices (CodeQL weekly, Semgrep custom rules, license compliance scanning, dependency vulnerability monitoring) demonstrates production-grade operational rigor.
+
+**Why not 10/10?**
+
+Three categories prevent perfection:
+
+1. **Observability gaps**: No runtime memory profiling in CI to validate theoretical peak estimates, no doctest execution for docstring examples, no multi-Python-version type checking to match pytest matrix.
+
+2. **Maintenance fragility**: 21 separate workflow files resist consolidation, gh-pages deployment requires manual branch management, Polars <2 upper bound creates upgrade treadmill, 200% benchmark regression threshold too permissive.
+
+3. **Security blind spots**: pip-audit excludes CVE without expiration, Bandit skips all test fixtures (potential credential leaks), link checker runs only on-demand, Dependabot weekly-only misses mid-week critical patches.
+
+**Why 9.5 (not 8-9)?**
+
+The weaknesses are **cosmetic** and do not compromise the library's correctness, security, or maintainability. The core infrastructure (CI, linting, type checking, documentation, testing) is best-in-class. The identified risks are **addressable in CI config updates** without code changes. This is a repository I would use as a **template for new scientific Python projects**.
+

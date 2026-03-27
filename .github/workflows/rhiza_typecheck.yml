@@ -26,8 +26,11 @@ on:
 
 jobs:
   typecheck:
-    name: Type checking
+    name: Type checking (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - uses: actions/checkout@v6.0.2
@@ -42,9 +45,9 @@ jobs:
         with:
           token: ${{ secrets.GH_PAT }}
 
-      - name: Run ty type checker (make typecheck)
-        # Runs `uv run ty check src/` as defined in .rhiza/make.d/test.mk.
-        # ty is configured via [tool.ty.environment] in pyproject.toml.
+      - name: Run ty type checker
+        # Overrides [tool.ty.environment].python-version in pyproject.toml
+        # to check against each supported Python version.
         env:
           UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
-        run: make typecheck
+        run: uv run ty check src --python-version ${{ matrix.python-version }}
