@@ -408,3 +408,88 @@ def test_solve_suppresses_warning_with_high_cond_threshold():
         warnings.simplefilter("error", IllConditionedMatrixWarning)
         # cond_threshold=np.inf disables the condition-number guard entirely
         fm.solve(rhs, cond_threshold=np.inf)  # must not raise
+
+
+# ─── woodbury_condition_number diagnostic property ───────────────────────────
+
+
+def test_woodbury_condition_number_is_positive():
+    """woodbury_condition_number must return a strictly positive float."""
+    fm = _make_fm(n=4, k=2)
+    kappa = fm.woodbury_condition_number
+    assert isinstance(kappa, float)
+    assert kappa > 0.0
+
+
+def test_woodbury_condition_number_identity_factor_model():
+    """With F=I and B=0, M = I + 0 = I so condition number must be 1.0."""
+    n = 4
+    fm = FactorModel(
+        factor_loadings=np.zeros((n, 1)),
+        factor_covariance=np.eye(1),
+        idiosyncratic_var=np.ones(n),
+    )
+    np.testing.assert_allclose(fm.woodbury_condition_number, 1.0, rtol=1e-10)
+
+
+def test_woodbury_condition_number_increases_with_ill_conditioned_factor_covariance():
+    """Ill-conditioned F must produce a large woodbury_condition_number."""
+    rng = np.random.default_rng(7)
+    n, k = 6, 2
+    b_mat = rng.standard_normal((n, k))
+    d = np.ones(n)
+
+    # Well-conditioned F
+    fm_good = FactorModel(
+        factor_loadings=b_mat,
+        factor_covariance=np.eye(k),
+        idiosyncratic_var=d,
+    )
+
+    # Ill-conditioned F (κ(F) ≈ 1e12)
+    fm_bad = FactorModel(
+        factor_loadings=b_mat,
+        factor_covariance=np.diag([1.0, 1e-12]),
+        idiosyncratic_var=d,
+    )
+
+    assert fm_bad.woodbury_condition_number > fm_good.woodbury_condition_number
+
+
+def test_woodbury_condition_number_consistent_with_solve_warning():
+    """woodbury_condition_number > _DEFAULT_COND_THRESHOLD must coincide with IllConditionedMatrixWarning.
+
+    When the inner Woodbury matrix is ill-conditioned (condition number exceeds
+    ``_DEFAULT_COND_THRESHOLD``), both the warning from ``solve()`` and a large
+    ``woodbury_condition_number`` must be observed.
+    """
+    rng = np.random.default_rng(3)
+    n, k = 4, 2
+    b_mat = rng.standard_normal((n, k))
+    # F with κ(F) ≈ 1e13 — this will make the inner matrix ill-conditioned too.
+    f_mat = np.diag([1.0, 1e-13])
+    d = np.ones(n)
+    fm = FactorModel(factor_loadings=b_mat, factor_covariance=f_mat, idiosyncratic_var=d)
+
+    assert fm.woodbury_condition_number > _DEFAULT_COND_THRESHOLD
+
+    rhs = rng.standard_normal(n)
+    with pytest.warns(IllConditionedMatrixWarning, match="condition number"):
+        fm.solve(rhs)
+
+
+def test_woodbury_condition_number_returns_inf_for_singular_factor_covariance():
+    """woodbury_condition_number must return inf when factor_covariance is singular."""
+    n, k = 4, 2
+    b_mat = np.eye(n, k)
+    # A singular factor_covariance (rank 1 but shape 2x2 — zero second row/col)
+    f_singular = np.array([[1.0, 0.0], [0.0, 0.0]])
+    d = np.ones(n)
+    fm = FactorModel(
+        factor_loadings=b_mat,
+        factor_covariance=f_singular,
+        idiosyncratic_var=d,
+    )
+
+    kappa = fm.woodbury_condition_number
+    assert not np.isfinite(kappa)

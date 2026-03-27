@@ -142,6 +142,51 @@ class FactorModel:
         """
         return self.factor_loadings @ self.factor_covariance @ self.factor_loadings.T + np.diag(self.idiosyncratic_var)
 
+    @property
+    def woodbury_condition_number(self) -> float:
+        r"""Condition number of the inner :math:`k \times k` Woodbury matrix.
+
+        Returns the condition number of the matrix
+
+        .. math::
+
+            \mathbf{M} = \mathbf{F}^{-1} + \mathbf{B}^\top\mathbf{D}^{-1}\mathbf{B}
+
+        which is the matrix actually inverted during :meth:`solve`.  A large
+        value (above ``_DEFAULT_COND_THRESHOLD`` ≈ 1e12) indicates that the
+        Woodbury solve is numerically unreliable.
+
+        This property gives callers a way to inspect the numerical health of
+        the model without performing a full solve.  Unlike the condition number
+        of the full :math:`n \times n` covariance matrix, this measure is
+        specific to the :math:`k \times k` inner system solved inside the
+        Woodbury identity.
+
+        Returns:
+            float: Condition number :math:`\kappa(\mathbf{M})`.  Returns
+            ``inf`` when :math:`\mathbf{F}` is not positive-definite (e.g.
+            singular or indefinite), as the Cholesky decomposition used to
+            form :math:`\mathbf{F}^{-1}` fails in that case.
+
+        Examples:
+            >>> import numpy as np
+            >>> loadings = np.eye(3, 1)
+            >>> cov = np.eye(1)
+            >>> idio = np.ones(3)
+            >>> fm = FactorModel(factor_loadings=loadings, factor_covariance=cov, idiosyncratic_var=idio)
+            >>> fm.woodbury_condition_number > 0
+            True
+        """
+        d_inv = 1.0 / self.idiosyncratic_var  # (n,)
+        d_inv_b_mat = d_inv[:, None] * self.factor_loadings  # D^{-1} B, shape (n, k)
+        try:
+            mid = (
+                _cholesky_solve(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
+            )  # (k, k)
+        except np.linalg.LinAlgError:
+            return float("inf")
+        return float(np.linalg.cond(mid))
+
     def solve(
         self,
         rhs: np.ndarray,
