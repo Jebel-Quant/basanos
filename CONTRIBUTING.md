@@ -47,13 +47,16 @@ navigate to its root, and run the following commands:
 ```bash
 git clone https://github.com/Jebel-Quant/basanos.git
 cd basanos
-uv sync          # create .venv and install all dependencies
-make install     # full bootstrap (installs uv if missing, then runs uv sync)
+uv sync          # create .venv and sync all dependencies (requires uv on PATH)
+# — or —
+make install     # full bootstrap: installs uv if missing, then runs uv sync
 ```
 
-`uv sync` alone is enough for day-to-day development once `uv` is on your
-`PATH`.  `make install` is the preferred first-time command as it also
-ensures the correct Python version is installed.
+`uv sync` synchronises the virtual environment from `uv.lock` and is the
+fastest option when `uv` is already on your `PATH`.  `make install` is the
+recommended first-time command because it also ensures the correct Python
+version is installed.  For all subsequent development tasks (testing,
+formatting, type checking) use the `make` targets documented below.
 
 ## Contributing code
 
@@ -82,8 +85,20 @@ following:
 
 - Read the source and enhance the documentation,
   or address TODOs
-- Browse the open issues,
-  and look for the issues tagged "help wanted".
+- Browse the open issues, and look for the issues tagged
+  [`good first issue`](https://github.com/Jebel-Quant/basanos/labels/good%20first%20issue)
+  or `help wanted`.
+
+### Good first issues
+
+The following are self-contained tasks that are well-scoped for a first
+contribution:
+
+| Task | Why it's a good start |
+|------|-----------------------|
+| **Add type stubs / inline annotations to `_linalg.py`** | Small file, no business logic to understand. Good exercise in NumPy typing. |
+| **Write property-based tests for `BasanosConfig` validation** | Uses Hypothesis already configured in the repo; teaches the config layer without touching maths. |
+| **Extend the HTML config report to include a sliding-window parameter table** | Pure template / Jinja2 work in `_config_report.py`; no numerical code. |
 
 ## Commit conventions
 
