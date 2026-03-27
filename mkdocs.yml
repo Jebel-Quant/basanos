@@ -52,6 +52,7 @@ nav:
     - Factor Models: factor-models.md
     - Streaming Guide: streaming.md
     - Performance: performance.md
+    - Engine Architecture: ARCHITECTURE.md
   - Notebooks: notebooks.md
   - Reports: reports.md
   - API Reference:
