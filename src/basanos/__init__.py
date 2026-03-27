@@ -6,6 +6,7 @@ Examples:
     'basanos'
 """
 
+from basanos._deprecation import warn_deprecated as warn_deprecated
 from basanos._logging import JSONFormatter as JSONFormatter
 from basanos.exceptions import (
     BasanosError as BasanosError,
@@ -58,4 +59,5 @@ __all__ = [
     "NonSquareMatrixError",
     "ShapeMismatchError",
     "SingularMatrixError",
+    "warn_deprecated",
 ]
