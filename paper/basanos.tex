@@ -135,22 +135,17 @@ risk-adjusted return through this framework is unlikely to survive the added
 friction of a production system.
 
 The paper is structured as follows.  Section~\ref{sec:problem} formalises the
-signal assessment problem and the impact of portfolio construction.
-Section~\ref{sec:approach} describes the mathematical approach: volatility
-adjustment, EWMA correlation estimation, shrinkage, and the normalised linear
-solve.  Section~\ref{sec:factor_models} introduces factor risk models as an
-alternative covariance parameterisation, derives latent factors via the
-singular value decomposition, and shows how the Sherman--Morrison--Woodbury
-identity enables efficient inversion under a low-rank factor structure; it
-concludes with a sliding-window estimator parametrised by window length~$n$
-and factor count~$k$.  Section~\ref{sec:analytics} documents the analytical
-tools available in the library, distinguishing optimizer-level diagnostics from
-portfolio-level performance analytics.  Section~\ref{sec:usage} describes the
-development infrastructure and illustrates usage with code examples.
-Section~\ref{sec:sensitivity} uses shrinkage as a sensitivity analysis to
-quantify how much correlation adjustment adds over a naive proportional
-baseline.  Section~\ref{sec:compute} summarises the computational complexity
-and practical memory limits of the main pipeline steps.
+signal assessment problem.  Section~\ref{sec:approach} develops the
+mathematical pipeline---volatility adjustment, EWMA correlation estimation,
+shrinkage, and the normalised linear solve---and closes with a shrinkage sweep
+that quantifies what correlation adjustment adds over a proportional baseline.
+Section~\ref{sec:factor_models} presents factor risk models as an alternative
+covariance parameterisation, including latent-factor extraction via SVD,
+efficient inversion via the Woodbury identity, and a sliding-window estimator.
+Section~\ref{sec:analytics} documents optimizer-level diagnostics and
+portfolio-level analytics.  Section~\ref{sec:usage} illustrates the complete
+workflow with a code example.  Section~\ref{sec:compute} summarises
+computational complexity and practical limits.
 Section~\ref{sec:conclusion} concludes.
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -175,7 +170,8 @@ asset $i$ at time $t$.
 \subsection{Signal-Proportional Sizing and Its Limitations}
 \label{sec:proportional}
 
-The simplest sizing rule is \emph{proportional}: set
+We now make the interaction between signal direction and correlation structure
+precise.  The simplest sizing rule is \emph{proportional}: set
 \begin{equation}
   \label{eq:proportional}
   p_{i,t} \propto \mu_{i,t}.
@@ -480,6 +476,38 @@ default $10^6$).
   \label{fig:ellipsoid}
 \end{figure}
 
+\subsection{Shrinkage as a Sensitivity Analysis}
+\label{sec:sensitivity}
+
+Because $\lambda = 0$ recovers signal-proportional sizing and $\lambda = 1$
+uses the raw EWMA matrix, sweeping $\lambda$ between these extremes provides
+a direct measurement of how much value correlation adjustment adds.
+Basanos exposes this as the method
+\texttt{engine.sharpe\_at\_shrink($\lambda$)}, which re-runs the optimiser
+with a given $\lambda$ and returns the annualised Sharpe ratio.
+
+A complementary baseline is \texttt{engine.naive\_sharpe}, which computes the
+Sharpe ratio when each asset is positioned proportionally to its signal
+with no correlation adjustment (equivalent to $\lambda = 0$).  Together,
+\texttt{naive\_sharpe}, \texttt{sharpe\_at\_shrink(0.0)}, and
+\texttt{sharpe\_at\_shrink(cfg.shrink)} form a three-point diagnostic that
+separates raw signal skill from the value added by correlation routing.
+
+A typical sweep over $\lambda \in [0, 1]$ with fixed prices and signals
+yields a Sharpe curve that either:
+\begin{enumerate}
+  \item \textbf{Peaks at an interior $\lambda$}: correlation adjustment
+    adds value, and the optimal intensity is data-driven.
+  \item \textbf{Monotonically decreases from $\lambda = 0$}: the signal is
+    already well-diversified and the EWMA correlation estimate introduces
+    estimation noise.
+  \item \textbf{Monotonically increases toward $\lambda = 1$}: a strong
+    correlation structure exists in the data that the signal does not yet
+    exploit.
+\end{enumerate}
+This diagnostic is a fast, parameter-free sanity check before committing
+to a production deployment.
+
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Factor Risk Models}
 \label{sec:factor_models}
@@ -729,9 +757,12 @@ Table~\ref{tab:ewma_vs_sliding} summarises the comparison.
 \label{sec:analytics}
 % ─────────────────────────────────────────────────────────────────────────────
 
-The library exposes two layers of analytics: optimizer-level diagnostics that
-introspect the numerical behaviour of the solve at each timestamp, and
-portfolio-level analytics that measure the risk-adjusted performance of the
+The library exposes two layers of analytics.  The first---optimizer-level
+diagnostics---is accessed through \texttt{BasanosEngine} and introspects the
+numerical behaviour of the solve at each timestamp: condition number, effective
+rank, solver residual, signal utilisation, and leverage.  The second---portfolio-level
+analytics---is accessed through the \texttt{Portfolio} object returned by
+\texttt{engine.portfolio} and measures the risk-adjusted performance of the
 resulting positions.
 
 \subsection{Optimizer-Level Diagnostics}
@@ -999,20 +1030,6 @@ via an API or saved to disk.
 \label{sec:usage}
 % ─────────────────────────────────────────────────────────────────────────────
 
-\subsection{Development Infrastructure}
-
-Basanos is developed using the \textbf{Rhiza} framework---a curated collection
-of reusable project-template files, Makefile targets, and CI/CD workflows
-designed to standardise modern Python library development.  Rhiza manages
-dependency resolution via \texttt{uv}, enforces code style with \texttt{ruff},
-runs the test suite under \texttt{pytest} with coverage, and automates
-packaging and release workflows.  A downstream project stays synchronised with
-the upstream Rhiza template through a periodic sync step that propagates
-improvements to the shared tooling without touching library-specific logic.
-This separation between domain code and build infrastructure keeps the
-repository focused on the mathematical and analytical core while benefiting
-from continuously maintained development tooling.
-
 \subsection{End-to-End Example}
 
 The following example illustrates the complete workflow from price data and a
@@ -1082,40 +1099,6 @@ fig = portfolio.plots.snapshot()           # NAV + drawdown
 fig = portfolio.plots.lead_lag_ir_plot(-5, 15)  # Lead/lag Sharpe
 portfolio.report.save("output/report")    # Full HTML report
 \end{lstlisting}
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Shrinkage as a Sensitivity Analysis}
-\label{sec:sensitivity}
-% ─────────────────────────────────────────────────────────────────────────────
-
-Because $\lambda = 0$ recovers signal-proportional sizing and $\lambda = 1$
-uses the raw EWMA matrix, sweeping $\lambda$ between these extremes provides
-a direct measurement of how much value correlation adjustment adds.
-Basanos exposes this as the method
-\texttt{engine.sharpe\_at\_shrink($\lambda$)}, which re-runs the optimiser
-with a given $\lambda$ and returns the annualised Sharpe ratio.
-
-A complementary baseline is \texttt{engine.naive\_sharpe}, which computes the
-Sharpe ratio when each asset is positioned proportionally to its signal
-with no correlation adjustment (equivalent to $\lambda = 0$).  Together,
-\texttt{naive\_sharpe}, \texttt{sharpe\_at\_shrink(0.0)}, and
-\texttt{sharpe\_at\_shrink(cfg.shrink)} form a three-point diagnostic that
-separates raw signal skill from the value added by correlation routing.
-
-A typical sweep over $\lambda \in [0, 1]$ with fixed prices and signals
-yields a Sharpe curve that either:
-\begin{enumerate}
-  \item \textbf{Peaks at an interior $\lambda$}: correlation adjustment
-    adds value, and the optimal intensity is data-driven.
-  \item \textbf{Monotonically decreases from $\lambda = 0$}: the signal is
-    already well-diversified and the EWMA correlation estimate introduces
-    estimation noise.
-  \item \textbf{Monotonically increases toward $\lambda = 1$}: a strong
-    correlation structure exists in the data that the signal does not yet
-    exploit.
-\end{enumerate}
-This diagnostic is a fast, parameter-free sanity check before committing
-to a production deployment.
 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Computational Characteristics}
@@ -1204,42 +1187,6 @@ friction of a full production system.
     cost\_per\_unit & One-way trading cost per unit of position change. & $0.0$ \\
     max\_turnover & Optional L1 turnover budget per period (cash units). & \texttt{None} \\
     covariance\_config & Covariance mode: \texttt{EwmaShrinkConfig} or \texttt{SlidingWindowConfig}. & \texttt{EwmaShrinkConfig()} \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-% ─────────────────────────────────────────────────────────────────────────────
-\section{Optimizer Diagnostics Summary}
-\label{app:diagnostics}
-% ─────────────────────────────────────────────────────────────────────────────
-
-\begin{table}[h]
-  \centering
-  \caption{Properties available on \texttt{BasanosEngine}.}
-  \label{tab:diagnostics}
-  \begin{tabular}{>{\ttfamily}lp{7.5cm}}
-    \toprule
-    \normalfont\textbf{Property} & \textbf{Description} \\
-    \midrule
-    cash\_position    & Optimized cash positions; the primary output. \\
-    position\_status  & Per-row reason code: \texttt{warmup}, \texttt{zero\_signal}, \texttt{degenerate}, or \texttt{valid}. \\
-    risk\_position    & Cash positions multiplied by per-asset volatility; positions on a common vol-adjusted scale. \\
-    position\_leverage & L1 norm of cash positions (gross leverage) per timestamp. \\
-    condition\_number & Condition number $\kappa(\tilde{\C}_t)$ per timestamp. \\
-    effective\_rank   & Entropy-based effective rank of $\tilde{\C}_t$ per timestamp. \\
-    solver\_residual  & Euclidean residual $\|\tilde{\C}_t\x_t - \muvec_t\|_2$ per timestamp. \\
-    signal\_utilisation & Per-asset fraction of signal surviving the correlation filter. \\
-    portfolio         & \texttt{Portfolio} instance built from the optimized positions. \\
-    cor               & Dict of per-timestamp raw EWMA correlation matrices. \\
-    cor\_tensor       & All correlation matrices as an $(T, N, N)$ NumPy array. \\
-    vola              & Per-asset EWMA volatility estimates. \\
-    ret\_adj          & Volatility-adjusted, clipped log returns. \\
-    ic                & Per-timestamp Pearson IC (signal vs.\ forward returns). \\
-    rank\_ic          & Per-timestamp Spearman Rank IC. \\
-    icir              & Scalar IC Information Ratio: mean IC / std IC. \\
-    rank\_ic\_mean    & Mean of the Rank IC time series. \\
-    rank\_ic\_std     & Standard deviation of the Rank IC time series. \\
-    naive\_sharpe     & Sharpe ratio under signal-proportional sizing (no correlation adjustment). \\
     \bottomrule
   \end{tabular}
 \end{table}
