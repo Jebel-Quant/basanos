@@ -837,7 +837,7 @@ class BasanosStream:
                     state.step_count, date, mask, expected_mu, MatrixBundle(matrix=corr_sub), cfg.denom_tol
                 )
                 if status == SolveStatus.VALID:
-                    new_cash_pos[mask] = _SolveMixin._scale_to_cash(pos, vola_vec[mask])
+                    new_cash_pos[mask] = _SolveMixin._scale_to_cash(cast(np.ndarray, pos), vola_vec[mask])
                 else:
                     new_cash_pos[mask] = pos
 
