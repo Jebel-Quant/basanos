@@ -142,7 +142,7 @@ portfolio = engine.portfolio      # Portfolio object for analytics
 
 ### Factor Model Mode
 
-Use `SlidingWindowConfig` to switch to the sliding-window factor model. No explicit shrinkage is needed — the number of factors `k` acts as the sole regularisation knob (fewer factors = stronger compression of the correlation structure).
+Use `SlidingWindowConfig` to switch to the sliding-window factor model. See [Mode 2 — Sliding-Window Factor Model](#mode-2--sliding-window-factor-model) for a full explanation of the approach and how to choose `window` and `n_factors`.
 
 ```python
 import numpy as np
@@ -365,17 +365,10 @@ The optimizer implements a three-step pipeline per timestamp:
 
 2. **Covariance estimation** — A regularised correlation matrix is built from the vol-adjusted returns. Two modes are available (see [Covariance Modes](#covariance-modes)):
 
-   - *EWMA with shrinkage* (default, `EwmaShrinkConfig`): An EWMA correlation matrix is computed over a `cfg.corr`-day lookback and blended toward the identity with weight `cfg.shrink` (λ):
+   - *EWMA with shrinkage* (default, `EwmaShrinkConfig`): blends the `cfg.corr`-day EWMA correlation toward the identity at rate `cfg.shrink` (λ). See [Mode 1](#mode-1--ewma-with-shrinkage) for guidance on λ.
+   - *Sliding-window factor model* (`SlidingWindowConfig`): decomposes the `window` most-recent vol-adjusted returns via truncated SVD into `k` factors, producing a low-rank-plus-diagonal estimator solved via the Woodbury identity. See [Mode 2](#mode-2--sliding-window-factor-model).
 
-     ```
-     C_shrunk = λ · C_ewma + (1 − λ) · I
-     ```
-
-     See [Mode 1 — EWMA with Shrinkage](#mode-1--ewma-with-shrinkage) for guidance on choosing λ.
-
-   - *Sliding-window factor model* (`SlidingWindowConfig`): The `window` most-recent vol-adjusted returns are decomposed via truncated SVD into `k` latent factors, giving a low-rank-plus-diagonal estimator solved efficiently via the Woodbury identity. **No explicit shrinkage is required** — `k` is the regularisation knob. See [Mode 2 — Sliding-Window Factor Model](#mode-2--sliding-window-factor-model).
-
-3. **Position solving** — For each timestamp, the system `C · x = mu` is solved for `x` (the risk position vector). The solution is normalized by the inverse-matrix norm of `mu`, making positions scale-invariant with respect to signal magnitude. Positions are further scaled by a running profit-variance estimate to adapt risk dynamically.
+3. **Position solving** — The system `C · x = mu` is solved for `x` (the risk position vector), normalised by the inverse-matrix norm of `mu` for scale invariance, and further scaled by a running profit-variance estimate.
 
 Cash positions are obtained by dividing risk positions by per-asset EWMA volatility.
 
