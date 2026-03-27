@@ -41,12 +41,19 @@ Run `make help` to see all available targets.
 ## Building from source
 
 You'll need to build the project locally to start editing code.
-To install from source, clone the repository from GitHub, 
-navigate to its root, and run the following command:
+To install from source, clone the repository from GitHub,
+navigate to its root, and run the following commands:
 
 ```bash
-make install
+git clone https://github.com/Jebel-Quant/basanos.git
+cd basanos
+uv sync          # create .venv and install all dependencies
+make install     # full bootstrap (installs uv if missing, then runs uv sync)
 ```
+
+`uv sync` alone is enough for day-to-day development once `uv` is on your
+`PATH`.  `make install` is the preferred first-time command as it also
+ensures the correct Python version is installed.
 
 ## Contributing code
 
