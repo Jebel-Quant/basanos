@@ -25,7 +25,7 @@ post-validate:: typecheck ## run type checking as part of make validate
 
 ## Custom targets
 
-##@ Quality
+##@ Security
 
 # Override rhiza security target to ignore CVE-2026-4539 (pygments ReDoS, no fix available yet).
 .PHONY: security
@@ -35,11 +35,13 @@ security: install ## run security scans (pip-audit and bandit)
 	@printf "${BLUE}[INFO] Running bandit security scan...${RESET}\n"
 	@${UVX_BIN} bandit -r ${SOURCE_FOLDER} -ll -q -c pyproject.toml
 
+##@ Quality
+
 .PHONY: semgrep
 semgrep: install ## run Semgrep static analysis (numpy rules)
 	@printf "${BLUE}[INFO] Running Semgrep (numpy rules)...${RESET}\n"
 	@if [ -d ${SOURCE_FOLDER} ]; then \
-		${UVX_BIN} semgrep --config .semgrep.yml ${SOURCE_FOLDER}; \
+		${UVX_BIN} semgrep --config .rhiza/semgrep.yml ${SOURCE_FOLDER}; \
 	else \
 		printf "${YELLOW}[WARN] SOURCE_FOLDER '${SOURCE_FOLDER}' not found, skipping semgrep.${RESET}\n"; \
 	fi
