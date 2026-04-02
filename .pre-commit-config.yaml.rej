@@ -1,0 +1,13 @@
+diff a/.pre-commit-config.yaml b/.pre-commit-config.yaml	(rejected hunks)
+@@ -8,9 +8,10 @@ repos:
+       - id: check-toml
+       - id: check-yaml
+         args: ['--unsafe']
++        exclude: ^recipe/meta\.yaml$
+ 
+   - repo: https://github.com/astral-sh/ruff-pre-commit
+-    rev: 'v0.15.7'
++    rev: 'v0.15.8'
+     hooks:
+       - id: ruff
+         args: [ --fix, --exit-non-zero-on-fix, --unsafe-fixes ]
