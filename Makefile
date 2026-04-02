@@ -47,7 +47,7 @@ semgrep: install ## run Semgrep static analysis (numpy rules)
 .PHONY: license
 license: install ## run license compliance scan (fail on GPL, LGPL, AGPL)
 	@printf "${BLUE}[INFO] Running license compliance scan...${RESET}\n"
-	@${UV_BIN} run --with pip-licenses pip-licenses --fail-on="GPL;LGPL;AGPL"
+	@${UV_BIN} run --with pip-licenses pip-licenses --fail-on="${LICENSE_FAIL_ON}"
 
 ##@ Paper
 
