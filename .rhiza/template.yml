@@ -1,5 +1,5 @@
 repository: jebel-quant/rhiza
-ref: "v0.8.16"
+ref: "v0.8.20"
 
 templates:
   - tests
@@ -7,6 +7,7 @@ templates:
   - github
   - legal
   - benchmarks
+  - renovate
 
 exclude:
   - book/marimo/notebooks/rhiza.py
