@@ -25,16 +25,6 @@ post-validate:: typecheck ## run type checking as part of make validate
 
 ## Custom targets
 
-##@ Security
-
-# Override rhiza security target to ignore CVE-2026-4539 (pygments ReDoS, no fix available yet).
-.PHONY: security
-security: install ## run security scans (pip-audit and bandit)
-	@printf "${BLUE}[INFO] Running pip-audit for dependency vulnerabilities...${RESET}\n"
-	@${UVX_BIN} pip-audit --ignore-vuln CVE-2026-4539
-	@printf "${BLUE}[INFO] Running bandit security scan...${RESET}\n"
-	@${UVX_BIN} bandit -r ${SOURCE_FOLDER} -ll -q -c pyproject.toml
-
 ##@ Quality
 
 .PHONY: semgrep
