@@ -1,12 +1,7 @@
 ## Makefile (repo-owned)
 # Keep this file small. It can be edited without breaking template sync.
 
-# Enable parallel test execution for regular test and hypothesis runs only.
-# Benchmarks must run single-process (xdist disables pytest-benchmark).
-test hypothesis-test stress: export PYTEST_ADDOPTS := -n auto
-
 DOCFORMAT=google
-MKDOCS_CONFIG=mkdocs.yml
 DEFAULT_AI_MODEL=claude-sonnet-4.5
 LOGO_FILE=.rhiza/assets/rhiza-logo.svg
 GH_AW_ENGINE ?= copilot  # Default AI engine for gh-aw workflows (copilot, claude, or codex)
@@ -17,34 +12,11 @@ include .rhiza/rhiza.mk
 # Optional: developer-local extensions (not committed)
 -include local.mk
 
-## Hooks
-
-# CI equivalent: rhiza_ci.yml typecheck job runs `make typecheck`
-# on every push and pull_request to main/master.
-post-validate:: typecheck ## run type checking as part of make validate
+# Wire typecheck into make validate
+post-validate::
+	@$(MAKE) typecheck
 
 ## Custom targets
-
-##@ Quality
-
-.PHONY: semgrep
-semgrep: install ## run Semgrep static analysis (numpy rules)
-	@printf "${BLUE}[INFO] Running Semgrep (numpy rules)...${RESET}\n"
-	@if [ -d ${SOURCE_FOLDER} ]; then \
-		${UVX_BIN} semgrep --config .rhiza/semgrep.yml ${SOURCE_FOLDER}; \
-	else \
-		printf "${YELLOW}[WARN] SOURCE_FOLDER '${SOURCE_FOLDER}' not found, skipping semgrep.${RESET}\n"; \
-	fi
-
-##@ Paper
-
-.PHONY: paper
-paper: ## compile the LaTeX paper (paper/basanos.tex → paper/basanos.pdf)
-	@command -v latexmk >/dev/null 2>&1 || { printf "${RED}[ERROR] latexmk not found. Install TeX Live (https://tug.org/texlive/) with your package manager.${RESET}\n"; exit 1; }
-	@printf "${BLUE}[INFO] Compiling paper/basanos.tex...${RESET}\n"
-	@cd paper && latexmk -pdf -interaction=nonstopmode basanos.tex
-	@printf "${GREEN}[INFO] Paper compiled: paper/basanos.pdf${RESET}\n"
-
 
 .PHONY: adr
 adr: install-gh-aw ## Create a new Architecture Decision Record (ADR) using AI assistance
