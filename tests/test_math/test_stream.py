@@ -1405,10 +1405,9 @@ def test_save_writes_format_version():
     with tempfile.TemporaryDirectory() as tmp:
         p = pathlib.Path(tmp) / "stream.npz"
         stream.save(p)
-        data = np.load(p, allow_pickle=False)
-
-    assert "format_version" in data
-    assert int(data["format_version"]) == 2
+        with np.load(p, allow_pickle=False) as data:
+            assert "format_version" in data
+            assert int(data["format_version"]) == 2
 
 
 def test_load_raises_on_missing_format_version():
@@ -1424,7 +1423,8 @@ def test_load_raises_on_missing_format_version():
         stream.save(p)
 
         # Re-save without the format_version key to simulate a legacy archive.
-        data = dict(np.load(p, allow_pickle=False))
+        with np.load(p, allow_pickle=False) as f:
+            data = dict(f)
         del data["format_version"]
         np.savez(p, **data)
 
@@ -1445,7 +1445,8 @@ def test_load_raises_on_wrong_format_version():
         stream.save(p)
 
         # Overwrite format_version with a future version number.
-        data = dict(np.load(p, allow_pickle=False))
+        with np.load(p, allow_pickle=False) as f:
+            data = dict(f)
         data["format_version"] = np.array(999)
         np.savez(p, **data)
 
@@ -1887,7 +1888,8 @@ def test_load_raises_stream_state_corrupt_error_on_missing_state_key():
         stream.save(p)
 
         # Remove a required state key to simulate a corrupt / stale archive.
-        data = dict(np.load(p, allow_pickle=False))
+        with np.load(p, allow_pickle=False) as f:
+            data = dict(f)
         del data["vola_s_x"]
         np.savez(p, **data)
 
@@ -1907,7 +1909,8 @@ def test_stream_state_corrupt_error_lists_all_missing_keys():
         p = pathlib.Path(tmp) / "stream.npz"
         stream.save(p)
 
-        data = dict(np.load(p, allow_pickle=False))
+        with np.load(p, allow_pickle=False) as f:
+            data = dict(f)
         del data["vola_s_x"]
         del data["pct_s_x"]
         np.savez(p, **data)
@@ -1935,7 +1938,8 @@ def test_load_tolerates_extra_keys_in_archive():
         p = pathlib.Path(tmp) / "stream.npz"
         stream.save(p)
 
-        data = dict(np.load(p, allow_pickle=False))
+        with np.load(p, allow_pickle=False) as f:
+            data = dict(f)
         # Inject a dummy extra key that the current schema does not know about.
         data["_extra_future_key"] = np.array(42)
         np.savez(p, **data)
