@@ -118,5 +118,5 @@ files:
 - ruff.toml
 - tests/benchmarks/conftest.py
 - tests/benchmarks/test_benchmarks.py
-synced_at: '2026-04-14T05:34:41Z'
+synced_at: '2026-04-14T05:37:04Z'
 strategy: merge
