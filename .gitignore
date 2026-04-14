@@ -14,21 +14,24 @@ __marimo__
 
 _tests
 _book
+_pdoc
+docs/notebooks/*.html
+docs/reports
+docs/notebooks.md
+docs/reports.md
+_marimushka
 _mkdocs
 _benchmarks
 _jupyter
 _site
 
-# Auto-generated MkDocs docs pages
-docs/notebooks.md
-docs/notebooks/
-docs/reports.md
-docs/reports/
-
-# Marimo notebook validation artefacts
-results/
-# …but keep committed benchmark baseline results
-!benchmarks/results/
+# LaTeX build artifacts
+docs/paper/*.aux
+docs/paper/*.fdb_latexmk
+docs/paper/*.fls
+docs/paper/*.log
+docs/paper/*.out
+docs/paper/*.toc
 
 # temp file used by Junie
 .output.txt
@@ -45,18 +48,6 @@ __pycache__/
 presentation.html
 presentation.pdf
 *.pptx
-
-# LaTeX build artifacts (paper/basanos.pdf is published to the paper branch by CI)
-paper/*.pdf
-paper/*.aux
-paper/*.bbl
-paper/*.blg
-paper/*.fdb_latexmk
-paper/*.fls
-paper/*.log
-paper/*.out
-paper/*.synctex.gz
-paper/*.toc
 
 # C extensions
 *.so
@@ -129,3 +120,4 @@ cython_debug/
 local.mk
 
 .bandit-baseline.json
+

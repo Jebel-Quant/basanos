@@ -32,7 +32,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
@@ -57,7 +57,7 @@ jobs:
     strategy:
       matrix:
         python-version: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
 
     steps:
@@ -69,7 +69,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
           python-version: ${{ matrix.python-version }}
 
       - name: Configure git auth for private packages
@@ -93,12 +93,8 @@ jobs:
 
 
   typecheck:
-    needs: generate-matrix
-    name: Type checking (Python ${{ matrix.python-version }})
+    name: Type checking
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ${{ fromJson(needs.generate-matrix.outputs.matrix) }}
 
     steps:
       - uses: actions/checkout@v6.0.2
@@ -106,21 +102,19 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
-          python-version: ${{ matrix.python-version }}
+          version: "0.11.6"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
         with:
           token: ${{ secrets.GH_PAT }}
 
-      - name: Run ty type checker
-        # Overrides [tool.ty.environment].python-version in pyproject.toml
-        # to check against each supported Python version.
+      - name: Run ty type checker (make typecheck)
+        # Runs `uv run ty check src/` as defined in .rhiza/make.d/test.mk.
+        # ty is configured via [tool.ty.environment] in pyproject.toml.
         env:
           UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
         run: make typecheck
-
 
   deptry:
     name: Check dependencies with deptry
@@ -132,7 +126,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
@@ -140,8 +134,6 @@ jobs:
           token: ${{ secrets.GH_PAT }}
 
       - name: Run deptry
-        env:
-          UV_EXTRA_INDEX_URL: ${{ secrets.UV_EXTRA_INDEX_URL }}
         run: make deptry
 
   pre-commit:
@@ -177,7 +169,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
@@ -202,7 +194,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
@@ -224,7 +216,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
@@ -246,7 +238,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
@@ -286,7 +278,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
 
       - name: Download coverage report
         id: download-coverage

@@ -9,7 +9,7 @@
 #
 # Regression Detection:
 #   - Compares against previous benchmark results stored in gh-pages branch
-#   - Alerts if performance degrades by more than 200% (configurable)
+#   - Alerts if performance degrades by more than 150% (configurable)
 #   - PRs will show a warning comment but not fail
 #   - Main branch updates the baseline for future comparisons
 
@@ -39,7 +39,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@v8.0.0
         with:
-          version: "0.11.3"
+          version: "0.11.6"
 
       - name: Configure git auth for private packages
         uses: ./.github/actions/configure-git-auth
@@ -53,7 +53,7 @@ jobs:
           make benchmark
 
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v7.0.0
+        uses: actions/upload-artifact@v7.0.1
         if: always()
         with:
           name: benchmark-results
@@ -64,13 +64,7 @@ jobs:
 
       # Regression detection using github-action-benchmark
       # Stores benchmark history in gh-pages branch under /benchmarks
-      # Alerts if performance degrades by more than 200% of baseline.
-      # The threshold is set to 200% (2× baseline) to absorb normal GitHub
-      # Actions scheduling variance (~20–30%) while still catching genuine
-      # regressions.  The stored baseline was captured on the same runner
-      # class (Ubuntu, AMD EPYC 7763, 4 vCPUs) so hardware skew is not a
-      # concern; the extra headroom guards against transient load spikes on
-      # shared CI infrastructure.
+      # Alerts if performance degrades by more than 150% of baseline
       - name: Store benchmark result and check for regression
         uses: benchmark-action/github-action-benchmark@v1
         # run this only if _benchmarks/benchmarks.json exists
@@ -83,9 +77,8 @@ jobs:
           benchmark-data-dir-path: benchmarks
           # Only update baseline on main branch push (not PRs)
           auto-push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-          # Alert if performance degrades by more than 200% (2× baseline).
-          # See BENCHMARKS.md § "CI Regression Detection" for rationale.
-          alert-threshold: '200%'
+          # Alert if performance degrades by more than 150%
+          alert-threshold: '150%'
           # Post comment on PR if regression detected
           comment-on-alert: ${{ github.event_name == 'pull_request' }}
           # Fail workflow if regression detected (disabled for PRs to allow investigation)

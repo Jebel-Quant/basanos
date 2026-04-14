@@ -16,21 +16,11 @@ copilot: install-copilot ## open interactive prompt for copilot
 claude: install-claude ## open interactive prompt for claude code
 	@"$(CLAUDE_BIN)"
 
-analyse-repo: install-copilot ## run the analyser agent to update REPOSITORY_ANALYSIS.md
-	@retries=3; \
-	until "$(COPILOT_BIN)" --agent analyser \
-		--model "$(DEFAULT_AI_MODEL)" \
-		--prompt "Analyze the repository and update the journal." \
-		--allow-tool 'read,write,shell(make)' \
-		--allow-all-paths; do \
-		retries=$$((retries - 1)); \
-		if [ $$retries -le 0 ]; then \
-			printf "${RED}[ERROR] analyse-repo failed after 3 attempts.${RESET}\n"; \
-			exit 1; \
-		fi; \
-		printf "${YELLOW}[WARN] Transient API error, retrying... ($$retries attempt(s) left)${RESET}\n"; \
-		sleep 15; \
-	done
+analyse-repo: install-claude ## run the analyser agent to update REPOSITORY_ANALYSIS.md
+	@"$(CLAUDE_BIN)" --print \
+		--allowedTools "Write" \
+		--agent .github/agents/analyser.md \
+		"Analyze the repository and update REPOSITORY_ANALYSIS.md"
 
 summarise-changes: install-copilot ## summarise changes since the most recent release/tag
 	@"$(COPILOT_BIN)" -p "Show me the commits since the last release/tag and summarise them" --allow-tool 'shell(git)' --model "$(DEFAULT_AI_MODEL)" --agent summarise

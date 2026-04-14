@@ -19,6 +19,7 @@ Covered outputs:
 from __future__ import annotations
 
 import math
+import os
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -299,7 +300,7 @@ def test_notebook_executes() -> None:
     that the mirror tests validate.
     """
     result = subprocess.run(  # nosec
-        [sys.executable, "-m", "marimo", "export", "html", str(_NOTEBOOK), "-o", "/dev/null"],
+        [sys.executable, "-m", "marimo", "export", "html", "--no-sandbox", str(_NOTEBOOK), "-o", os.devnull],
         capture_output=True,
         text=True,
     )
