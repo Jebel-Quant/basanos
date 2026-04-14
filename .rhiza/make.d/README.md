@@ -88,8 +88,9 @@ pre-install::
 | `agentic.mk` | AI agent integrations (copilot, claude) |
 | `book.mk` | Documentation book generation |
 | `bootstrap.mk` | Installation and environment setup |
-| `docs.mk` | Documentation generation (pdoc) |
-| `gh-aw.mk` | GitHub Agentic Workflows |
+| `custom-env.mk` | Example environment customizations |
+| `custom-task.mk` | Example custom tasks |
+| `docker.mk` | Docker build and run targets |
 | `github.mk` | GitHub CLI integrations |
 | `marimo.mk` | Marimo notebook support |
 | `quality.mk` | Code quality and formatting |
@@ -108,8 +109,6 @@ pre-install::
 
 **Section Headers**: Title Case with `##@`
 - `##@ Bootstrap`, `##@ GitHub Helpers`
-
-See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md#naming-conventions-and-organization-patterns) for comprehensive naming guidelines.
 
 ### Available Hooks
 Add these to your root `Makefile` using double-colon syntax (`::`):

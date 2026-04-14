@@ -1,5 +1,7 @@
 # Security Policy
 
+Overwrite this file using Claude and adjust for the Rhiza dependant.
+
 ## Supported Versions
 
 We actively support the following versions with security updates:
