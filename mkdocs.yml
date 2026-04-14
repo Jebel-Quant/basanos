@@ -1,3 +1,5 @@
+INHERIT: docs/mkdocs-base.yml
+
 site_name: basanos
 site_description: Correlation-aware portfolio optimization and analytics for Python.
 site_url: https://jebel-quant.github.io/basanos/
@@ -5,16 +7,6 @@ repo_url: https://github.com/Jebel-Quant/basanos
 repo_name: Jebel-Quant/basanos
 
 docs_dir: docs
-site_dir: _mkdocs
-
-theme:
-  name: material
-  features:
-    - navigation.tabs
-    - navigation.sections
-    - navigation.top
-    - search.suggest
-    - search.highlight
 
 plugins:
   - search
@@ -33,17 +25,6 @@ plugins:
             show_signature_annotations: true
             members: true
             show_submodules: true
-
-markdown_extensions:
-  - md_in_html
-  - pymdownx.highlight
-  - pymdownx.superfences
-  - pymdownx.snippets:
-      base_path: ["."]
-  - admonition
-  - toc:
-      permalink: true
-      toc_depth: 3
 
 nav:
   - Home: index.md
