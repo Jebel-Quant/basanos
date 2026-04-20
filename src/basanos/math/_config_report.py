@@ -1,9 +1,9 @@
 """HTML report generation for BasanosConfig parameter analysis.
 
-This module defines the :class:`ConfigReport` facade which produces a
+This module defines the `ConfigReport` facade which produces a
 self-contained HTML document summarising all configuration parameters,
 their constraints and descriptions, an interactive lambda-sweep chart
-(when a :class:`~basanos.math.optimizer.BasanosEngine` is provided), a
+(when a `BasanosEngine` is provided), a
 shrinkage-guidance table, and a theory section on Ledoit-Wolf shrinkage.
 
 Examples:
@@ -119,7 +119,7 @@ def _lambda_sweep_fig(engine: BasanosEngine, n_points: int = 21) -> go.Figure:
         n_points: Number of evenly-spaced λ values to evaluate in [0, 1].
 
     Returns:
-        A :class:`plotly.graph_objects.Figure`.
+        A `Figure`.
     """
     lambdas = np.linspace(0.0, 1.0, n_points)
     sharpes = [engine.sharpe_at_shrink(float(lam)) for lam in lambdas]
@@ -237,7 +237,7 @@ def _figure_div(fig: go.Figure, include_plotlyjs: bool | str) -> str:
 
 @dataclasses.dataclass(frozen=True)
 class ConfigReport:
-    """Facade for generating HTML reports from a :class:`~basanos.math.optimizer.BasanosConfig`.
+    """Facade for generating HTML reports from a `BasanosConfig`.
 
     Produces a self-contained, dark-themed HTML document with:
 
@@ -276,7 +276,7 @@ class ConfigReport:
             title: HTML ``<title>`` text and visible page heading.
 
         Returns:
-            A complete HTML document as a :class:`str`.
+            A complete HTML document as a `str`.
         """
         cfg = self.config
 
@@ -336,7 +336,7 @@ class ConfigReport:
             title: HTML ``<title>`` text and visible page heading.
 
         Returns:
-            The resolved :class:`pathlib.Path` of the written file.
+            The resolved `Path` of the written file.
         """
         p = Path(path)
         if not p.suffix:

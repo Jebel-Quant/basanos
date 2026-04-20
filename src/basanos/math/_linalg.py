@@ -168,7 +168,7 @@ def inv_a_norm(
     Cholesky decomposition is attempted first for numerical stability; the
     solver falls back to LU decomposition for non-positive-definite matrices.
     If the condition number of the valid sub-matrix exceeds *cond_threshold*,
-    an :class:`~basanos.exceptions.IllConditionedMatrixWarning` is emitted.
+    an `IllConditionedMatrixWarning` is emitted.
 
     Args:
         vector (np.ndarray): Input vector.
@@ -221,7 +221,7 @@ def solve(
     Cholesky decomposition is attempted first for numerical stability; the
     solver falls back to LU decomposition for non-positive-definite matrices.
     If the condition number of the valid sub-matrix exceeds *cond_threshold*,
-    an :class:`~basanos.exceptions.IllConditionedMatrixWarning` is emitted.
+    an `IllConditionedMatrixWarning` is emitted.
 
     Args:
         matrix (np.ndarray): Square coefficient matrix A.

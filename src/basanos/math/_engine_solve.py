@@ -1,8 +1,8 @@
 """Solve/position mixin for BasanosEngine.
 
-This private module contains :class:`_SolveMixin`, which provides the
+This private module contains `_SolveMixin`, which provides the
 ``_iter_matrices`` and ``_iter_solve`` generator methods.  Separating them
-from :mod:`basanos.math.optimizer` keeps the engine facade lean and makes
+from `optimizer` keeps the engine facade lean and makes
 the per-timestamp solve logic independently readable and testable.
 """
 
@@ -33,7 +33,7 @@ _logger = logging.getLogger(__name__)
 class SolveStatus(StrEnum):
     """Solver outcome labels for each timestamp.
 
-    Since :class:`SolveStatus` inherits from :class:`str` via ``StrEnum``,
+    Since `SolveStatus` inherits from `str` via ``StrEnum``,
     values compare equal to their string equivalents (e.g.
     ``SolveStatus.VALID == "valid"``), preserving backward compatibility
     with code that matches on string literals.
@@ -58,7 +58,7 @@ class MatrixBundle:
     """Container for the covariance matrix and any mode-specific auxiliary state.
 
     Wrapping the covariance matrix in a dataclass decouples
-    :meth:`_SolveMixin._compute_position` from the raw array so that future
+    `_compute_position` from the raw array so that future
     covariance modes (e.g. DCC-GARCH, RMT-cleaned) can carry additional fields
     through the same interface without changing the method signature.
 
@@ -70,30 +70,30 @@ class MatrixBundle:
     matrix: np.ndarray
 
 
-#: Yield type for :meth:`_SolveMixin._iter_matrices`:
+#: Yield type for `_iter_matrices`:
 #: ``(i, t, mask, bundle)`` where ``bundle`` is ``None`` during warmup/no-data.
 MatrixYield: TypeAlias = tuple[int, datetime.date, np.ndarray, MatrixBundle | None]
 
-#: Yield type for :meth:`_SolveMixin._iter_solve`:
+#: Yield type for `_iter_solve`:
 #: ``(i, t, mask, pos_or_none, status)`` where ``pos_or_none`` is ``None`` only for warmup rows.
 SolveYield: TypeAlias = tuple[int, datetime.date, np.ndarray, np.ndarray | None, SolveStatus]
 
 
 @dataclasses.dataclass(frozen=True)
 class WarmupState:
-    """Final state produced by a full batch solve; consumed by :meth:`BasanosStream.from_warmup`.
+    """Final state produced by a full batch solve; consumed by `from_warmup`.
 
-    Returned by :meth:`BasanosEngine.warmup_state` and used by
-    :meth:`BasanosStream.from_warmup` to initialise the streaming state without
-    coupling to the private :meth:`~_SolveMixin._iter_solve` generator.
+    Returned by `warmup_state` and used by
+    `from_warmup` to initialise the streaming state without
+    coupling to the private `_iter_solve` generator.
 
     Attributes:
         prev_cash_pos: Cash positions at the last warmup row, shape
             ``(n_assets,)``.  ``NaN`` for assets that were still in their
             own warmup period.
         corr_iir_state: Final IIR filter memory from the EWM correlation pass,
-            or ``None`` when using :class:`~basanos.math.SlidingWindowConfig`.
-            :meth:`BasanosStream.from_warmup` reads these arrays to seed the
+            or ``None`` when using `SlidingWindowConfig`.
+            `from_warmup` reads these arrays to seed the
             incremental ``lfilter`` state without a second pass over the
             warmup data.
     """
@@ -106,7 +106,7 @@ class _SolveMixin:
     """Mixin that provides ``_iter_matrices`` and ``_iter_solve`` generators.
 
     Consumers must also inherit from (or satisfy the interface of)
-    :class:`~basanos.math._engine_protocol._EngineProtocol` so that
+    `_EngineProtocol` so that
     ``self.assets``, ``self.prices``, ``self.mu``, ``self.cfg``, ``self.cor``,
     and ``self.ret_adj`` are all available.
     """
@@ -162,7 +162,7 @@ class _SolveMixin:
         Returns:
             tuple: ``(expected_mu, early_yield)`` where ``expected_mu`` is
             ``np.nan_to_num(mu_row[mask])`` and ``early_yield`` is either a
-            complete :data:`SolveYield` tuple (when the caller should yield
+            complete `SolveYield` tuple (when the caller should yield
             and continue) or ``None`` (when the caller should proceed to solve).
         """
         if not mask.any():
@@ -185,9 +185,9 @@ class _SolveMixin:
     ) -> SolveYield:
         """Apply the normalisation-denominator guard and return the appropriate yield tuple.
 
-        Emits a :data:`~logging.WARNING` and returns a
-        :attr:`~SolveStatus.DEGENERATE` yield when *denom* is non-finite or at
-        or below *denom_tol*; otherwise returns a :attr:`~SolveStatus.VALID`
+        Emits a `WARNING` and returns a
+        `DEGENERATE` yield when *denom* is non-finite or at
+        or below *denom_tol*; otherwise returns a `VALID`
         yield with normalised positions ``pos_raw / denom``.
 
         Args:
@@ -232,12 +232,12 @@ class _SolveMixin:
     ) -> SolveYield:
         """Shared solve step used by both covariance branches.
 
-        Computes the normalisation denominator via :func:`~basanos.math._linalg.inv_a_norm`
-        and solves the linear system via :func:`~basanos.math._linalg.solve`, then
-        delegates to :meth:`_denom_guard_yield`.  Handles
+        Computes the normalisation denominator via `inv_a_norm`
+        and solves the linear system via `solve`, then
+        delegates to `_denom_guard_yield`.  Handles
         :exc:`~basanos.exceptions.SingularMatrixError` from both calls.
 
-        Accepting a :class:`MatrixBundle` instead of a raw array means future
+        Accepting a `MatrixBundle` instead of a raw array means future
         covariance modes can attach auxiliary state to the bundle without
         changing this method's signature.
 
@@ -304,10 +304,10 @@ class _SolveMixin:
     ) -> None:
         """Replay positions across all rows, filling position arrays.
 
-        Iterates :meth:`_iter_solve`, writes risk and cash positions into the
+        Iterates `_iter_solve`, writes risk and cash positions into the
         provided pre-allocated arrays.  Both arrays are mutated **in-place**.
 
-        When :attr:`BasanosConfig.max_turnover` is set, the L1 norm of the
+        When `max_turnover` is set, the L1 norm of the
         position change ``sum(|x_t - x_{t-1}|)`` is capped at that value by
         proportionally scaling the delta toward the previous position before
         writing to ``cash_pos_np``.
@@ -329,21 +329,21 @@ class _SolveMixin:
     def _iter_matrices(self: _EngineProtocol) -> Generator[MatrixYield, None, None]:
         r"""Yield ``(i, t, mask, bundle)`` for every timestamp.
 
-        ``bundle`` is a :class:`MatrixBundle` wrapping the effective
+        ``bundle`` is a `MatrixBundle` wrapping the effective
         $(n_{\text{sub}},\ n_{\text{sub}})$ correlation matrix for the
         active assets (those with finite prices at timestamp *t*).  Yields
         ``None`` when no valid matrix is available (e.g., before the warm-up
         period has elapsed or when no assets have finite prices).
 
-        The behaviour depends on :attr:`BasanosConfig.covariance_config`:
+        The behaviour depends on `covariance_config`:
 
-        * :class:`EwmaShrinkConfig`:  Applies :func:`~basanos.math._signal.shrink2id` to
+        * `EwmaShrinkConfig`:  Applies `shrink2id` to
           the EWMA correlation matrix (same computation as
-          :attr:`cash_position`).
-        * :class:`SlidingWindowConfig`: Builds a
-          :class:`~basanos.math._factor_model.FactorModel` from the last
+          `cash_position`).
+        * `SlidingWindowConfig`: Builds a
+          `FactorModel` from the last
           ``cfg.covariance_config.window`` rows of vol-adjusted returns and returns its
-          :attr:`~basanos.math._factor_model.FactorModel.covariance`.
+          `covariance`.
 
         Yields:
             tuple: ``(i, t, mask, bundle)`` where
@@ -352,7 +352,7 @@ class _SolveMixin:
             * ``t``: Timestamp value from ``self.prices["date"]``.
             * ``mask`` (*np.ndarray[bool]*): Shape ``(n_assets,)``; ``True``
               for assets with finite prices at row *i*.
-            * ``bundle`` (:class:`MatrixBundle` | ``None``): Covariance bundle
+            * ``bundle`` (`MatrixBundle` | ``None``): Covariance bundle
               of shape ``(mask.sum(), mask.sum())``, or ``None``.
         """
         assets = self.assets
@@ -402,9 +402,9 @@ class _SolveMixin:
         ``numpy.linalg.solve`` call (which maps to a single batched LAPACK
         routine).  Denominators are computed directly from the batch result as
         ``sqrt(mu_i · pos_i)`` — algebraically identical to the per-row
-        :func:`~basanos.math._linalg.inv_a_norm` call.
+        `inv_a_norm` call.
 
-        Falls back to row-by-row :meth:`_compute_position` when
+        Falls back to row-by-row `_compute_position` when
         ``numpy.linalg.solve`` raises ``LinAlgError`` (any matrix in the batch
         is singular).
 
@@ -412,10 +412,10 @@ class _SolveMixin:
             group: List of ``(i, t, mask, expected_mu, matrix)`` tuples; all
                 entries share the same boolean mask and therefore the same
                 ``n_active x n_active`` matrix shape.
-            denom_tol: Passed through to :meth:`_denom_guard_yield`.
+            denom_tol: Passed through to `_denom_guard_yield`.
 
         Returns:
-            dict: Mapping from row index ``i`` to its :data:`SolveYield`.
+            dict: Mapping from row index ``i`` to its `SolveYield`.
         """
         results: dict[int, SolveYield] = {}
         a_stack = np.stack([row[4] for row in group])  # (G, n, n)
@@ -458,21 +458,21 @@ class _SolveMixin:
 
         Denominators are derived from the batch solution as
         $\sqrt{\mu_i \cdot \mathbf{pos}_i} = \sqrt{\mu_i^\top \Sigma_i^{-1} \mu_i}$,
-        matching the scalar :func:`~basanos.math._linalg.inv_a_norm` result up
+        matching the scalar `inv_a_norm` result up
         to float64 rounding.
 
         Any group whose batch solve raises ``LinAlgError`` (singular matrix in
-        the batch) falls back to sequential :meth:`_compute_position` for that
+        the batch) falls back to sequential `_compute_position` for that
         group only.
 
         Args:
             mu_np: Signal matrix, shape ``(T, n_assets)``.
-            matrix_yields: Pre-collected list from :meth:`_iter_matrices`
+            matrix_yields: Pre-collected list from `_iter_matrices`
                 (the EwmaShrinkConfig branch).
             denom_tol: Denominator guard tolerance.
 
         Yields:
-            :data:`SolveYield` tuples in original row order.
+            `SolveYield` tuples in original row order.
         """
         # First pass: categorise each row as early-exit or a solve candidate.
         all_results: dict[int, SolveYield] = {}
@@ -504,22 +504,22 @@ class _SolveMixin:
     def _iter_solve(self: _EngineProtocol) -> Generator[SolveYield, None, None]:
         r"""Yield ``(i, t, mask, pos_or_none, status)`` for every timestamp.
 
-        Iterates :meth:`_iter_matrices` for the per-row covariance sub-matrix,
-        then applies :meth:`_row_early_check` (mask/signal guard) and
-        :meth:`_compute_position` (linear solve and denominator guard).  The two
+        Iterates `_iter_matrices` for the per-row covariance sub-matrix,
+        then applies `_row_early_check` (mask/signal guard) and
+        `_compute_position` (linear solve and denominator guard).  The two
         covariance modes differ only in how ``matrix`` is built, which
-        :meth:`_iter_matrices` already encapsulates.
+        `_iter_matrices` already encapsulates.
 
-        * ``matrix is None`` → :attr:`~SolveStatus.WARMUP` (sliding-window before
-          sufficient history) or :attr:`~SolveStatus.DEGENERATE` otherwise.
-        * Signal all-zero → :attr:`~SolveStatus.ZERO_SIGNAL`.
-        * Singular or degenerate solve → :attr:`~SolveStatus.DEGENERATE`.
-        * Success → :attr:`~SolveStatus.VALID`.
+        * ``matrix is None`` → `WARMUP` (sliding-window before
+          sufficient history) or `DEGENERATE` otherwise.
+        * Signal all-zero → `ZERO_SIGNAL`.
+        * Singular or degenerate solve → `DEGENERATE`.
+        * Success → `VALID`.
 
-        For the :class:`~basanos.math.EwmaShrinkConfig` path the solve step is
+        For the `EwmaShrinkConfig` path the solve step is
         vectorised: rows are grouped by their active-asset mask pattern and each
         group is solved via a single batched ``numpy.linalg.solve`` call (see
-        :meth:`_iter_solve_ewma_batched`).  The :class:`~basanos.math.SlidingWindowConfig`
+        `_iter_solve_ewma_batched`).  The `SlidingWindowConfig`
         path retains a sequential per-row solve because the factor-model matrices
         are constructed lazily and may vary in numerical character across rows.
 
@@ -527,10 +527,10 @@ class _SolveMixin:
 
             **Dual-path maintenance obligation**: this method dispatches to two
             fundamentally different implementations.  Any change to solve
-            semantics — a new edge case, a new :class:`SolveStatus` value, or a
+            semantics — a new edge case, a new `SolveStatus` value, or a
             change to denominator logic — **must be applied to both branches**:
 
-            * :meth:`_iter_solve_ewma_batched` / :meth:`_batched_solve_group`
+            * `_iter_solve_ewma_batched` / `_batched_solve_group`
               (EwmaShrink vectorised path)
             * The sequential ``_compute_position`` loop below
               (SlidingWindow path)
@@ -543,7 +543,7 @@ class _SolveMixin:
 
         Yields:
             SolveYield: ``(i, t, mask, pos_or_none, status)`` — see
-            :data:`SolveYield` for detailed field descriptions.
+            `SolveYield` for detailed field descriptions.
         """
         mu_np = self.mu.select(self.assets).to_numpy()
         is_sw = isinstance(self.cfg.covariance_config, SlidingWindowConfig)
@@ -571,12 +571,12 @@ class _SolveMixin:
             yield _SolveMixin._compute_position(i, t, mask, expected_mu, bundle, self.cfg.denom_tol)
 
     def warmup_state(self: _EngineProtocol) -> WarmupState:
-        """Return the final :class:`WarmupState` after replaying the full batch.
+        """Return the final `WarmupState` after replaying the full batch.
 
         Encapsulates the position replay loop that was previously duplicated
-        inside :meth:`BasanosStream.from_warmup`.  By centralising the loop
-        here, :meth:`~BasanosStream.from_warmup` no longer needs to call the
-        private :meth:`_iter_solve` generator directly.
+        inside `from_warmup`.  By centralising the loop
+        here, `from_warmup` no longer needs to call the
+        private `_iter_solve` generator directly.
 
         Returns:
             WarmupState: A frozen dataclass with:

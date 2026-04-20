@@ -4,8 +4,8 @@ Provides information-coefficient (IC) metrics as a reusable mixin so that
 ``optimizer.py`` stays focused on the core position-solving logic.
 
 Classes in this module are **private implementation details**.  The public API
-is :class:`~basanos.math.optimizer.BasanosEngine`, which inherits from
-:class:`_SignalEvaluatorMixin`.
+is `BasanosEngine`, which inherits from
+`_SignalEvaluatorMixin`.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class _SignalEvaluatorMixin:
     """Mixin providing cross-sectional information-coefficient (IC) metrics.
 
-    The consuming class must satisfy :class:`~._engine_protocol._EngineProtocol`,
+    The consuming class must satisfy `_EngineProtocol`,
     i.e. it must expose:
 
     * ``assets`` — list of asset column names
@@ -97,8 +97,8 @@ class _SignalEvaluatorMixin:
             are available for a given timestamp).
 
         See Also:
-            :py:attr:`rank_ic` — Spearman variant, more robust to outliers.
-            :py:attr:`ic_mean`, :py:attr:`ic_std`, :py:attr:`icir` — summary
+            `rank_ic` — Spearman variant, more robust to outliers.
+            `ic_mean`, `ic_std`, `icir` — summary
             statistics.
         """
         return self._ic_series(use_rank=False)
@@ -107,7 +107,7 @@ class _SignalEvaluatorMixin:
     def rank_ic(self: _EngineProtocol) -> pl.DataFrame:
         """Cross-sectional Spearman Rank Information Coefficient time series.
 
-        Identical to :py:attr:`ic` but uses the Spearman rank correlation
+        Identical to `ic` but uses the Spearman rank correlation
         instead of the Pearson correlation, making it more robust to fat-tailed
         return distributions and outliers.
 
@@ -116,8 +116,8 @@ class _SignalEvaluatorMixin:
             ``rank_ic`` is a ``Float64`` series.
 
         See Also:
-            :py:attr:`ic` — Pearson variant.
-            :py:attr:`rank_ic_mean`, :py:attr:`rank_ic_std` — summary
+            `ic` — Pearson variant.
+            `rank_ic_mean`, `rank_ic_std` — summary
             statistics.
         """
         return self._ic_series(use_rank=True)

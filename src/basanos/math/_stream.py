@@ -2,15 +2,15 @@
 
 This private module defines three public symbols:
 
-* :class:`_StreamState` — mutable dataclass that persists all O(N²) IIR
+* `_StreamState` — mutable dataclass that persists all O(N²) IIR
   filter and EWMA accumulator state between consecutive
-  :meth:`BasanosStream.step` calls.  Kept separate from the engine so the
+  `step` calls.  Kept separate from the engine so the
   state layout can be read and tested in isolation.
-* :class:`StepResult` — frozen dataclass returned by each
-  :meth:`BasanosStream.step` call.
-* :class:`BasanosStream` — incremental façade with a
-  :meth:`~BasanosStream.from_warmup` classmethod and a
-  :meth:`~BasanosStream.step` method.
+* `StepResult` — frozen dataclass returned by each
+  `step` call.
+* `BasanosStream` — incremental façade with a
+  `from_warmup` classmethod and a
+  `step` method.
 
 IIR state model
 ---------------
@@ -71,8 +71,8 @@ from ._signal import shrink2id
 
 _logger = logging.getLogger(__name__)
 
-#: Increment this when the :func:`BasanosStream.save` archive layout changes in
-#: a backward-incompatible way.  :func:`BasanosStream.load` asserts the stored
+#: Increment this when the `save` archive layout changes in
+#: a backward-incompatible way.  `load` asserts the stored
 #: value matches before deserialising anything, so callers get a clear error
 #: instead of a silent ``KeyError`` or wrong state.
 _SAVE_FORMAT_VERSION: int = 2
@@ -80,7 +80,7 @@ _SAVE_FORMAT_VERSION: int = 2
 
 @dataclasses.dataclass
 class _StreamState:
-    """Mutable state carrier for one :class:`BasanosStream` instance.
+    """Mutable state carrier for one `BasanosStream` instance.
 
     All arrays are updated in-place (or replaced) by ``BasanosStream.step()``.
     The class is intentionally *not* frozen so that the step method can modify
@@ -171,9 +171,9 @@ class _StreamState:
     sw_ret_buf: np.ndarray | None = None  # (W, N) rolling buffer, or None
 
 
-#: Keys that :meth:`BasanosStream.save` writes to the ``.npz`` archive for
-#: :class:`_StreamState` fields.  Derived automatically from
-#: :func:`dataclasses.fields` so that adding a new field to ``_StreamState``
+#: Keys that `save` writes to the ``.npz`` archive for
+#: `_StreamState` fields.  Derived automatically from
+#: `fields` so that adding a new field to ``_StreamState``
 #: is sufficient — no manual update here is required.
 #:
 #: The three non-state keys (``format_version``, ``cfg_json``, ``assets``) are
@@ -195,13 +195,13 @@ class StepResult:
     Attributes:
         date: The timestamp or date label for this step.  The type mirrors
             whatever is stored in the ``'date'`` column of the input prices
-            DataFrame (typically a Python :class:`datetime.date`,
-            :class:`datetime.datetime`, or a Polars temporal scalar).
+            DataFrame (typically a Python `date`,
+            `datetime`, or a Polars temporal scalar).
         cash_position: Optimised cash-position vector, shape ``(N,)``.
             Entries are ``NaN`` for assets that are still in the EWMA warmup
             period or that are otherwise inactive at this step.
         status: Solver outcome label for this timestep
-            (:class:`~basanos.math.SolveStatus`).  Since :class:`SolveStatus`
+            (`SolveStatus`).  Since `SolveStatus`
             is a ``StrEnum``, values compare equal to their string equivalents
             (e.g. ``result.status == "valid"`` is ``True``):
 
@@ -308,7 +308,7 @@ def _ewm_vol_accumulators_from_batch(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     r"""Compute final EWMA volatility accumulators from a batch of returns.
 
-    Implements the same IIR recurrence as :meth:`BasanosStream.step` but
+    Implements the same IIR recurrence as `step` but
     vectorised over *T* timesteps using ``scipy.signal.lfilter``.  The five
     returned arrays are identical to the accumulators that would result from
     feeding each row of *returns* through the scalar step-by-step recurrence::
@@ -341,7 +341,7 @@ def _ewm_vol_accumulators_from_batch(
     Notes:
     -----
     This function is the shared implementation used by
-    :meth:`BasanosStream.from_warmup` for both the log-return (``vola_*``)
+    `from_warmup` for both the log-return (``vola_*``)
     and pct-return (``pct_*``) accumulators.  Keeping a single implementation
     here guarantees that the batch and incremental paths stay in sync when the
     recurrence definition changes.
@@ -366,10 +366,10 @@ def _ewm_vol_accumulators_from_batch(
 
 
 class BasanosStream:
-    """Incremental (streaming) optimiser backed by a single :class:`_StreamState`.
+    """Incremental (streaming) optimiser backed by a single `_StreamState`.
 
-    After warming up on a historical batch via :meth:`from_warmup`, each call
-    to :meth:`step` advances the internal state by exactly one row in
+    After warming up on a historical batch via `from_warmup`, each call
+    to `step` advances the internal state by exactly one row in
     O(N^2) time — without revisiting the full warmup history.
 
     Attributes:
@@ -441,11 +441,11 @@ class BasanosStream:
         mu: pl.DataFrame,
         cfg: BasanosConfig,
     ) -> BasanosStream:
-        """Build a :class:`BasanosStream` from a historical warmup batch.
+        """Build a `BasanosStream` from a historical warmup batch.
 
-        Runs :class:`~basanos.math.BasanosEngine` on the full warmup batch
+        Runs `BasanosEngine` on the full warmup batch
         exactly once and extracts the minimal IIR-filter state required for
-        subsequent :meth:`step` calls.  After this call, each :meth:`step`
+        subsequent `step` calls.  After this call, each `step`
         advances the optimiser in O(N^2) time without touching the warmup
         data again.
 
@@ -459,13 +459,13 @@ class BasanosStream:
             Expected-return signal DataFrame aligned row-by-row with
             ``prices``.
         cfg:
-            Engine configuration.  Both :class:`~basanos.math.EwmaShrinkConfig`
-            and :class:`~basanos.math.SlidingWindowConfig` are supported.
+            Engine configuration.  Both `EwmaShrinkConfig`
+            and `SlidingWindowConfig` are supported.
 
         Returns:
         -------
         BasanosStream
-            A stream instance whose :meth:`step` method is ready to accept the
+            A stream instance whose `step` method is ready to accept the
             row immediately following the last warmup row.
 
         Notes:
@@ -473,9 +473,9 @@ class BasanosStream:
         **Short-warmup behaviour with** ``SlidingWindowConfig``: when
         ``len(prices) < cfg.covariance_config.window``, the internal rolling
         buffer (``sw_ret_buf``) is NaN-padded for the missing prefix rows.
-        :meth:`step` returns ``StepResult(status="warmup")`` for each of the
+        `step` returns ``StepResult(status="warmup")`` for each of the
         first ``window - len(prices)`` calls, exactly matching the EWM warmup
-        semantics.  By the time :meth:`step` returns the first non-warmup
+        semantics.  By the time `step` returns the first non-warmup
         result the buffer contains only real data — no NaN-padded rows remain.
 
         Raises:
@@ -597,12 +597,12 @@ class BasanosStream:
         ----------
         new_prices:
             Per-asset prices for the new timestep.  Either a numpy array of
-            shape ``(N,)`` (assets ordered as in :attr:`assets`) or a dict
+            shape ``(N,)`` (assets ordered as in `assets`) or a dict
             mapping asset names to price values.
         new_mu:
             Per-asset expected-return signals, same format as ``new_prices``.
         date:
-            Timestamp for this step (stored in :attr:`StepResult.date`
+            Timestamp for this step (stored in `date`
             verbatim; not used in any computation).
 
         Returns:
@@ -891,13 +891,13 @@ class BasanosStream:
     def save(self, path: str | os.PathLike[str]) -> None:
         """Serialise the stream to a ``.npz`` archive at *path*.
 
-        All :class:`_StreamState` arrays, the configuration, and the asset
-        list are written in a single :func:`numpy.savez` call.  A stream
-        restored via :meth:`load` produces bit-for-bit identical
-        :meth:`step` output.
+        All `_StreamState` arrays, the configuration, and the asset
+        list are written in a single `savez` call.  A stream
+        restored via `load` produces bit-for-bit identical
+        `step` output.
 
         Args:
-            path: Destination file path.  :func:`numpy.savez` appends
+            path: Destination file path.  `savez` appends
                 ``.npz`` automatically when the suffix is absent.
 
         Examples:
@@ -954,15 +954,15 @@ class BasanosStream:
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> BasanosStream:
-        """Restore a stream previously saved with :meth:`save`.
+        """Restore a stream previously saved with `save`.
 
         Args:
-            path: Path to a ``.npz`` archive written by :meth:`save`.
+            path: Path to a ``.npz`` archive written by `save`.
 
         Returns:
-            A :class:`BasanosStream` whose :meth:`step` output is
+            A `BasanosStream` whose `step` output is
             bit-for-bit identical to the original stream at the time
-            :meth:`save` was called.
+            `save` was called.
 
         Examples:
             >>> import tempfile, pathlib, numpy as np

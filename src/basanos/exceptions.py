@@ -3,7 +3,7 @@
 This module defines a hierarchy of exceptions that provide meaningful context
 when linear-algebra or data-validation errors occur within the library.
 
-All exceptions inherit from :class:`BasanosError` so callers can catch the
+All exceptions inherit from `BasanosError` so callers can catch the
 entire family with a single ``except BasanosError`` clause if they prefer.
 
 Examples:
@@ -65,7 +65,7 @@ class DimensionMismatchError(BasanosError, ValueError):
 class SingularMatrixError(BasanosError, ValueError):
     """Raised when a matrix is (numerically) singular and cannot be inverted.
 
-    This wraps :class:`numpy.linalg.LinAlgError` to provide domain-specific
+    This wraps `LinAlgError` to provide domain-specific
     context.
 
     Examples:
@@ -252,7 +252,7 @@ class MonotonicPricesError(BasanosError, ValueError):
 
 
 class FactorModelError(BasanosError, ValueError):
-    """Raised when :class:`~basanos.math.FactorModel` arguments fail validation.
+    """Raised when `FactorModel` arguments fail validation.
 
     Covers shape mismatches between factor loadings, factor covariance, and
     idiosyncratic variance arrays, non-positive idiosyncratic variances,
@@ -269,8 +269,8 @@ class FactorModelError(BasanosError, ValueError):
 class StreamStateCorruptError(BasanosError, ValueError):
     """Raised when a saved stream archive is missing required state keys.
 
-    This is raised by :meth:`BasanosStream.load` when the ``.npz`` archive
-    does not contain one or more keys that the current :class:`_StreamState`
+    This is raised by `load` when the ``.npz`` archive
+    does not contain one or more keys that the current `_StreamState`
     schema requires.  The error message lists the missing keys so callers
     can diagnose schema mismatches immediately rather than seeing a bare
     ``KeyError`` with no context.

@@ -1,6 +1,6 @@
 r"""Factor risk model decomposition (Section 4.1 of basanos.pdf).
 
-This private module provides the :class:`FactorModel` frozen dataclass, which
+This private module provides the `FactorModel` frozen dataclass, which
 encapsulates the three-component factor model
 
 $$
@@ -152,7 +152,7 @@ class FactorModel:
         \mathbf{M} = \mathbf{F}^{-1} + \mathbf{B}^\top\mathbf{D}^{-1}\mathbf{B}
         $$
 
-        which is the matrix actually inverted during :meth:`solve`.  A large
+        which is the matrix actually inverted during `solve`.  A large
         value (above ``_DEFAULT_COND_THRESHOLD`` ≈ 1e12) indicates that the
         Woodbury solve is numerically unreliable.
 
@@ -215,7 +215,7 @@ class FactorModel:
         Args:
             rhs: Right-hand side vector $\mathbf{b}$, shape ``(n,)``.
             cond_threshold: Condition-number threshold above which an
-                :class:`~basanos.exceptions.IllConditionedMatrixWarning` is
+                `IllConditionedMatrixWarning` is
                 emitted.  The check is applied to both ``factor_covariance``
                 ($\mathbf{F}$) and to the inner $k \times k$
                 Woodbury matrix $\mathbf{F}^{-1} + \mathbf{B}^\top
@@ -287,7 +287,7 @@ class FactorModel:
         where $\mathbf{V}_k$ and $\bm{\Sigma}_k$ are the top-*k*
         right singular vectors and singular values of $\mathbf{R}$
         respectively.  When *returns* contains unit-variance columns (as
-        produced by :func:`~basanos.math._signal.vol_adj`), the sample
+        produced by `vol_adj`), the sample
         covariance has unit diagonal; the idiosyncratic term
         $\hat{d}_i = 1 - (\mathbf{B}\mathbf{F}\mathbf{B}^\top)_{ii}$
         absorbs the residual so the full covariance $\hat{\mathbf{C}}^{(k)}$

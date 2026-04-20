@@ -64,19 +64,19 @@ Internal structure
 The implementation is split across focused private modules to keep each file
 readable and independently testable:
 
-* :mod:`basanos.math._config` — :class:`BasanosConfig` and all
+* `_config` — `BasanosConfig` and all
   covariance-mode configuration classes.
-* :mod:`basanos.math._ewm_corr` — :func:`ewm_corr`, the vectorised
+* `_ewm_corr` — `ewm_corr`, the vectorised
   IIR-filter implementation of per-row EWM correlation matrices.
-* :mod:`basanos.math._engine_solve` — private helpers providing the
+* `_engine_solve` — private helpers providing the
   ``_iter_matrices`` and ``_iter_solve`` generators (per-timestamp solve
   logic).
-* :mod:`basanos.math._engine_diagnostics` — private helpers providing
+* `_engine_diagnostics` — private helpers providing
   matrix-quality diagnostics (condition number, effective rank, solver
   residual, signal utilisation).
-* :mod:`basanos.math._engine_ic` — private helpers providing signal
+* `_engine_ic` — private helpers providing signal
   evaluation metrics (IC, Rank IC, ICIR, and summary statistics).
-* This module — :class:`BasanosEngine`, a single flat class that wires
+* This module — `BasanosEngine`, a single flat class that wires
   every method together in clearly delimited sections.
 """
 
@@ -117,7 +117,7 @@ _logger = logging.getLogger(__name__)
 
 
 def _validate_inputs(prices: pl.DataFrame, mu: pl.DataFrame, cfg: "BasanosConfig") -> None:
-    """Validate ``prices``, ``mu``, and ``cfg`` for use with :class:`BasanosEngine`.
+    """Validate ``prices``, ``mu``, and ``cfg`` for use with `BasanosEngine`.
 
     Checks that both DataFrames contain a ``'date'`` column, share identical
     shapes and column sets, contain no non-positive prices, no excessive NaN
@@ -141,7 +141,7 @@ def _validate_inputs(prices: pl.DataFrame, mu: pl.DataFrame, cfg: "BasanosConfig
 
     Warns:
         UserWarning (via logging): If ``cfg.covariance`` is a
-            :class:`SlidingWindowConfig` and
+            `SlidingWindowConfig` and
             ``len(prices) < 2 * cfg.covariance.window``, a warning is emitted
             via the module logger rather than an exception.  This is a
             deliberate soft boundary — callers may intentionally supply data
@@ -272,7 +272,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
             non-decreasing or non-increasing (i.e. they must vary in sign).
         mu: Polars DataFrame of expected-return signals aligned with *prices*.
             Must share the same shape and column names as *prices*.
-        cfg: Immutable :class:`BasanosConfig` controlling EWMA half-lives,
+        cfg: Immutable `BasanosConfig` controlling EWMA half-lives,
             clipping, shrinkage intensity, and AUM.
 
     Examples:
@@ -309,7 +309,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     cfg: BasanosConfig
 
     def __post_init__(self) -> None:
-        """Validate inputs by delegating to :func:`_validate_inputs`."""
+        """Validate inputs by delegating to `_validate_inputs`."""
         _validate_inputs(self.prices, self.mu, self.cfg)
 
     # ------------------------------------------------------------------
@@ -362,7 +362,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
             dict: Mapping ``date -> np.ndarray`` of shape (n_assets, n_assets).
 
         Performance:
-            Delegates to :func:`ewm_corr`, which is O(T·N²) in both
+            Delegates to `ewm_corr`, which is O(T·N²) in both
             time and memory.  The returned dict holds *T* references into the
             result tensor (one N*N view per date); no extra copies are made.
             For large *N* or *T*, prefer ``cor_tensor`` to keep a single
@@ -382,10 +382,10 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     def cor_tensor(self) -> np.ndarray:
         """Return all correlation matrices stacked as a 3-D tensor.
 
-        Converts the per-timestamp correlation dict (see :py:attr:`cor`) into a
+        Converts the per-timestamp correlation dict (see `cor`) into a
         single contiguous NumPy array so that the full history can be saved to
-        a flat ``.npy`` file with :func:`numpy.save` and reloaded with
-        :func:`numpy.load`.
+        a flat ``.npy`` file with `save` and reloaded with
+        `load`.
 
         Returns:
             np.ndarray: Array of shape ``(T, N, N)`` where *T* is the number of
@@ -435,11 +435,11 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         Supports two covariance modes controlled by ``cfg.covariance_config``:
 
-        * :class:`EwmaShrinkConfig` (default): Computes EWMA correlations, applies
+        * `EwmaShrinkConfig` (default): Computes EWMA correlations, applies
           linear shrinkage toward the identity, and solves a normalised linear
           system $C\,x = \mu$ per timestamp via Cholesky / LU.
 
-        * :class:`SlidingWindowConfig`: At each timestamp uses the
+        * `SlidingWindowConfig`: At each timestamp uses the
           ``cfg.covariance_config.window`` most recent vol-adjusted returns to fit a
           rank-``cfg.covariance_config.n_factors`` factor model via truncated SVD and
           solves the system via the Woodbury identity at $O(k^3 + kn)$ rather
@@ -453,7 +453,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         Performance:
             For ``ewma_shrink``: dominant cost is ``self.cor`` (O(T·N²) time,
-            O(T·N²) memory — see :func:`ewm_corr`).  The per-timestamp
+            O(T·N²) memory — see `ewm_corr`).  The per-timestamp
             linear solve adds O(N³) per row.
 
             For ``sliding_window``: O(T·W·N·k) for sliding SVDs plus
@@ -480,9 +480,9 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
     @property
     def position_status(self) -> pl.DataFrame:
-        """Per-timestamp reason code explaining each :attr:`cash_position` row.
+        """Per-timestamp reason code explaining each `cash_position` row.
 
-        Labels every row with exactly one of four :class:`~basanos.math.SolveStatus`
+        Labels every row with exactly one of four `SolveStatus`
         codes (which compare equal to their string equivalents):
 
         * ``'warmup'``: Insufficient history for the sliding-window
@@ -563,9 +563,9 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         """Construct a Portfolio from the optimized cash positions.
 
         Converts the computed cash positions into a Portfolio using the
-        configured AUM.  The ``cost_per_unit`` from :attr:`cfg` is forwarded
-        so that :attr:`~jquantstats.Portfolio.net_cost_nav` and
-        :attr:`~jquantstats.Portfolio.position_delta_costs` work out
+        configured AUM.  The ``cost_per_unit`` from `cfg` is forwarded
+        so that `net_cost_nav` and
+        `position_delta_costs` work out
         of the box without any further configuration.
 
         Returns:
@@ -579,7 +579,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     def sharpe_at_shrink(self, shrink: float) -> float:
         r"""Return the annualised portfolio Sharpe ratio for the given shrinkage weight.
 
-        Constructs a new :class:`BasanosEngine` with all parameters identical to
+        Constructs a new `BasanosEngine` with all parameters identical to
         ``self`` except that ``cfg.shrink`` is replaced by ``shrink``, then
         returns the annualised Sharpe ratio of the resulting portfolio.
 
@@ -597,7 +597,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         Args:
             shrink: Retention weight λ ∈ [0, 1].  See
-                :attr:`BasanosConfig.shrink` for full documentation.
+                `shrink` for full documentation.
 
         Returns:
             Annualised Sharpe ratio of the portfolio returns as a ``float``.
@@ -606,7 +606,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         Raises:
             ValidationError: When ``shrink`` is outside [0, 1] (delegated to
-                :class:`BasanosConfig` field validation).
+                `BasanosConfig` field validation).
 
         Examples:
             >>> import numpy as np
@@ -629,12 +629,12 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     def sharpe_at_window_factors(self, window: int, n_factors: int) -> float:
         r"""Return the annualised portfolio Sharpe ratio for the given sliding-window parameters.
 
-        Constructs a new :class:`BasanosEngine` with ``covariance_mode`` set to
+        Constructs a new `BasanosEngine` with ``covariance_mode`` set to
         ``"sliding_window"`` and the supplied ``window`` / ``n_factors``, keeping
         all other configuration identical to ``self``.
 
         Use this method to sweep ``(W, k)`` and compare the sliding-window
-        estimator against the EWMA baseline (via :meth:`sharpe_at_shrink`).
+        estimator against the EWMA baseline (via `sharpe_at_shrink`).
 
         Args:
             window: Rolling window length $W \geq 1$.
@@ -648,7 +648,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         Raises:
             ValidationError: When ``window`` or ``n_factors`` fail field
-                constraints (delegated to :class:`BasanosConfig`).
+                constraints (delegated to `BasanosConfig`).
 
         Examples:
             >>> import numpy as np
@@ -680,7 +680,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         This provides the baseline answer to *"does the signal add value?"*:
         a real signal should produce a higher Sharpe than the naïve benchmark.
-        Combined with :meth:`sharpe_at_shrink`, this yields a three-way
+        Combined with `sharpe_at_shrink`, this yields a three-way
         comparison:
 
         +--------------------+----------------------------------------------+
@@ -721,14 +721,14 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
     @property
     def config_report(self) -> "ConfigReport":
-        """Return a :class:`~basanos.math._config_report.ConfigReport` facade for this engine.
+        """Return a `ConfigReport` facade for this engine.
 
-        Returns a :class:`~basanos.math._config_report.ConfigReport` that
+        Returns a `ConfigReport` that
         includes the full **lambda-sweep chart** — an interactive plot of the
-        annualised Sharpe ratio as :attr:`~BasanosConfig.shrink` (λ) is swept
+        annualised Sharpe ratio as `shrink` (λ) is swept
         across [0, 1] — in addition to the parameter table, shrinkage-guidance
         table, and theory section available from
-        :attr:`BasanosConfig.report`.
+        `report`.
 
         Returns:
             basanos.math._config_report.ConfigReport: Report facade with

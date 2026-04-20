@@ -4,8 +4,8 @@ Provides matrix-quality and solver-quality properties as a reusable mixin so
 that ``optimizer.py`` stays focused on the core position-solving logic.
 
 Classes in this module are **private implementation details**.  The public API
-is :class:`~basanos.math.optimizer.BasanosEngine`, which inherits from
-:class:`_DiagnosticsMixin`.
+is `BasanosEngine`, which inherits from
+`_DiagnosticsMixin`.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ _logger = logging.getLogger(__name__)
 class _DiagnosticsMixin:
     """Mixin providing matrix-quality and solver-quality diagnostic properties.
 
-    The consuming class must satisfy :class:`~._engine_protocol._EngineProtocol`,
+    The consuming class must satisfy `_EngineProtocol`,
     i.e. it must expose:
 
     * ``assets`` — list of asset column names
@@ -41,7 +41,7 @@ class _DiagnosticsMixin:
     def condition_number(self: _EngineProtocol) -> pl.DataFrame:
         """Condition number κ of the effective correlation matrix at each timestamp.
 
-        Uses the same covariance mode as :attr:`cash_position`: for
+        Uses the same covariance mode as `cash_position`: for
         ``ewma_shrink`` this is the shrunk EWMA matrix; for ``sliding_window``
         it is the factor-model covariance.  Only the sub-matrix corresponding
         to assets with finite prices at that timestamp is used; rows with no
@@ -77,7 +77,7 @@ class _DiagnosticsMixin:
 
         where $\\lambda_i$ are the eigenvalues of the effective
         correlation matrix (restricted to assets with finite prices at that
-        timestamp).  Uses the same covariance mode as :attr:`cash_position`.
+        timestamp).  Uses the same covariance mode as `cash_position`.
         A value equal to the number of assets indicates a perfectly uniform
         spectrum; a value of 1 indicates a rank-1 matrix.
 
@@ -115,7 +115,7 @@ class _DiagnosticsMixin:
         For a well-posed, well-conditioned system the residual is near machine
         epsilon; large values flag numerical difficulties (near-singular
         matrices, extreme condition numbers, or solver fall-back to LU).
-        Uses the same covariance mode as :attr:`cash_position`.
+        Uses the same covariance mode as `cash_position`.
 
         Returns:
             pl.DataFrame: Two-column DataFrame ``{'date': ..., 'residual': ...}``.
@@ -168,7 +168,7 @@ class _DiagnosticsMixin:
 
         where $C^{-1}\\,\\mu$ is the unnormalised solve result using
         the effective correlation matrix for the current
-        :attr:`~BasanosConfig.covariance_mode`.  When $C = I$
+        `covariance_mode`.  When $C = I$
         (identity) all assets have utilisation 1.  Off-diagonal correlations
         attenuate some assets ($u_i < 1$) and may amplify negatively
         correlated ones ($u_i > 1$).

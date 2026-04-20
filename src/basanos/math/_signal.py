@@ -51,7 +51,7 @@ def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
 
     In Basanos the target matrix is always the *correlation* identity (diagonal
     ones, off-diagonal zeros), and ``lamb`` is supplied via
-    :attr:`~basanos.math.BasanosConfig.shrink` as a user-controlled
+    `shrink` as a user-controlled
     hyperparameter rather than an analytically chosen optimal value.  This is
     appropriate in the context of *regularising a solver* (the system
     $C x = \\mu$ must be well-posed at every timestamp) rather than

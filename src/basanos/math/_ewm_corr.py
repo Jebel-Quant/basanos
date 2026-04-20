@@ -1,8 +1,8 @@
 """Pure-NumPy exponentially weighted moving correlation.
 
-This module contains :func:`ewm_corr`, the vectorised
+This module contains `ewm_corr`, the vectorised
 IIR-filter implementation of per-row EWM correlation matrices.  It is
-separated from :mod:`basanos.math.optimizer` so that the algorithm can
+separated from `optimizer` so that the algorithm can
 be read, tested, and profiled in isolation without loading the full
 engine machinery.
 """
@@ -18,7 +18,7 @@ class _EwmCorrState:
     """Final IIR filter memory after a full EWM correlation pass.
 
     Returned alongside the correlation tensor by
-    :func:`_ewm_corr_with_final_state`.  Pass these values as the ``zi``
+    `_ewm_corr_with_final_state`.  Pass these values as the ``zi``
     arguments to ``scipy.signal.lfilter`` on the next step to continue the
     IIR recurrence without replaying history.
 
@@ -55,16 +55,16 @@ def _corr_from_ewm_accumulators(
 ) -> np.ndarray:
     """Compute a single EWM correlation matrix from running accumulators.
 
-    Single-timestep equivalent of :func:`_ewm_corr_with_final_state`: applies
+    Single-timestep equivalent of `_ewm_corr_with_final_state`: applies
     the same formula to ``(N, N)`` arrays instead of ``(T, N, N)`` tensors.
-    Called by :meth:`BasanosStream.step` after advancing the IIR filter state
+    Called by `step` after advancing the IIR filter state
     by one row to reconstruct the current correlation matrix without revisiting
     history.
 
     This is the **canonical** implementation of the EWM correlation formula
     shared by both the batch and the incremental paths.  Any change to the
     formula (e.g. symmetrisation, denominator guard, NaN-masking) must be made
-    here only — :func:`_ewm_corr_with_final_state` delegates its inner
+    here only — `_ewm_corr_with_final_state` delegates its inner
     computation to this function so that a single definition is maintained.
 
     Args:
@@ -126,11 +126,11 @@ def _ewm_corr_with_final_state(
 ) -> tuple[np.ndarray, _EwmCorrState]:
     """Compute per-row EWM correlation matrices and return the final IIR state.
 
-    Identical to :func:`ewm_corr` but also returns the final filter
-    memory as an :class:`_EwmCorrState`.  Callers that need both the
+    Identical to `ewm_corr` but also returns the final filter
+    memory as an `_EwmCorrState`.  Callers that need both the
     correlation tensor *and* the IIR state (e.g.
-    :meth:`BasanosEngine.warmup_state`) should call this function once rather
-    than calling :func:`ewm_corr` and rerunning ``lfilter`` separately
+    `warmup_state`) should call this function once rather
+    than calling `ewm_corr` and rerunning ``lfilter`` separately
     to extract the state.
 
     Args:
@@ -143,8 +143,8 @@ def _ewm_corr_with_final_state(
 
     Returns:
         tuple: ``(result, state)`` where ``result`` has shape ``(T, N, N)``
-        (see :func:`ewm_corr`) and ``state`` is the final
-        :class:`_EwmCorrState`.
+        (see `ewm_corr`) and ``state`` is the final
+        `_EwmCorrState`.
     """
     _t_len, n_assets = data.shape
     beta = com / (1.0 + com)

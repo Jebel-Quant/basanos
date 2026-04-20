@@ -1,7 +1,7 @@
 """Structured JSON logging for basanos.
 
-Provides a :class:`JSONFormatter` that applications can attach to any
-:class:`logging.Handler` to receive log records as JSON objects with a
+Provides a `JSONFormatter` that applications can attach to any
+`Handler` to receive log records as JSON objects with a
 consistent schema::
 
     {
@@ -61,12 +61,12 @@ _STDLIB_RECORD_ATTRS: frozenset[str] = frozenset(
 def _to_serialisable(value: Any) -> Any:
     """Recursively coerce *value* into a JSON-serialisable form.
 
-    Non-finite :class:`float` values (``nan``, ``inf``, ``-inf``) are
-    converted to their :func:`str` representation so that the resulting JSON
+    Non-finite `float` values (``nan``, ``inf``, ``-inf``) are
+    converted to their `str` representation so that the resulting JSON
     is strictly valid (RFC 8259 does not permit ``NaN`` or ``Infinity``).
-    :class:`dict`, :class:`list`, and :class:`tuple` containers are traversed
+    `dict`, `list`, and `tuple` containers are traversed
     recursively; all other non-serialisable types are handled by the
-    ``default=str`` fallback in :func:`json.dumps`.
+    ``default=str`` fallback in `dumps`.
 
     Args:
         value: The value to coerce.
@@ -86,7 +86,7 @@ def _to_serialisable(value: Any) -> Any:
 class JSONFormatter(logging.Formatter):
     """Log formatter that serialises each record as a single-line JSON object.
 
-    Applications can attach this formatter to any :class:`logging.Handler` to
+    Applications can attach this formatter to any `Handler` to
     receive machine-readable, structured log output from the *basanos* library.
 
     The JSON payload always contains:
@@ -97,15 +97,15 @@ class JSONFormatter(logging.Formatter):
     * ``event`` - the fully-formatted log message.
 
     Any extra fields supplied by the caller via the ``extra=`` keyword
-    argument to :meth:`logging.Logger.warning` (or equivalent) are merged
+    argument to `warning` (or equivalent) are merged
     into the JSON object at the top level.  The conventional field for
-    structured context is ``"context"`` (a plain :class:`dict`), but any
+    structured context is ``"context"`` (a plain `dict`), but any
     JSON-serialisable extra key is accepted.
 
-    Non-finite :class:`float` values (``nan``, ``inf``) and other
-    non-serialisable types are converted to their :func:`str` representation
+    Non-finite `float` values (``nan``, ``inf``) and other
+    non-serialisable types are converted to their `str` representation
     automatically, so the formatter never raises on unexpected types (e.g.
-    :data:`math.nan`, :class:`numpy.float64`, :class:`datetime.date`).
+    `nan`, `float64`, `date`).
 
     The produced JSON is strictly RFC 8259-compliant (no bare ``NaN`` or
     ``Infinity`` tokens).
@@ -117,7 +117,7 @@ class JSONFormatter(logging.Formatter):
         logging.getLogger("basanos").addHandler(handler)
 
     Args:
-        datefmt: Optional :func:`time.strftime` format string for the
+        datefmt: Optional `strftime` format string for the
             ``timestamp`` field.  Defaults to ISO-8601
             (``"%Y-%m-%dT%H:%M:%S"``).
     """
@@ -131,7 +131,7 @@ class JSONFormatter(logging.Formatter):
         """Return the log record serialised as a JSON string.
 
         Args:
-            record: The :class:`~logging.LogRecord` to format.
+            record: The `LogRecord` to format.
 
         Returns:
             A single-line JSON string.

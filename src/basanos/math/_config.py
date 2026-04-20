@@ -26,7 +26,7 @@ class CovarianceMode(enum.StrEnum):
 
     Attributes:
         ewma_shrink: EWMA correlation matrix with linear shrinkage toward the
-            identity.  Controlled by :attr:`BasanosConfig.shrink`.
+            identity.  Controlled by `shrink`.
             This is the default mode.
         sliding_window: Rolling-window factor model.  A fixed block of the
             ``W`` most recent volatility-adjusted returns is decomposed via
@@ -42,7 +42,7 @@ class CovarianceMode(enum.StrEnum):
             The system is solved efficiently via the Woodbury identity
             (Section 4.3 of basanos.pdf) at $O(k^3 + kn)$ per step
             rather than $O(n^3)$.
-            Configured via :class:`SlidingWindowConfig`.
+            Configured via `SlidingWindowConfig`.
 
     Examples:
         >>> CovarianceMode.ewma_shrink
@@ -61,14 +61,14 @@ class EwmaShrinkConfig(BaseModel):
     """Covariance configuration for the ``ewma_shrink`` mode.
 
     This is the default covariance mode. No additional parameters are required
-    beyond those already present on :class:`BasanosConfig` (``shrink``, ``corr``).
+    beyond those already present on `BasanosConfig` (``shrink``, ``corr``).
 
     .. note::
         This class is **intentionally minimal**. The only field is the
         ``covariance_mode`` discriminator, which is required to make Pydantic's
-        discriminated-union dispatch work correctly (see :data:`CovarianceConfig`).
+        discriminated-union dispatch work correctly (see `CovarianceConfig`).
         Before adding new EWMA-specific fields here, consider whether the field
-        name clashes with existing :class:`BasanosConfig` top-level fields and
+        name clashes with existing `BasanosConfig` top-level fields and
         whether it would constitute a breaking change to the public API.
 
     Examples:
@@ -190,8 +190,8 @@ CovarianceConfig = Annotated[
 Pydantic selects the correct sub-config based on the ``covariance_mode``
 discriminator field:
 
-* :class:`EwmaShrinkConfig` when ``covariance_mode="ewma_shrink"``
-* :class:`SlidingWindowConfig` when ``covariance_mode="sliding_window"``
+* `EwmaShrinkConfig` when ``covariance_mode="ewma_shrink"``
+* `SlidingWindowConfig` when ``covariance_mode="sliding_window"``
 """
 
 
@@ -248,7 +248,7 @@ class BasanosConfig(BaseModel):
     |                       |                   | light shrinkage for stability. |
     +-----------------------+-------------------+--------------------------------+
 
-    See :func:`~basanos.math._signal.shrink2id` for the full theoretical
+    See `shrink2id` for the full theoretical
     background and academic references (Ledoit & Wolf, 2004; Chen et al., 2010).
 
     Default rationale
@@ -262,7 +262,7 @@ class BasanosConfig(BaseModel):
 
     ``position_scale = 1e6``
         The dimensionless risk position is multiplied by this factor
-        before being passed to :class:`~jquantstats.Portfolio`.
+        before being passed to `Portfolio`.
         A value of 1e6 means positions are expressed in units of one
         million of the base currency, a conventional denomination for
         institutional-scale portfolios where AUM is measured in hundreds
@@ -278,7 +278,7 @@ class BasanosConfig(BaseModel):
         working with very-low-variance synthetic data.
 
     ``max_nan_fraction = 0.9``
-        :class:`~basanos.exceptions.ExcessiveNullsError` is raised
+        `ExcessiveNullsError` is raised
         during construction when the null fraction in any asset price
         column **strictly exceeds** this threshold.  The default 0.9
         permits up to 90 % missing prices (e.g., illiquid or recently
@@ -289,7 +289,7 @@ class BasanosConfig(BaseModel):
 
     Sliding-window mode
     -------------------
-    When ``covariance_config`` is a :class:`SlidingWindowConfig`, the EWMA
+    When ``covariance_config`` is a `SlidingWindowConfig`, the EWMA
     correlation estimator is replaced by a rolling-window factor model
     (Section 4.4 of basanos.pdf).  At each timestamp *t* the
     $W \\times n$ submatrix of the $W$ most recent
@@ -304,11 +304,11 @@ class BasanosConfig(BaseModel):
 
     where $\\hat{D}_t$ enforces unit diagonal.  The linear system
     $\\hat{C}_t^{(W,k)}\\mathbf{x}_t = \\boldsymbol{\\mu}_t$ is solved
-    via the Woodbury identity (:func:`~basanos.math._factor_model.FactorModel.solve`)
+    via the Woodbury identity (`solve`)
     at cost $O(k^3 + kn)$ per step rather than $O(n^3)$.
 
     ``covariance_config``
-        Pass a :class:`SlidingWindowConfig` instance to enable this mode.
+        Pass a `SlidingWindowConfig` instance to enable this mode.
         The required sub-parameters are:
 
         ``window``
@@ -433,7 +433,7 @@ class BasanosConfig(BaseModel):
         """Raise an informative TypeError when the pre-v0.4 flat kwargs are used.
 
         Before v0.4 callers passed ``covariance_mode``, ``n_factors``, and
-        ``window`` as top-level keyword arguments to :class:`BasanosConfig`.
+        ``window`` as top-level keyword arguments to `BasanosConfig`.
         Those fields were replaced by the nested discriminated union
         ``covariance_config``.  Without this validator Pydantic raises a
         generic ``extra_forbidden`` error that gives no migration guidance.
@@ -481,11 +481,11 @@ class BasanosConfig(BaseModel):
         cost_per_unit: float | None = None,
         max_turnover: float | None = _SENTINEL,  # type: ignore[assignment]
     ) -> "BasanosConfig":
-        """Return a new :class:`BasanosConfig` with selected fields replaced.
+        """Return a new `BasanosConfig` with selected fields replaced.
 
-        Unlike :meth:`model_copy`, this method uses explicit constructor kwarg
+        Unlike `model_copy`, this method uses explicit constructor kwarg
         forwarding so that any new required field added to
-        :class:`BasanosConfig` surfaces immediately as a type or lint error at
+        `BasanosConfig` surfaces immediately as a type or lint error at
         the call site, rather than silently failing at runtime.
 
         All parameters default to ``None``, meaning *keep the existing value*.
@@ -507,7 +507,7 @@ class BasanosConfig(BaseModel):
                 units.  Pass ``None`` explicitly to clear an existing budget.
 
         Returns:
-            A new :class:`BasanosConfig` with the specified fields replaced and
+            A new `BasanosConfig` with the specified fields replaced and
             all other fields copied from ``self``.
 
         Examples:
@@ -541,7 +541,7 @@ class BasanosConfig(BaseModel):
 
     @property
     def covariance_mode(self) -> CovarianceMode:
-        """Covariance mode derived from :attr:`covariance_config`."""
+        """Covariance mode derived from `covariance_config`."""
         return self.covariance_config.covariance_mode
 
     @property
@@ -560,14 +560,14 @@ class BasanosConfig(BaseModel):
 
     @property
     def report(self) -> "ConfigReport":
-        """Return a :class:`~basanos.math._config_report.ConfigReport` facade for this config.
+        """Return a `ConfigReport` facade for this config.
 
         Generates a self-contained HTML report summarising all configuration
         parameters, a shrinkage-guidance table, and a theory section on
         Ledoit-Wolf shrinkage.
 
         To also include a lambda-sweep chart (Sharpe vs λ), use
-        :attr:`BasanosEngine.config_report` instead, which requires price and
+        `config_report` instead, which requires price and
         signal data.
 
         Returns:

@@ -1,6 +1,6 @@
 """Deprecation warning utilities for the Basanos package.
 
-Use :func:`warn_deprecated` whenever a public API is scheduled for removal.
+Use `warn_deprecated` whenever a public API is scheduled for removal.
 The standard policy (documented in ``SECURITY.md``) is:
 
 - Deprecated in ``0.x`` → removed no earlier than ``0.x+2``.
@@ -32,7 +32,7 @@ def warn_deprecated(
     replacement: str | None = None,
     stacklevel: int = 2,
 ) -> None:
-    """Emit a :class:`DeprecationWarning` for a deprecated public API.
+    """Emit a `DeprecationWarning` for a deprecated public API.
 
     Call this function at the top of any deprecated function, method, or
     property so users see the warning on the first call.
@@ -43,7 +43,7 @@ def warn_deprecated(
         remove_in: The earliest version in which the symbol may be removed (e.g. ``"0.8"``).
         replacement: Optional name of the recommended replacement.  If provided it is
             included in the warning message.
-        stacklevel: Passed directly to :func:`warnings.warn`.  The default of ``2``
+        stacklevel: Passed directly to `warn`.  The default of ``2``
             means the warning points at the *caller* of the deprecated code rather than
             at this helper function.
 

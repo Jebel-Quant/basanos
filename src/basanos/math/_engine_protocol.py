@@ -1,18 +1,18 @@
 """Structural protocol defining the attribute contract for BasanosEngine helpers.
 
-:class:`_EngineProtocol` is the single source of truth for the attributes and
-methods that the private helper modules (:mod:`basanos.math._engine_diagnostics`,
-:mod:`basanos.math._engine_ic`, and :mod:`basanos.math._engine_solve`) expect to
+`_EngineProtocol` is the single source of truth for the attributes and
+methods that the private helper modules (`_engine_diagnostics`,
+`_engine_ic`, and `_engine_solve`) expect to
 be provided by the concrete consuming class
-(:class:`~basanos.math.optimizer.BasanosEngine`).
+(`BasanosEngine`).
 
-Using a :class:`~typing.Protocol` instead of annotation-only class variables
+Using a `Protocol` instead of annotation-only class variables
 makes the contract formally verifiable by type checkers (``ty``, ``mypy``,
 ``pyright``) and removes the need for runtime stubs that would only be
 discovered when an attribute is first accessed.
 
 Classes in this module are **private implementation details**.  The public API
-is :class:`~basanos.math.optimizer.BasanosEngine`.
+is `BasanosEngine`.
 
 ----
 
@@ -31,7 +31,7 @@ instead of the plain ``self`` convention:
 Why this pattern?
 
 1. **Type-checker verification.**  Annotating ``self`` with
-   :class:`_EngineProtocol` tells ``ty``/``mypy``/``pyright`` that the
+   `_EngineProtocol` tells ``ty``/``mypy``/``pyright`` that the
    method may only be called on objects that satisfy the protocol.  Any
    attribute access on ``self`` inside the method is validated against the
    protocol definition — missing attributes become type errors rather than
@@ -42,18 +42,18 @@ Why this pattern?
    annotation* but no actual attribute.  The annotation is invisible to the
    type checker on ``self`` inside methods, and the attribute does not exist
    at runtime unless the concrete subclass initialises it.  Using
-   :class:`_EngineProtocol` as the ``self`` type avoids both problems:
+   `_EngineProtocol` as the ``self`` type avoids both problems:
    the protocol is the single, authoritative declaration of what the host
    class must provide.
 
 3. **How to add new engine methods.**
    a. Check whether all attributes your method needs are already declared on
-      :class:`_EngineProtocol`.  If not, add them there.
+      `_EngineProtocol`.  If not, add them there.
    b. Write the method in the appropriate helper module with
       ``self: _EngineProtocol`` (imported under ``TYPE_CHECKING`` to avoid a
       circular import at runtime).
    c. The method is automatically available on
-      :class:`~basanos.math.optimizer.BasanosEngine` via inheritance —
+      `BasanosEngine` via inheritance —
       no changes to ``optimizer.py`` are needed.  See ``CONTRIBUTING.md``
       for details.
 
@@ -94,8 +94,8 @@ class _EngineProtocol(Protocol):
     """Structural contract for classes that consume the engine helper modules.
 
     Any class that satisfies this protocol by providing the listed attributes
-    and methods can safely use methods from :class:`_DiagnosticsMixin`,
-    :class:`_SignalEvaluatorMixin`, and :class:`_SolveMixin`.
+    and methods can safely use methods from `_DiagnosticsMixin`,
+    `_SignalEvaluatorMixin`, and `_SolveMixin`.
     """
 
     assets: list[str]
