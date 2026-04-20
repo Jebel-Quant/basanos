@@ -29,10 +29,10 @@ plugins:
 nav:
   - Home: index.md
   - Concepts:
-    - Covariance Modes: concepts.md
-    - Factor Models: factor-models.md
-    - Streaming Guide: streaming.md
-    - Performance: performance.md
+      - Covariance Modes: concepts.md
+      - Factor Models: factor-models.md
+      - Streaming Guide: streaming.md
+      - Performance: performance.md
   - Notebooks:
       - Demo: notebooks/demo.html
       - Diagnostics: notebooks/diagnostics.html
@@ -44,9 +44,8 @@ nav:
       - Coverage: reports/html-coverage/index.html
       - Report: reports/html-report/report.html
   - API Reference:
-    - Overview: api.md
-    - Engine: api/engine.md
-    - Configuration: api/config.md
-    - Streaming API: api/stream.md
-    - Risk Models & Helpers: api/models.md
-    - Exceptions: api/exceptions.md
+      - Engine: api/engine.md
+      - Configuration: api/config.md
+      - Streaming API: api/stream.md
+      - Risk Models & Helpers: api/models.md
+      - Exceptions: api/exceptions.md
