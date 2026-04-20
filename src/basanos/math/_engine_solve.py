@@ -330,7 +330,7 @@ class _SolveMixin:
         r"""Yield ``(i, t, mask, bundle)`` for every timestamp.
 
         ``bundle`` is a :class:`MatrixBundle` wrapping the effective
-        :math:`(n_{\text{sub}},\ n_{\text{sub}})` correlation matrix for the
+        $(n_{\text{sub}},\ n_{\text{sub}})$ correlation matrix for the
         active assets (those with finite prices at timestamp *t*).  Yields
         ``None`` when no valid matrix is available (e.g., before the warm-up
         period has elapsed or when no assets have finite prices).
@@ -457,7 +457,7 @@ class _SolveMixin:
         row order.
 
         Denominators are derived from the batch solution as
-        :math:`\sqrt{\mu_i \cdot \mathbf{pos}_i} = \sqrt{\mu_i^\top \Sigma_i^{-1} \mu_i}`,
+        $\sqrt{\mu_i \cdot \mathbf{pos}_i} = \sqrt{\mu_i^\top \Sigma_i^{-1} \mu_i}$,
         matching the scalar :func:`~basanos.math._linalg.inv_a_norm` result up
         to float64 rounding.
 

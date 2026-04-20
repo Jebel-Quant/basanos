@@ -70,12 +70,12 @@ class _DiagnosticsMixin:
         Measures the true dimensionality of the portfolio by computing the
         entropy-based effective rank:
 
-        .. math::
+        $$
+        \\text{eff\\_rank} = \\exp\\!\\left(-\\sum_i p_i \\ln p_i\\right),
+        \\quad p_i = \\frac{\\lambda_i}{\\sum_j \\lambda_j}
+        $$
 
-            \\text{eff\\_rank} = \\exp\\!\\left(-\\sum_i p_i \\ln p_i\\right),
-            \\quad p_i = \\frac{\\lambda_i}{\\sum_j \\lambda_j}
-
-        where :math:`\\lambda_i` are the eigenvalues of the effective
+        where $\\lambda_i$ are the eigenvalues of the effective
         correlation matrix (restricted to assets with finite prices at that
         timestamp).  Uses the same covariance mode as :attr:`cash_position`.
         A value equal to the number of assets indicates a perfectly uniform
@@ -162,20 +162,20 @@ class _DiagnosticsMixin:
 
         For each asset *i* and timestamp *t*, computes
 
-        .. math::
+        $$
+        u_i = \\frac{(C^{-1}\\,\\mu)_i}{\\mu_i}
+        $$
 
-            u_i = \\frac{(C^{-1}\\,\\mu)_i}{\\mu_i}
-
-        where :math:`C^{-1}\\,\\mu` is the unnormalised solve result using
+        where $C^{-1}\\,\\mu$ is the unnormalised solve result using
         the effective correlation matrix for the current
-        :attr:`~BasanosConfig.covariance_mode`.  When :math:`C = I`
+        :attr:`~BasanosConfig.covariance_mode`.  When $C = I$
         (identity) all assets have utilisation 1.  Off-diagonal correlations
-        attenuate some assets (:math:`u_i < 1`) and may amplify negatively
-        correlated ones (:math:`u_i > 1`).
+        attenuate some assets ($u_i < 1$) and may amplify negatively
+        correlated ones ($u_i > 1$).
 
         A value of ``0.0`` is returned when the entire signal vector
-        :math:`\\mu` is near zero at that timestamp (no solve is performed).
-        ``NaN`` is returned for individual assets where :math:`|\\mu_i|` is
+        $\\mu$ is near zero at that timestamp (no solve is performed).
+        ``NaN`` is returned for individual assets where $|\\mu_i|$ is
         below machine-epsilon precision or where prices are unavailable.
 
         Returns:

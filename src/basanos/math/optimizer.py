@@ -445,13 +445,13 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         * :class:`EwmaShrinkConfig` (default): Computes EWMA correlations, applies
           linear shrinkage toward the identity, and solves a normalised linear
-          system :math:`C\,x = \mu` per timestamp via Cholesky / LU.
+          system $C\,x = \mu$ per timestamp via Cholesky / LU.
 
         * :class:`SlidingWindowConfig`: At each timestamp uses the
           ``cfg.covariance_config.window`` most recent vol-adjusted returns to fit a
           rank-``cfg.covariance_config.n_factors`` factor model via truncated SVD and
-          solves the system via the Woodbury identity at :math:`O(k^3 + kn)` rather
-          than :math:`O(n^3)` per step.
+          solves the system via the Woodbury identity at $O(k^3 + kn)$ rather
+          than $O(n^3)$ per step.
 
         Non-finite or ill-posed cases yield zero positions for safety.
 
@@ -645,9 +645,9 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         estimator against the EWMA baseline (via :meth:`sharpe_at_shrink`).
 
         Args:
-            window: Rolling window length :math:`W \geq 1`.
-                Rule of thumb: :math:`W \geq 2 \cdot n_{\text{assets}}`.
-            n_factors: Number of latent factors :math:`k \geq 1`.
+            window: Rolling window length $W \geq 1$.
+                Rule of thumb: $W \geq 2 \cdot n_{\text{assets}}$.
+            n_factors: Number of latent factors $k \geq 1$.
 
         Returns:
             Annualised Sharpe ratio of the portfolio returns as a ``float``.

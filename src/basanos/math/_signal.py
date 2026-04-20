@@ -17,30 +17,30 @@ def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
 
     This implements the **convex linear shrinkage** estimator
 
-    .. math::
+    $$
+    \\hat{\\Sigma}(\\lambda) = \\lambda \\cdot M + (1 - \\lambda) \\cdot I_n
+    $$
 
-        \\hat{\\Sigma}(\\lambda) = \\lambda \\cdot M + (1 - \\lambda) \\cdot I_n
-
-    where :math:`M` is the sample matrix, :math:`I_n` is the :math:`n \\times n`
-    identity matrix, and :math:`\\lambda \\in [0, 1]` is the *retention weight*
+    where $M$ is the sample matrix, $I_n$ is the $n \\times n$
+    identity matrix, and $\\lambda \\in [0, 1]$ is the *retention weight*
     (equivalently, ``1 - lambda`` is the *shrinkage intensity*).
 
     **Why shrink toward the identity?**
 
     Sample covariance/correlation matrices estimated from a finite number of
-    observations :math:`T` are poorly conditioned when the number of assets
-    :math:`n` is large relative to :math:`T`.  This is the classical
+    observations $T$ are poorly conditioned when the number of assets
+    $n$ is large relative to $T$.  This is the classical
     *curse of dimensionality*: extreme eigenvalues of the sample matrix are
     biased away from their population counterparts (the Marchenko-Pastur law
-    describes the bias as a function of the concentration ratio :math:`n / T`).
+    describes the bias as a function of the concentration ratio $n / T$).
     Shrinkage pulls eigenvalues toward a common target — here the unit sphere —
     reducing estimation error at the cost of a small bias [1]_.
 
     **Relationship to Ledoit-Wolf shrinkage**
 
     Ledoit and Wolf (2004) [2]_ derive the *optimal* scalar shrinkage
-    intensity :math:`\\alpha^*` by minimizing the expected Frobenius loss
-    :math:`\\mathbb{E}[\\|\\hat{\\Sigma}(\\alpha) - \\Sigma\\|_F^2]` under a
+    intensity $\\alpha^*$ by minimizing the expected Frobenius loss
+    $\\mathbb{E}[\\|\\hat{\\Sigma}(\\alpha) - \\Sigma\\|_F^2]$ under a
     general factor model.  Their closed-form estimator is a special case of
     this function where ``lamb = 1 - alpha*``.  The Oracle Approximating
     Shrinkage (OAS) estimator [3]_ improves on Ledoit-Wolf by accounting for
@@ -54,7 +54,7 @@ def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
     :attr:`~basanos.math.BasanosConfig.shrink` as a user-controlled
     hyperparameter rather than an analytically chosen optimal value.  This is
     appropriate in the context of *regularising a solver* (the system
-    :math:`C x = \\mu` must be well-posed at every timestamp) rather than
+    $C x = \\mu$ must be well-posed at every timestamp) rather than
     *estimating a covariance matrix* — here practical stability often matters
     more than minimum Frobenius loss.
 
@@ -88,7 +88,7 @@ def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
 
     **Sensitivity note**
 
-    Shrinkage is most sensitive in the range :math:`\\lambda \\in [0.3, 0.8]`.
+    Shrinkage is most sensitive in the range $\\lambda \\in [0.3, 0.8]$.
     Below ~0.3 the matrix can become nearly singular for small portfolios
     (``n > 10`` with ``corr < 50``); above ~0.8 the off-diagonal correlations
     are so heavily damped that the optimizer behaves almost as if assets were
@@ -96,7 +96,7 @@ def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
 
     Args:
         matrix: Square matrix to shrink (typically a correlation matrix).
-        lamb: Retention weight :math:`\\lambda \\in [0, 1]`.  ``1.0`` returns
+        lamb: Retention weight $\\lambda \\in [0, 1]$.  ``1.0`` returns
             the original matrix unchanged; ``0.0`` returns the identity.
 
     Returns:

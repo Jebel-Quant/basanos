@@ -3,9 +3,9 @@ r"""Factor risk model decomposition (Section 4.1 of basanos.pdf).
 This private module provides the :class:`FactorModel` frozen dataclass, which
 encapsulates the three-component factor model
 
-.. math::
-
-    \\bm{\\Sigma} = \\mathbf{B}\\mathbf{F}\\mathbf{B}^\\top + \\mathbf{D}
+$$
+\\bm{\\Sigma} = \\mathbf{B}\\mathbf{F}\\mathbf{B}^\\top + \\mathbf{D}
+$$
 
 and a class method for fitting the model from a return matrix via the
 Singular Value Decomposition (Section 4.2).
@@ -35,33 +35,33 @@ class FactorModel:
 
     Encapsulates the three components of the factor model
 
-    .. math::
-
-        \bm{\Sigma} = \mathbf{B}\mathbf{F}\mathbf{B}^\top + \mathbf{D}
+    $$
+    \bm{\Sigma} = \mathbf{B}\mathbf{F}\mathbf{B}^\top + \mathbf{D}
+    $$
 
     where
 
-    - :math:`\mathbf{B} \in \mathbb{R}^{n \times k}` is the *factor loading
-      matrix*: column :math:`j` gives the sensitivity of each asset to
-      factor :math:`j`.
-    - :math:`\mathbf{F} \in \mathbb{R}^{k \times k}` is the *factor covariance
-      matrix* (positive definite), capturing how the :math:`k` factors
+    - $\mathbf{B} \in \mathbb{R}^{n \times k}$ is the *factor loading
+      matrix*: column $j$ gives the sensitivity of each asset to
+      factor $j$.
+    - $\mathbf{F} \in \mathbb{R}^{k \times k}$ is the *factor covariance
+      matrix* (positive definite), capturing how the $k$ factors
       co-vary.
-    - :math:`\mathbf{D} = \operatorname{diag}(d_1, \dots, d_n)` with
-      :math:`d_i > 0` is the *idiosyncratic variance* diagonal, capturing
+    - $\mathbf{D} = \operatorname{diag}(d_1, \dots, d_n)$ with
+      $d_i > 0$ is the *idiosyncratic variance* diagonal, capturing
       the asset-specific variance unexplained by the common factors.
 
-    The central assumption is :math:`k \ll n`: the dominant systematic sources
+    The central assumption is $k \ll n$: the dominant systematic sources
     of risk are captured by a handful of factors while the idiosyncratic
     component is, by construction, uncorrelated across assets.
 
     Attributes:
-        factor_loadings: Factor loading matrix :math:`\mathbf{B}`,
+        factor_loadings: Factor loading matrix $\mathbf{B}$,
             shape ``(n, k)``.
-        factor_covariance: Factor covariance matrix :math:`\mathbf{F}`,
+        factor_covariance: Factor covariance matrix $\mathbf{F}$,
             shape ``(k, k)``.
         idiosyncratic_var: Idiosyncratic variance vector
-            :math:`(d_1, \dots, d_n)`, shape ``(n,)``.  All entries must be
+            $(d_1, \dots, d_n)$, shape ``(n,)``.  All entries must be
             strictly positive.
 
     Examples:
@@ -122,10 +122,10 @@ class FactorModel:
 
     @property
     def covariance(self) -> np.ndarray:
-        r"""Reconstruct the full :math:`n \times n` covariance matrix.
+        r"""Reconstruct the full $n \times n$ covariance matrix.
 
-        Computes :math:`\bm{\Sigma} = \mathbf{B}\mathbf{F}\mathbf{B}^\top +
-        \mathbf{D}` by combining the low-rank systematic component with the
+        Computes $\bm{\Sigma} = \mathbf{B}\mathbf{F}\mathbf{B}^\top +
+        \mathbf{D}$ by combining the low-rank systematic component with the
         diagonal idiosyncratic component.
 
         Returns:
@@ -144,13 +144,13 @@ class FactorModel:
 
     @property
     def woodbury_condition_number(self) -> float:
-        r"""Condition number of the inner :math:`k \times k` Woodbury matrix.
+        r"""Condition number of the inner $k \times k$ Woodbury matrix.
 
         Returns the condition number of the matrix
 
-        .. math::
-
-            \mathbf{M} = \mathbf{F}^{-1} + \mathbf{B}^\top\mathbf{D}^{-1}\mathbf{B}
+        $$
+        \mathbf{M} = \mathbf{F}^{-1} + \mathbf{B}^\top\mathbf{D}^{-1}\mathbf{B}
+        $$
 
         which is the matrix actually inverted during :meth:`solve`.  A large
         value (above ``_DEFAULT_COND_THRESHOLD`` ≈ 1e12) indicates that the
@@ -158,15 +158,15 @@ class FactorModel:
 
         This property gives callers a way to inspect the numerical health of
         the model without performing a full solve.  Unlike the condition number
-        of the full :math:`n \times n` covariance matrix, this measure is
-        specific to the :math:`k \times k` inner system solved inside the
+        of the full $n \times n$ covariance matrix, this measure is
+        specific to the $k \times k$ inner system solved inside the
         Woodbury identity.
 
         Returns:
-            float: Condition number :math:`\kappa(\mathbf{M})`.  Returns
-            ``inf`` when :math:`\mathbf{F}` is not positive-definite (e.g.
+            float: Condition number $\kappa(\mathbf{M})$.  Returns
+            ``inf`` when $\mathbf{F}$ is not positive-definite (e.g.
             singular or indefinite), as the Cholesky decomposition used to
-            form :math:`\mathbf{F}^{-1}` fails in that case.
+            form $\mathbf{F}^{-1}$ fails in that case.
 
         Examples:
             >>> import numpy as np
@@ -192,42 +192,42 @@ class FactorModel:
         rhs: np.ndarray,
         cond_threshold: float = _DEFAULT_COND_THRESHOLD,
     ) -> np.ndarray:
-        r"""Solve :math:`\bm{\Sigma}\,\mathbf{x} = \mathbf{b}` via the Woodbury identity.
+        r"""Solve $\bm{\Sigma}\,\mathbf{x} = \mathbf{b}$ via the Woodbury identity.
 
         Applies the Sherman--Morrison--Woodbury formula (Section 4.3 of
         basanos.pdf) to avoid forming or factorising the full
-        :math:`n \times n` covariance matrix:
+        $n \times n$ covariance matrix:
 
-        .. math::
+        $$
+        (\mathbf{D} + \mathbf{B}\mathbf{F}\mathbf{B}^\top)^{-1}
+        = \mathbf{D}^{-1}
+          - \mathbf{D}^{-1}\mathbf{B}
+            \bigl(\mathbf{F}^{-1} + \mathbf{B}^\top\mathbf{D}^{-1}\mathbf{B}\bigr)^{-1}
+            \mathbf{B}^\top\mathbf{D}^{-1}.
+        $$
 
-            (\mathbf{D} + \mathbf{B}\mathbf{F}\mathbf{B}^\top)^{-1}
-            = \mathbf{D}^{-1}
-              - \mathbf{D}^{-1}\mathbf{B}
-                \bigl(\mathbf{F}^{-1} + \mathbf{B}^\top\mathbf{D}^{-1}\mathbf{B}\bigr)^{-1}
-                \mathbf{B}^\top\mathbf{D}^{-1}.
-
-        Because :math:`\mathbf{D}` is diagonal, :math:`\mathbf{D}^{-1}` is
-        free.  The inner matrix is :math:`k \times k` with cost
-        :math:`O(k^3)`, and the surrounding multiplications cost
-        :math:`O(kn)`.  Total cost is :math:`O(k^3 + kn)` rather than
-        :math:`O(n^3)`.
+        Because $\mathbf{D}$ is diagonal, $\mathbf{D}^{-1}$ is
+        free.  The inner matrix is $k \times k$ with cost
+        $O(k^3)$, and the surrounding multiplications cost
+        $O(kn)$.  Total cost is $O(k^3 + kn)$ rather than
+        $O(n^3)$.
 
         Args:
-            rhs: Right-hand side vector :math:`\mathbf{b}`, shape ``(n,)``.
+            rhs: Right-hand side vector $\mathbf{b}$, shape ``(n,)``.
             cond_threshold: Condition-number threshold above which an
                 :class:`~basanos.exceptions.IllConditionedMatrixWarning` is
                 emitted.  The check is applied to both ``factor_covariance``
-                (:math:`\mathbf{F}`) and to the inner :math:`k \times k`
-                Woodbury matrix :math:`\mathbf{F}^{-1} + \mathbf{B}^\top
-                \mathbf{D}^{-1}\mathbf{B}`.  Defaults to ``1e12``.
+                ($\mathbf{F}$) and to the inner $k \times k$
+                Woodbury matrix $\mathbf{F}^{-1} + \mathbf{B}^\top
+                \mathbf{D}^{-1}\mathbf{B}$.  Defaults to ``1e12``.
 
         Returns:
-            np.ndarray: Solution vector :math:`\mathbf{x}`, shape ``(n,)``.
+            np.ndarray: Solution vector $\mathbf{x}$, shape ``(n,)``.
 
         Raises:
             DimensionMismatchError: If ``rhs`` length does not match
                 ``n_assets``.
-            SingularMatrixError: If the inner :math:`k \times k` matrix is
+            SingularMatrixError: If the inner $k \times k$ matrix is
                 singular.
 
         Examples:
@@ -274,24 +274,24 @@ class FactorModel:
         r"""Fit a rank-*k* factor model from a return matrix via truncated SVD.
 
         Extracts latent factors from the return matrix
-        :math:`\mathbf{R} \in \mathbb{R}^{T \times n}` using the Singular
+        $\mathbf{R} \in \mathbb{R}^{T \times n}$ using the Singular
         Value Decomposition (SVD).  The top-*k* singular triplets define the
         factor model components:
 
-        .. math::
+        $$
+        \mathbf{B} = \mathbf{V}_k, \quad
+        \mathbf{F} = \bm{\Sigma}_k^2 / T, \quad
+        \hat{d}_i = 1 - \bigl(\mathbf{B}\mathbf{F}\mathbf{B}^\top\bigr)_{ii}
+        $$
 
-            \mathbf{B} = \mathbf{V}_k, \quad
-            \mathbf{F} = \bm{\Sigma}_k^2 / T, \quad
-            \hat{d}_i = 1 - \bigl(\mathbf{B}\mathbf{F}\mathbf{B}^\top\bigr)_{ii}
-
-        where :math:`\mathbf{V}_k` and :math:`\bm{\Sigma}_k` are the top-*k*
-        right singular vectors and singular values of :math:`\mathbf{R}`
+        where $\mathbf{V}_k$ and $\bm{\Sigma}_k$ are the top-*k*
+        right singular vectors and singular values of $\mathbf{R}$
         respectively.  When *returns* contains unit-variance columns (as
         produced by :func:`~basanos.math._signal.vol_adj`), the sample
         covariance has unit diagonal; the idiosyncratic term
-        :math:`\hat{d}_i = 1 - (\mathbf{B}\mathbf{F}\mathbf{B}^\top)_{ii}`
-        absorbs the residual so the full covariance :math:`\hat{\mathbf{C}}^{(k)}`
-        also has unit diagonal.  Each :math:`\hat{d}_i` is clamped from below
+        $\hat{d}_i = 1 - (\mathbf{B}\mathbf{F}\mathbf{B}^\top)_{ii}$
+        absorbs the residual so the full covariance $\hat{\mathbf{C}}^{(k)}$
+        also has unit diagonal.  Each $\hat{d}_i$ is clamped from below
         at machine epsilon to guarantee strict positivity.
 
         Args:

@@ -32,16 +32,16 @@ class CovarianceMode(enum.StrEnum):
             ``W`` most recent volatility-adjusted returns is decomposed via
             truncated SVD into ``k`` latent factors, giving the estimator
 
-            .. math::
+            $$
+            \\hat{C}_t^{(W,k)} = \\frac{1}{W}
+                \\mathbf{V}_{k,t}\\mathbf{\\Sigma}_{k,t}^2\\mathbf{V}_{k,t}^\\top
+                + \\hat{D}_t
+            $$
 
-                \\hat{C}_t^{(W,k)} = \\frac{1}{W}
-                    \\mathbf{V}_{k,t}\\mathbf{\\Sigma}_{k,t}^2\\mathbf{V}_{k,t}^\\top
-                    + \\hat{D}_t
-
-            where :math:`\\hat{D}_t` is chosen to enforce unit diagonal.
+            where $\\hat{D}_t$ is chosen to enforce unit diagonal.
             The system is solved efficiently via the Woodbury identity
-            (Section 4.3 of basanos.pdf) at :math:`O(k^3 + kn)` per step
-            rather than :math:`O(n^3)`.
+            (Section 4.3 of basanos.pdf) at $O(k^3 + kn)$ per step
+            rather than $O(n^3)$.
             Configured via :class:`SlidingWindowConfig`.
 
     Examples:
@@ -91,32 +91,32 @@ class SlidingWindowConfig(BaseModel):
     **Effective component count** — at each streaming step the number of SVD
     components actually used is
 
-    .. math::
+    $$
+    k_{\text{eff}} = \min(k,\; W,\; n_{\text{valid}},\; k_{\text{max}})
+    $$
 
-        k_{\text{eff}} = \min(k,\; W,\; n_{\text{valid}},\; k_{\text{max}})
-
-    where :math:`k` = ``n_factors``, :math:`W` = ``window``,
-    :math:`n_{\text{valid}}` is the number of assets with finite prices at that
-    step, and :math:`k_{\text{max}}` = ``max_components`` (or :math:`+\infty`
+    where $k$ = ``n_factors``, $W$ = ``window``,
+    $n_{\text{valid}}$ is the number of assets with finite prices at that
+    step, and $k_{\text{max}}$ = ``max_components`` (or $+\infty$
     when unset).  This ensures the truncated SVD remains well-posed even when
     assets temporarily drop out of the universe.  Setting ``max_components``
     explicitly caps computational cost in large universes without changing the
     desired factor count used in batch mode.
 
     Args:
-        window: Rolling window length :math:`W \\geq 1`.
-            Rule of thumb: :math:`W \\geq 2n` keeps the sample covariance
+        window: Rolling window length $W \\geq 1$.
+            Rule of thumb: $W \\geq 2n$ keeps the sample covariance
             well-posed before truncation.
-        n_factors: Number of latent factors :math:`k \\geq 1`.
-            :math:`k = 1` recovers the single market-factor model; larger
-            :math:`k` captures finer correlation structure at the cost of
+        n_factors: Number of latent factors $k \\geq 1$.
+            $k = 1$ recovers the single market-factor model; larger
+            $k$ captures finer correlation structure at the cost of
             higher estimation noise.
         max_components: Optional hard cap on the number of SVD components used
             per streaming step.  When set, the effective component count is
-            :math:`\\min(k_{\\text{eff}},\\, \\texttt{max\\_components})`.
+            $\\min(k_{\\text{eff}},\\, \\texttt{max\\_components})$.
             Useful for large universes where only a few factors dominate and
             you want to limit SVD cost below ``n_factors``.  Must be
-            :math:`\\geq 1` when provided.  Defaults to ``None`` (no extra cap).
+            $\\geq 1$ when provided.  Defaults to ``None`` (no extra cap).
 
     Examples:
         >>> cfg = SlidingWindowConfig(window=60, n_factors=3)
@@ -207,13 +207,13 @@ class BasanosConfig(BaseModel):
     ``shrink`` controls linear shrinkage of the EWMA correlation matrix toward
     the identity:
 
-    .. math::
+    $$
+    C_{\\text{shrunk}} = \\lambda \\cdot C_{\\text{EWMA}} + (1 - \\lambda) \\cdot I_n
+    $$
 
-        C_{\\text{shrunk}} = \\lambda \\cdot C_{\\text{EWMA}} + (1 - \\lambda) \\cdot I_n
-
-    where :math:`\\lambda` = ``shrink`` and :math:`I_n` is the identity.
+    where $\\lambda$ = ``shrink`` and $I_n$ is the identity.
     Shrinkage regularises the matrix when assets are few relative to the
-    lookback (high concentration ratio :math:`n / T`), reducing the impact of
+    lookback (high concentration ratio $n / T$), reducing the impact of
     extreme sample eigenvalues and improving the condition number of the matrix
     passed to the linear solver.
 
@@ -292,32 +292,32 @@ class BasanosConfig(BaseModel):
     When ``covariance_config`` is a :class:`SlidingWindowConfig`, the EWMA
     correlation estimator is replaced by a rolling-window factor model
     (Section 4.4 of basanos.pdf).  At each timestamp *t* the
-    :math:`W \\times n` submatrix of the :math:`W` most recent
+    $W \\times n$ submatrix of the $W$ most recent
     volatility-adjusted returns is decomposed via truncated SVD to extract
-    :math:`k` latent factors.  The resulting correlation estimate is
+    $k$ latent factors.  The resulting correlation estimate is
 
-    .. math::
+    $$
+    \\hat{C}_t^{(W,k)}
+    = \\frac{1}{W}\\mathbf{V}_{k,t}\\mathbf{\\Sigma}_{k,t}^2
+      \\mathbf{V}_{k,t}^\\top + \\hat{D}_t
+    $$
 
-        \\hat{C}_t^{(W,k)}
-        = \\frac{1}{W}\\mathbf{V}_{k,t}\\mathbf{\\Sigma}_{k,t}^2
-          \\mathbf{V}_{k,t}^\\top + \\hat{D}_t
-
-    where :math:`\\hat{D}_t` enforces unit diagonal.  The linear system
-    :math:`\\hat{C}_t^{(W,k)}\\mathbf{x}_t = \\boldsymbol{\\mu}_t` is solved
+    where $\\hat{D}_t$ enforces unit diagonal.  The linear system
+    $\\hat{C}_t^{(W,k)}\\mathbf{x}_t = \\boldsymbol{\\mu}_t$ is solved
     via the Woodbury identity (:func:`~basanos.math._factor_model.FactorModel.solve`)
-    at cost :math:`O(k^3 + kn)` per step rather than :math:`O(n^3)`.
+    at cost $O(k^3 + kn)$ per step rather than $O(n^3)$.
 
     ``covariance_config``
         Pass a :class:`SlidingWindowConfig` instance to enable this mode.
         The required sub-parameters are:
 
         ``window``
-            Rolling window length :math:`W \\geq 1`.  Rule of thumb: :math:`W
-            \\geq 2n` keeps the sample covariance well-posed before truncation.
+            Rolling window length $W \\geq 1$.  Rule of thumb: $W
+            \\geq 2n$ keeps the sample covariance well-posed before truncation.
 
         ``n_factors``
-            Number of latent factors :math:`k \\geq 1`.  :math:`k = 1`
-            recovers the single market-factor model; larger :math:`k` captures
+            Number of latent factors $k \\geq 1$.  $k = 1$
+            recovers the single market-factor model; larger $k$ captures
             finer correlation structure at the cost of higher estimation noise.
 
     Examples:
