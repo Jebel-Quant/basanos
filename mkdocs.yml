@@ -33,9 +33,16 @@ nav:
     - Factor Models: factor-models.md
     - Streaming Guide: streaming.md
     - Performance: performance.md
-    - Engine Architecture: ARCHITECTURE.md
-  - Notebooks: notebooks.md
-  - Reports: reports.md
+  - Notebooks:
+      - Demo: notebooks/demo.html
+      - Diagnostics: notebooks/diagnostics.html
+      - End to End: notebooks/end_to_end.html
+      - EWM Benchmark: notebooks/ewm_benchmark.html
+      - Factor Model Guide: notebooks/factor_model_guide.html
+      - Shrinkage Guide: notebooks/shrinkage_guide.html
+  - CI/CD:
+      - Coverage: reports/html-coverage/index.html
+      - Report: reports/html-report/report.html
   - API Reference:
     - Overview: api.md
     - Engine: api/engine.md
