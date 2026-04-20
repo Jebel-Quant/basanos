@@ -227,24 +227,16 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
     Public methods are organised into clearly delimited sections (some
     inherited from the private mixin classes):
 
-    * **Core data access** — :attr:`assets`, :attr:`ret_adj`, :attr:`vola`,
-      :attr:`cor`, :attr:`cor_tensor`
-    * **Solve / position logic** — :attr:`cash_position`,
-      :attr:`position_status`, :attr:`risk_position`,
-      :attr:`position_leverage`, :meth:`warmup_state`
-      (solve helpers inherited from :class:`~._engine_solve._SolveMixin`)
-    * **Portfolio and performance** — :attr:`portfolio`,
-      :attr:`naive_sharpe`, :meth:`sharpe_at_shrink`,
-      :meth:`sharpe_at_window_factors`
-    * **Matrix diagnostics** — :attr:`condition_number`,
-      :attr:`effective_rank`, :attr:`solver_residual`,
-      :attr:`signal_utilisation`
-      (inherited from :class:`~._engine_diagnostics._DiagnosticsMixin`)
-    * **Signal evaluation** — :attr:`ic`, :attr:`rank_ic`, :attr:`ic_mean`,
-      :attr:`ic_std`, :attr:`icir`, :attr:`rank_ic_mean`,
-      :attr:`rank_ic_std`
-      (inherited from :class:`~._engine_ic._SignalEvaluatorMixin`)
-    * **Reporting** — :attr:`config_report`
+    * **Core data access** — `assets`, `ret_adj`, `vola`, `cor`, `cor_tensor`
+    * **Solve / position logic** — `cash_position`, `position_status`,
+      `risk_position`, `position_leverage`, `warmup_state`
+    * **Portfolio and performance** — `portfolio`, `naive_sharpe`,
+      `sharpe_at_shrink`, `sharpe_at_window_factors`
+    * **Matrix diagnostics** — `condition_number`, `effective_rank`,
+      `solver_residual`, `signal_utilisation`
+    * **Signal evaluation** — `ic`, `rank_ic`, `ic_mean`, `ic_std`, `icir`,
+      `rank_ic_mean`, `rank_ic_std`
+    * **Reporting** — `config_report`
 
     Data-flow diagram
     -----------------
