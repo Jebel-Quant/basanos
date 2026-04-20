@@ -9,22 +9,15 @@ repo_name: Jebel-Quant/basanos
 docs_dir: docs
 
 plugins:
-  - search
   - mkdocstrings:
       handlers:
         python:
-          paths:
-            - src
           options:
             docstring_style: google
-            show_source: false
+            show_source: true
             show_root_heading: true
-            show_root_full_path: false
-            heading_level: 2
-            members_order: source
-            show_signature_annotations: true
-            members: true
-            show_submodules: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
 
 nav:
   - Home: index.md
