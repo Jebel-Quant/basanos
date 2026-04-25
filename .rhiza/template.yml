@@ -1,17 +1,14 @@
 repository: jebel-quant/rhiza
-ref: "v0.10.1"
+ref: "v0.10.3"
 
 templates:
   - tests
   - marimo
   - github
   - legal
-  - benchmarks
-  - renovate
 
 exclude:
-  - book/marimo/notebooks/rhiza.py
-  - tests/benchmarks/test_benchmarks.py‎
+  - book/marimo/notebooks/rhiza.py‎
   - .rhiza/make.d/custom-env.mk
   - .rhiza/make.d/custom-task.mk
 
