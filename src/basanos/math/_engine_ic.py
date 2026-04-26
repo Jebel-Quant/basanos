@@ -31,23 +31,33 @@ class _SignalEvaluatorMixin:
     * ``mu`` — Polars DataFrame of expected-return signals
     """
 
-    def _ic_series(self: _EngineProtocol, use_rank: bool) -> pl.DataFrame:
+    def _ic_series(self: _EngineProtocol, use_rank: bool, h: int = 1) -> pl.DataFrame:
         """Compute the cross-sectional IC time series.
 
-        For each timestamp *t* (from 0 to T-2), correlates the signal vector
-        ``mu[t, :]`` with the one-period forward return vector
-        ``prices[t+1, :] / prices[t, :] - 1`` across all assets where both
+        For each timestamp *t* (from 0 to T-1-h), correlates the signal vector
+        ``mu[t, :]`` with the *h*-period forward return vector
+        ``prices[t+h, :] / prices[t, :] - 1`` across all assets where both
         quantities are finite.  When fewer than two valid asset pairs are
         available, the IC value is set to ``NaN``.
 
         Args:
             use_rank: When ``True`` the Spearman rank correlation is used
                 (Rank IC); when ``False`` the Pearson correlation is used (IC).
+            h: Forward-return horizon in periods.  ``h=1`` (default) gives the
+                classic one-period IC; ``h=5`` evaluates signal quality against
+                five-period returns.  Must be >= 1.
 
         Returns:
             pl.DataFrame: Two-column frame with ``date`` (signal date) and
             either ``ic`` or ``rank_ic``.
+
+        Raises:
+            ValueError: If *h* < 1.
         """
+        if h < 1:
+            msg = f"h must be >= 1, got {h}"
+            raise ValueError(msg)
+
         assets = self.assets
         prices_np = self.prices.select(assets).to_numpy().astype(float)
         mu_np = self.mu.select(assets).to_numpy().astype(float)
@@ -57,8 +67,8 @@ class _SignalEvaluatorMixin:
         ic_values: list[float] = []
         ic_dates = []
 
-        for t in range(len(dates) - 1):
-            fwd_ret = prices_np[t + 1] / prices_np[t] - 1.0
+        for t in range(len(dates) - h):
+            fwd_ret = prices_np[t + h] / prices_np[t] - 1.0
             signal = mu_np[t]
 
             # Both signal and forward return must be finite
@@ -77,18 +87,20 @@ class _SignalEvaluatorMixin:
 
         return pl.DataFrame({"date": ic_dates, col_name: pl.Series(ic_values, dtype=pl.Float64)})
 
-    @property
-    def ic(self: _EngineProtocol) -> pl.DataFrame:
+    def ic(self: _EngineProtocol, h: int = 1) -> pl.DataFrame:
         """Cross-sectional Pearson Information Coefficient (IC) time series.
 
-        For each timestamp *t* (excluding the last), computes the Pearson
-        correlation between the signal ``mu[t, :]`` and the one-period forward
-        return ``prices[t+1, :] / prices[t, :] - 1`` across all assets where
-        both quantities are finite.
+        For each timestamp *t*, computes the Pearson correlation between the
+        signal ``mu[t, :]`` and the *h*-period forward return
+        ``prices[t+h, :] / prices[t, :] - 1`` across all assets where both
+        quantities are finite.
 
         An IC value close to +1 means the signal ranked assets in the same
         order as forward returns; close to -1 means the opposite; near 0 means
         no predictive relationship.
+
+        Args:
+            h: Forward-return horizon in periods (default 1).
 
         Returns:
             pl.DataFrame: Frame with columns ``['date', 'ic']``.  ``date`` is
@@ -101,15 +113,17 @@ class _SignalEvaluatorMixin:
             `ic_mean`, `ic_std`, `icir` — summary
             statistics.
         """
-        return self._ic_series(use_rank=False)
+        return self._ic_series(use_rank=False, h=h)
 
-    @property
-    def rank_ic(self: _EngineProtocol) -> pl.DataFrame:
+    def rank_ic(self: _EngineProtocol, h: int = 1) -> pl.DataFrame:
         """Cross-sectional Spearman Rank Information Coefficient time series.
 
         Identical to `ic` but uses the Spearman rank correlation
         instead of the Pearson correlation, making it more robust to fat-tailed
         return distributions and outliers.
+
+        Args:
+            h: Forward-return horizon in periods (default 1).
 
         Returns:
             pl.DataFrame: Frame with columns ``['date', 'rank_ic']``.
@@ -120,74 +134,84 @@ class _SignalEvaluatorMixin:
             `rank_ic_mean`, `rank_ic_std` — summary
             statistics.
         """
-        return self._ic_series(use_rank=True)
+        return self._ic_series(use_rank=True, h=h)
 
-    @property
-    def ic_mean(self) -> float:
+    def ic_mean(self, h: int = 1) -> float:
         """Mean of the IC time series, ignoring NaN values.
+
+        Args:
+            h: Forward-return horizon in periods (default 1).
 
         Returns:
             float: Arithmetic mean of all finite IC values, or ``NaN`` if
             no finite values exist.
         """
-        arr = self.ic["ic"].drop_nulls().to_numpy()
+        arr = self.ic(h)["ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.mean(finite)) if len(finite) > 0 else float("nan")
 
-    @property
-    def ic_std(self) -> float:
+    def ic_std(self, h: int = 1) -> float:
         """Standard deviation of the IC time series, ignoring NaN values.
 
         Uses ``ddof=1`` (sample standard deviation).
+
+        Args:
+            h: Forward-return horizon in periods (default 1).
 
         Returns:
             float: Sample standard deviation of all finite IC values, or
             ``NaN`` if fewer than 2 finite values exist.
         """
-        arr = self.ic["ic"].drop_nulls().to_numpy()
+        arr = self.ic(h)["ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
 
-    @property
-    def icir(self) -> float:
+    def icir(self, h: int = 1) -> float:
         """Information Coefficient Information Ratio (ICIR).
 
         Defined as ``IC mean / IC std``.  A higher absolute ICIR indicates a
         more consistent signal: the mean IC is large relative to its
         variability.
 
+        Args:
+            h: Forward-return horizon in periods (default 1).
+
         Returns:
             float: ``ic_mean / ic_std``, or ``NaN`` when ``ic_std`` is zero
             or non-finite.
         """
-        mean = self.ic_mean
-        std = self.ic_std
+        mean = self.ic_mean(h)
+        std = self.ic_std(h)
         if not np.isfinite(std) or std == 0.0:
             return float("nan")
         return float(mean / std)
 
-    @property
-    def rank_ic_mean(self) -> float:
+    def rank_ic_mean(self, h: int = 1) -> float:
         """Mean of the Rank IC time series, ignoring NaN values.
+
+        Args:
+            h: Forward-return horizon in periods (default 1).
 
         Returns:
             float: Arithmetic mean of all finite Rank IC values, or ``NaN``
             if no finite values exist.
         """
-        arr = self.rank_ic["rank_ic"].drop_nulls().to_numpy()
+        arr = self.rank_ic(h)["rank_ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.mean(finite)) if len(finite) > 0 else float("nan")
 
-    @property
-    def rank_ic_std(self) -> float:
+    def rank_ic_std(self, h: int = 1) -> float:
         """Standard deviation of the Rank IC time series, ignoring NaN values.
 
         Uses ``ddof=1`` (sample standard deviation).
+
+        Args:
+            h: Forward-return horizon in periods (default 1).
 
         Returns:
             float: Sample standard deviation of all finite Rank IC values, or
             ``NaN`` if fewer than 2 finite values exist.
         """
-        arr = self.rank_ic["rank_ic"].drop_nulls().to_numpy()
+        arr = self.rank_ic(h)["rank_ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")

@@ -240,28 +240,28 @@ class TestSignalQuality:
 
     def test_ic_mean_is_finite(self, notebook_engine: BasanosEngine) -> None:
         """IC mean must be a finite float."""
-        assert math.isfinite(notebook_engine.ic_mean)
+        assert math.isfinite(notebook_engine.ic_mean())
 
     def test_ic_std_is_positive_finite(self, notebook_engine: BasanosEngine) -> None:
         """IC std must be a finite positive float."""
-        assert math.isfinite(notebook_engine.ic_std)
-        assert notebook_engine.ic_std > 0
+        assert math.isfinite(notebook_engine.ic_std())
+        assert notebook_engine.ic_std() > 0
 
     def test_icir_is_finite(self, notebook_engine: BasanosEngine) -> None:
         """ICIR must be a finite float."""
-        assert math.isfinite(notebook_engine.icir)
+        assert math.isfinite(notebook_engine.icir())
 
     def test_rank_ic_mean_is_finite(self, notebook_engine: BasanosEngine) -> None:
         """Rank IC mean must be a finite float."""
-        assert math.isfinite(notebook_engine.rank_ic_mean)
+        assert math.isfinite(notebook_engine.rank_ic_mean())
 
     def test_ic_mean_concrete(self, notebook_engine: BasanosEngine) -> None:
         """IC mean must match the deterministic expected value (fixed seed 2024)."""
-        assert notebook_engine.ic_mean == pytest.approx(0.010676938245513712, rel=1e-4)
+        assert notebook_engine.ic_mean() == pytest.approx(0.010676938245513712, rel=1e-4)
 
     def test_icir_concrete(self, notebook_engine: BasanosEngine) -> None:
         """ICIR must match the deterministic expected value (fixed seed 2024)."""
-        assert notebook_engine.icir == pytest.approx(0.01920162208642282, rel=1e-4)
+        assert notebook_engine.icir() == pytest.approx(0.01920162208642282, rel=1e-4)
 
 
 # ─── NAV ──────────────────────────────────────────────────────────────────────
