@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** All IC functions (`ic`, `rank_ic`, `ic_mean`, `ic_std`, `icir`,
+  `rank_ic_mean`, `rank_ic_std`) converted from properties to methods accepting
+  a horizon parameter `h: int = 1`. Existing code using `engine.ic` must be
+  updated to `engine.ic()`. Use `h > 1` to evaluate signal quality against
+  multi-period forward returns (e.g. `engine.ic(h=5)` for 5-day IC).
+
 ## [0.6.0] - 2026-03-27
 
 ### Added

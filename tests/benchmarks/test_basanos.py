@@ -397,19 +397,19 @@ class TestBasanosEngineBenchmarks:
 
     def test_ic_252_5(self, benchmark, engine_252_5):
         """Benchmark Pearson IC time series on 252-day, 5-asset engine."""
-        result = benchmark(lambda: engine_252_5.ic)
+        result = benchmark(lambda: engine_252_5.ic())
         assert "ic" in result.columns
         assert result.shape[0] == 251
 
     def test_rank_ic_252_5(self, benchmark, engine_252_5):
         """Benchmark Spearman Rank IC time series on 252-day, 5-asset engine."""
-        result = benchmark(lambda: engine_252_5.rank_ic)
+        result = benchmark(lambda: engine_252_5.rank_ic())
         assert "rank_ic" in result.columns
         assert result.shape[0] == 251
 
     def test_icir_252_5(self, benchmark, engine_252_5):
         """Benchmark ICIR (IC mean / IC std) on 252-day, 5-asset engine."""
-        result = benchmark(lambda: engine_252_5.icir)
+        result = benchmark(lambda: engine_252_5.icir())
         assert isinstance(result, float)
 
     def test_naive_sharpe_252_5(self, benchmark, engine_252_5):

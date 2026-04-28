@@ -234,8 +234,8 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
       `sharpe_at_shrink`, `sharpe_at_window_factors`
     * **Matrix diagnostics** — `condition_number`, `effective_rank`,
       `solver_residual`, `signal_utilisation`
-    * **Signal evaluation** — `ic`, `rank_ic`, `ic_mean`, `ic_std`, `icir`,
-      `rank_ic_mean`, `rank_ic_std`
+    * **Signal evaluation** — `ic(h)`, `rank_ic(h)`, `ic_mean(h)`, `ic_std(h)`,
+      `icir(h)`, `rank_ic_mean(h)`, `rank_ic_std(h)` (``h`` defaults to 1)
     * **Reporting** — `config_report`
 
     Data-flow diagram
