@@ -136,7 +136,7 @@ class _SignalEvaluatorMixin:
         """
         return self._ic_series(use_rank=True, h=h)
 
-    def ic_mean(self, h: int = 1) -> float:
+    def ic_mean(self: _EngineProtocol, h: int = 1) -> float:
         """Mean of the IC time series, ignoring NaN values.
 
         Args:
@@ -146,11 +146,11 @@ class _SignalEvaluatorMixin:
             float: Arithmetic mean of all finite IC values, or ``NaN`` if
             no finite values exist.
         """
-        arr = self.ic(h)["ic"].drop_nulls().to_numpy()
+        arr = self._ic_series(use_rank=False, h=h)["ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.mean(finite)) if len(finite) > 0 else float("nan")
 
-    def ic_std(self, h: int = 1) -> float:
+    def ic_std(self: _EngineProtocol, h: int = 1) -> float:
         """Standard deviation of the IC time series, ignoring NaN values.
 
         Uses ``ddof=1`` (sample standard deviation).
@@ -162,11 +162,11 @@ class _SignalEvaluatorMixin:
             float: Sample standard deviation of all finite IC values, or
             ``NaN`` if fewer than 2 finite values exist.
         """
-        arr = self.ic(h)["ic"].drop_nulls().to_numpy()
+        arr = self._ic_series(use_rank=False, h=h)["ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
 
-    def icir(self, h: int = 1) -> float:
+    def icir(self: _EngineProtocol, h: int = 1) -> float:
         """Information Coefficient Information Ratio (ICIR).
 
         Defined as ``IC mean / IC std``.  A higher absolute ICIR indicates a
@@ -180,13 +180,16 @@ class _SignalEvaluatorMixin:
             float: ``ic_mean / ic_std``, or ``NaN`` when ``ic_std`` is zero
             or non-finite.
         """
-        mean = self.ic_mean(h)
-        std = self.ic_std(h)
+        ic_df = self._ic_series(use_rank=False, h=h)
+        arr = ic_df["ic"].drop_nulls().to_numpy()
+        finite = arr[np.isfinite(arr)]
+        mean = float(np.mean(finite)) if len(finite) > 0 else float("nan")
+        std = float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
         if not np.isfinite(std) or std == 0.0:
             return float("nan")
         return float(mean / std)
 
-    def rank_ic_mean(self, h: int = 1) -> float:
+    def rank_ic_mean(self: _EngineProtocol, h: int = 1) -> float:
         """Mean of the Rank IC time series, ignoring NaN values.
 
         Args:
@@ -196,11 +199,11 @@ class _SignalEvaluatorMixin:
             float: Arithmetic mean of all finite Rank IC values, or ``NaN``
             if no finite values exist.
         """
-        arr = self.rank_ic(h)["rank_ic"].drop_nulls().to_numpy()
+        arr = self._ic_series(use_rank=True, h=h)["rank_ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.mean(finite)) if len(finite) > 0 else float("nan")
 
-    def rank_ic_std(self, h: int = 1) -> float:
+    def rank_ic_std(self: _EngineProtocol, h: int = 1) -> float:
         """Standard deviation of the Rank IC time series, ignoring NaN values.
 
         Uses ``ddof=1`` (sample standard deviation).
@@ -212,6 +215,6 @@ class _SignalEvaluatorMixin:
             float: Sample standard deviation of all finite Rank IC values, or
             ``NaN`` if fewer than 2 finite values exist.
         """
-        arr = self.rank_ic(h)["rank_ic"].drop_nulls().to_numpy()
+        arr = self._ic_series(use_rank=True, h=h)["rank_ic"].drop_nulls().to_numpy()
         finite = arr[np.isfinite(arr)]
         return float(np.std(finite, ddof=1)) if len(finite) > 1 else float("nan")
