@@ -114,6 +114,6 @@ class _EngineProtocol(Protocol):
         """Yield ``(i, t, mask, pos_or_none, status)`` tuples over all timestamps."""
         ...
 
-    def _ic_series(self, use_rank: bool) -> pl.DataFrame:
+    def _ic_series(self, use_rank: bool, h: int = 1) -> pl.DataFrame:
         """Compute the cross-sectional IC time series."""
         ...

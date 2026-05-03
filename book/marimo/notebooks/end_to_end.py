@@ -13,7 +13,7 @@
 
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.23.2"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -49,12 +49,14 @@ def cell_01():
         > no external data sources, API keys, or network access required.
         """
     )
+    return
 
 
 @app.cell
 def cell_02():
     """Render separator."""
     mo.md(r"""---""")
+    return
 
 
 @app.cell
@@ -78,6 +80,7 @@ def cell_03():
         for robust EWMA warmup and meaningful out-of-sample statistics.
         """
     )
+    return
 
 
 @app.cell
@@ -169,12 +172,14 @@ def cell_05(mu, prices):
             ),
         ]
     )
+    return
 
 
 @app.cell
 def cell_06():
     """Render separator."""
     mo.md(r"""---""")
+    return
 
 
 @app.cell
@@ -211,6 +216,7 @@ def cell_07():
         Use the sliders to explore how each parameter affects the strategy.
         """
     )
+    return
 
 
 @app.cell
@@ -294,6 +300,7 @@ def cell_09(clip_slider, corr_slider, shrink_slider, vola_slider):
 def cell_10():
     """Render separator."""
     mo.md(r"""---""")
+    return
 
 
 @app.cell
@@ -321,6 +328,7 @@ def cell_11():
            EWMA volatility.
         """
     )
+    return
 
 
 @app.cell
@@ -353,12 +361,13 @@ def cell_13(engine):
             ),
             mo.md(
                 f"### Signal quality\n\n"
-                f"- **IC mean**: `{engine.ic_mean:.4f}` | **IC std**: `{engine.ic_std:.4f}`\n"
-                f"- **ICIR**: `{engine.icir:.4f}`\n"
-                f"- **Rank IC mean**: `{engine.rank_ic_mean:.4f}` | **Rank IC std**: `{engine.rank_ic_std:.4f}`\n"
+                f"- **IC mean**: `{engine.ic_mean():.4f}` | **IC std**: `{engine.ic_std():.4f}`\n"
+                f"- **ICIR**: `{engine.icir():.4f}`\n"
+                f"- **Rank IC mean**: `{engine.rank_ic_mean():.4f}` | **Rank IC std**: `{engine.rank_ic_std():.4f}`\n"
             ),
         ]
     )
+    return
 
 
 @app.cell
@@ -376,6 +385,7 @@ def cell_14(portfolio):
             mo.ui.table(portfolio.turnover_summary()),
         ]
     )
+    return
 
 
 @app.cell
@@ -396,12 +406,14 @@ def cell_15(portfolio):
             mo.ui.plotly(portfolio.plots.snapshot()),
         ]
     )
+    return
 
 
 @app.cell
 def cell_16():
     """Render separator."""
     mo.md(r"""---""")
+    return
 
 
 @app.cell
@@ -434,6 +446,7 @@ def cell_17():
         The cell below saves the report to a temporary path and confirms success.
         """
     )
+    return
 
 
 @app.cell
@@ -464,12 +477,14 @@ def cell_18(portfolio):
         ),
         kind="success",
     )
+    return
 
 
 @app.cell
 def cell_19():
     """Render separator."""
     mo.md(r"""---""")
+    return
 
 
 @app.cell
@@ -493,6 +508,7 @@ def cell_20():
         Use the slider to set the maximum cost level to evaluate.
         """
     )
+    return
 
 
 @app.cell
@@ -530,6 +546,7 @@ def cell_22(max_bps_slider, portfolio):
             mo.md(f"*{_be_note}  One-way cost in basis points per unit of AUM traded.*"),
         ]
     )
+    return
 
 
 @app.cell
@@ -549,12 +566,14 @@ def cell_23(portfolio):
             mo.ui.plotly(portfolio.plots.trading_cost_impact_plot()),
         ]
     )
+    return
 
 
 @app.cell
 def cell_24():
     """Render separator."""
     mo.md(r"""---""")
+    return
 
 
 @app.cell
@@ -596,6 +615,7 @@ def cell_25():
           the full API reference
         """
     )
+    return
 
 
 if __name__ == "__main__":

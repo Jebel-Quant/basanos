@@ -243,35 +243,35 @@ class TestSmoke:
 
     def test_ic_shape(self, engine: BasanosEngine) -> None:
         """Ic must have one row per timestamp except the last (no forward return available)."""
-        result = engine.ic
+        result = engine.ic()
         assert result.shape == (99, 2)
         assert "ic" in result.columns
 
     def test_rank_ic_shape(self, engine: BasanosEngine) -> None:
         """rank_ic must have one row per timestamp except the last."""
-        result = engine.rank_ic
+        result = engine.rank_ic()
         assert result.shape == (99, 2)
         assert "rank_ic" in result.columns
 
     def test_ic_mean_is_float(self, engine: BasanosEngine) -> None:
         """ic_mean must be a float scalar."""
-        assert isinstance(engine.ic_mean, float)
+        assert isinstance(engine.ic_mean(), float)
 
     def test_ic_std_is_float(self, engine: BasanosEngine) -> None:
         """ic_std must be a float scalar."""
-        assert isinstance(engine.ic_std, float)
+        assert isinstance(engine.ic_std(), float)
 
     def test_icir_is_float(self, engine: BasanosEngine) -> None:
         """Icir must be a float scalar."""
-        assert isinstance(engine.icir, float)
+        assert isinstance(engine.icir(), float)
 
     def test_rank_ic_mean_is_float(self, engine: BasanosEngine) -> None:
         """rank_ic_mean must be a float scalar."""
-        assert isinstance(engine.rank_ic_mean, float)
+        assert isinstance(engine.rank_ic_mean(), float)
 
     def test_rank_ic_std_is_float(self, engine: BasanosEngine) -> None:
         """rank_ic_std must be a float scalar."""
-        assert isinstance(engine.rank_ic_std, float)
+        assert isinstance(engine.rank_ic_std(), float)
 
     def test_naive_sharpe_is_float(self, engine: BasanosEngine) -> None:
         """naive_sharpe must be a float scalar."""

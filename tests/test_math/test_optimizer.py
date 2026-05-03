@@ -1555,30 +1555,30 @@ class TestICTimeSeries:
 
     def test_ic_returns_polars_dataframe(self, ic_engine: BasanosEngine) -> None:
         """IC property must return a Polars DataFrame."""
-        assert isinstance(ic_engine.ic, pl.DataFrame)
+        assert isinstance(ic_engine.ic(), pl.DataFrame)
 
     def test_ic_has_expected_columns(self, ic_engine: BasanosEngine) -> None:
         """IC DataFrame must contain exactly 'date' and 'ic' columns."""
-        assert set(ic_engine.ic.columns) == {"date", "ic"}
+        assert set(ic_engine.ic().columns) == {"date", "ic"}
 
     def test_ic_length_is_t_minus_one(self, ic_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
         """IC series must have T-1 rows (one per forward-return period)."""
-        assert ic_engine.ic.height == optimizer_prices.height - 1
+        assert ic_engine.ic().height == optimizer_prices.height - 1
 
     def test_ic_dates_match_signal_dates(self, ic_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
         """Each IC date must equal the corresponding signal date (prices[t])."""
         expected_dates = optimizer_prices["date"].head(optimizer_prices.height - 1).to_list()
-        assert ic_engine.ic["date"].to_list() == expected_dates
+        assert ic_engine.ic()["date"].to_list() == expected_dates
 
     def test_ic_values_are_in_minus_one_to_one(self, ic_engine: BasanosEngine) -> None:
         """All finite IC values must lie in [-1, 1]."""
-        ic_vals = ic_engine.ic["ic"].drop_nulls().to_numpy()
+        ic_vals = ic_engine.ic()["ic"].drop_nulls().to_numpy()
         assert np.all(ic_vals >= -1.0 - 1e-12)
         assert np.all(ic_vals <= 1.0 + 1e-12)
 
     def test_ic_col_is_float64(self, ic_engine: BasanosEngine) -> None:
         """IC column must be Float64 dtype."""
-        assert ic_engine.ic["ic"].dtype == pl.Float64
+        assert ic_engine.ic()["ic"].dtype == pl.Float64
 
 
 class TestRankICTimeSeries:
@@ -1586,25 +1586,25 @@ class TestRankICTimeSeries:
 
     def test_rank_ic_returns_polars_dataframe(self, ic_engine: BasanosEngine) -> None:
         """rank_ic property must return a Polars DataFrame."""
-        assert isinstance(ic_engine.rank_ic, pl.DataFrame)
+        assert isinstance(ic_engine.rank_ic(), pl.DataFrame)
 
     def test_rank_ic_has_expected_columns(self, ic_engine: BasanosEngine) -> None:
         """rank_ic DataFrame must contain exactly 'date' and 'rank_ic' columns."""
-        assert set(ic_engine.rank_ic.columns) == {"date", "rank_ic"}
+        assert set(ic_engine.rank_ic().columns) == {"date", "rank_ic"}
 
     def test_rank_ic_length_is_t_minus_one(self, ic_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
         """rank_ic series must have T-1 rows (one per forward-return period)."""
-        assert ic_engine.rank_ic.height == optimizer_prices.height - 1
+        assert ic_engine.rank_ic().height == optimizer_prices.height - 1
 
     def test_rank_ic_values_are_in_minus_one_to_one(self, ic_engine: BasanosEngine) -> None:
         """All finite Rank IC values must lie in [-1, 1]."""
-        vals = ic_engine.rank_ic["rank_ic"].drop_nulls().to_numpy()
+        vals = ic_engine.rank_ic()["rank_ic"].drop_nulls().to_numpy()
         assert np.all(vals >= -1.0 - 1e-12)
         assert np.all(vals <= 1.0 + 1e-12)
 
     def test_rank_ic_col_is_float64(self, ic_engine: BasanosEngine) -> None:
         """rank_ic column must be Float64 dtype."""
-        assert ic_engine.rank_ic["rank_ic"].dtype == pl.Float64
+        assert ic_engine.rank_ic()["rank_ic"].dtype == pl.Float64
 
 
 class TestICScalars:
@@ -1612,23 +1612,23 @@ class TestICScalars:
 
     def test_ic_mean_is_finite(self, ic_engine: BasanosEngine) -> None:
         """ic_mean must return a finite float for a well-behaved engine."""
-        assert math.isfinite(ic_engine.ic_mean)
+        assert math.isfinite(ic_engine.ic_mean())
 
     def test_ic_std_is_non_negative(self, ic_engine: BasanosEngine) -> None:
         """ic_std must be non-negative (standard deviation cannot be negative)."""
-        std = ic_engine.ic_std
+        std = ic_engine.ic_std()
         assert math.isfinite(std)
         assert std >= 0.0
 
     def test_icir_equals_mean_over_std(self, ic_engine: BasanosEngine) -> None:
         """ICIR must equal ic_mean / ic_std."""
-        mean = ic_engine.ic_mean
-        std = ic_engine.ic_std
+        mean = ic_engine.ic_mean()
+        std = ic_engine.ic_std()
         expected = mean / std if std != 0.0 else float("nan")
         if math.isnan(expected):
-            assert math.isnan(ic_engine.icir)
+            assert math.isnan(ic_engine.icir())
         else:
-            assert math.isclose(ic_engine.icir, expected, rel_tol=1e-12)
+            assert math.isclose(ic_engine.icir(), expected, rel_tol=1e-12)
 
     def test_icir_is_nan_when_std_is_zero(self) -> None:
         """ICIR must gracefully return a float (possibly NaN) in degenerate cases."""
@@ -1656,30 +1656,30 @@ class TestICScalars:
         eng = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
         # With all-zero signal, every ic row is NaN (corrcoef of constants).
         # icir should return NaN gracefully.
-        icir = eng.icir
+        icir = eng.icir()
         assert isinstance(icir, float)
 
     def test_rank_ic_mean_is_finite(self, ic_engine: BasanosEngine) -> None:
         """rank_ic_mean must return a finite float for a well-behaved engine."""
-        assert math.isfinite(ic_engine.rank_ic_mean)
+        assert math.isfinite(ic_engine.rank_ic_mean())
 
     def test_rank_ic_std_is_non_negative(self, ic_engine: BasanosEngine) -> None:
         """rank_ic_std must be non-negative."""
-        std = ic_engine.rank_ic_std
+        std = ic_engine.rank_ic_std()
         assert math.isfinite(std)
         assert std >= 0.0
 
     def test_ic_mean_matches_manual_computation(self, ic_engine: BasanosEngine) -> None:
         """ic_mean must equal np.nanmean of the ic series."""
-        ic_vals = ic_engine.ic["ic"].to_numpy()
+        ic_vals = ic_engine.ic()["ic"].to_numpy()
         expected = float(np.nanmean(ic_vals))
-        assert math.isclose(ic_engine.ic_mean, expected, rel_tol=1e-12)
+        assert math.isclose(ic_engine.ic_mean(), expected, rel_tol=1e-12)
 
     def test_rank_ic_mean_matches_manual_computation(self, ic_engine: BasanosEngine) -> None:
         """rank_ic_mean must equal np.nanmean of the rank_ic series."""
-        ric_vals = ic_engine.rank_ic["rank_ic"].to_numpy()
+        ric_vals = ic_engine.rank_ic()["rank_ic"].to_numpy()
         expected = float(np.nanmean(ric_vals))
-        assert math.isclose(ic_engine.rank_ic_mean, expected, rel_tol=1e-12)
+        assert math.isclose(ic_engine.rank_ic_mean(), expected, rel_tol=1e-12)
 
 
 class TestICNaNHandling:
@@ -1714,7 +1714,7 @@ class TestICNaNHandling:
         """IC must not raise and must return finite or NaN values for all rows."""
         cfg = BasanosConfig(vola=3, corr=5, clip=3.0, shrink=0.5, aum=1e6)
         eng = BasanosEngine(prices=nan_prices, mu=nan_mu, cfg=cfg)
-        ic_df = eng.ic
+        ic_df = eng.ic()
         assert ic_df.height == nan_prices.height - 1
         for v in ic_df["ic"].to_list():
             assert v is None or isinstance(v, float)
@@ -1744,10 +1744,99 @@ class TestICNaNHandling:
         )
         cfg = BasanosConfig(vola=2, corr=3, clip=3.0, shrink=0.5, aum=1e6)
         eng = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-        ic_vals = eng.ic["ic"].to_list()
+        ic_vals = eng.ic()["ic"].to_list()
         # With only one valid asset pair, every IC value must be NaN
         for v in ic_vals:
             assert v is None or (isinstance(v, float) and math.isnan(v))
+
+
+class TestICHorizon:
+    """Tests for the forward-return horizon parameter ``h``."""
+
+    def test_h_default_matches_h1(self, ic_engine: BasanosEngine) -> None:
+        """ic() with no argument must match ic(h=1)."""
+        df_default = ic_engine.ic()
+        df_h1 = ic_engine.ic(h=1)
+        assert df_default.equals(df_h1)
+
+    def test_ic_h_greater_than_one_length(self, ic_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
+        """ic(h=5) must have T - 5 rows."""
+        h = 5
+        df = ic_engine.ic(h=h)
+        assert df.height == optimizer_prices.height - h
+
+    def test_rank_ic_h_greater_than_one_length(self, ic_engine: BasanosEngine, optimizer_prices: pl.DataFrame) -> None:
+        """rank_ic(h=5) must have T - 5 rows."""
+        h = 5
+        df = ic_engine.rank_ic(h=h)
+        assert df.height == optimizer_prices.height - h
+
+    def test_ic_h_computes_correct_forward_returns(self, ic_engine: BasanosEngine) -> None:
+        """Verify that ic(h=3) uses prices[t+3]/prices[t]-1 as forward returns."""
+        h = 3
+        assets = ic_engine.assets
+        prices_np = ic_engine.prices.select(assets).to_numpy().astype(float)
+        mu_np = ic_engine.mu.select(assets).to_numpy().astype(float)
+
+        # Manually compute IC for t=0
+        fwd_ret = prices_np[h] / prices_np[0] - 1.0
+        signal = mu_np[0]
+        mask = np.isfinite(signal) & np.isfinite(fwd_ret)
+        expected_ic = float(np.corrcoef(signal[mask], fwd_ret[mask])[0, 1])
+
+        ic_df = ic_engine.ic(h=h)
+        actual_ic = ic_df["ic"][0]
+        assert math.isclose(actual_ic, expected_ic, rel_tol=1e-12)
+
+    def test_ic_h_greater_equal_t_gives_empty(self) -> None:
+        """When h >= T, IC must return an empty DataFrame."""
+        n = 5
+        start = date(2020, 1, 1)
+        dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+        prices = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series([100.0, 102.0, 99.0, 103.0, 101.0], dtype=pl.Float64),
+                "B": pl.Series([200.0, 203.0, 198.0, 205.0, 201.0], dtype=pl.Float64),
+            }
+        )
+        mu = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series([0.1, 0.2, 0.3, 0.4, 0.5], dtype=pl.Float64),
+                "B": pl.Series([0.5, 0.4, 0.3, 0.2, 0.1], dtype=pl.Float64),
+            }
+        )
+        cfg = BasanosConfig(vola=2, corr=3, clip=3.0, shrink=0.5, aum=1e6)
+        eng = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        df = eng.ic(h=n)
+        assert df.height == 0
+
+    def test_h_less_than_one_raises(self, ic_engine: BasanosEngine) -> None:
+        """H < 1 must raise ValueError."""
+        with pytest.raises(ValueError, match="h must be >= 1"):
+            ic_engine.ic(h=0)
+        with pytest.raises(ValueError, match="h must be >= 1"):
+            ic_engine.ic(h=-1)
+
+    def test_icir_with_horizon(self, ic_engine: BasanosEngine) -> None:
+        """icir(h) must thread h through to ic_mean(h) / ic_std(h)."""
+        h = 3
+        mean = ic_engine.ic_mean(h)
+        std = ic_engine.ic_std(h)
+        if std != 0.0 and np.isfinite(std):
+            expected = mean / std
+            assert math.isclose(ic_engine.icir(h), expected, rel_tol=1e-12)
+
+    def test_rank_ic_mean_with_horizon(self, ic_engine: BasanosEngine) -> None:
+        """rank_ic_mean(h=3) must be finite for a well-behaved engine."""
+        assert math.isfinite(ic_engine.rank_ic_mean(h=3))
+
+    def test_rank_ic_std_with_horizon(self, ic_engine: BasanosEngine) -> None:
+        """rank_ic_std(h=3) must be non-negative."""
+        std = ic_engine.rank_ic_std(h=3)
+        assert math.isfinite(std)
+        assert std >= 0.0
 
 
 # ─── sharpe_at_shrink and naive_sharpe ───────────────────────────────────────

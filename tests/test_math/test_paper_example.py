@@ -169,22 +169,22 @@ class TestPaperSignalQuality:
     """Verify ic, rank_ic, icir, and naive_sharpe from the paper listing."""
 
     def test_ic_is_dataframe(self, paper_engine: BasanosEngine) -> None:
-        assert isinstance(paper_engine.ic, pl.DataFrame)
+        assert isinstance(paper_engine.ic(), pl.DataFrame)
 
     def test_ic_height(self, paper_engine: BasanosEngine) -> None:
         assert paper_engine.prices.height == _N_DAYS
         assert paper_engine.mu.height == _N_DAYS
-        assert paper_engine.ic.height == _N_DAYS - 1  # no data for the last day!
+        assert paper_engine.ic().height == _N_DAYS - 1  # no data for the last day!
 
     def test_rank_ic_is_dataframe(self, paper_engine: BasanosEngine) -> None:
-        assert isinstance(paper_engine.rank_ic, pl.DataFrame)
+        assert isinstance(paper_engine.rank_ic(), pl.DataFrame)
 
     def test_rank_ic_height(self, paper_engine: BasanosEngine) -> None:
-        assert paper_engine.rank_ic.height == _N_DAYS - 1
+        assert paper_engine.rank_ic().height == _N_DAYS - 1
 
     def test_icir_is_finite_float(self, paper_engine: BasanosEngine) -> None:
-        assert isinstance(paper_engine.icir, float)
-        assert np.isfinite(paper_engine.icir)
+        assert isinstance(paper_engine.icir(), float)
+        assert np.isfinite(paper_engine.icir())
 
     def test_naive_sharpe_is_finite_float(self, paper_engine: BasanosEngine) -> None:
         assert isinstance(paper_engine.naive_sharpe, float)
