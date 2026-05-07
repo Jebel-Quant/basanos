@@ -21,7 +21,6 @@ from __future__ import annotations
 import math
 import importlib
 import sys
-from contextlib import suppress
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -300,8 +299,10 @@ def test_notebook_executes() -> None:
     that the mirror tests validate.
     """
     notebook_parent = str(_NOTEBOOK.parent)
+    inserted = False
     try:
         sys.path.insert(0, notebook_parent)
+        inserted = True
         notebook_module = importlib.import_module(_NOTEBOOK.stem)
         assert hasattr(notebook_module, "app"), f"Notebook module {_NOTEBOOK.stem} does not define `app`"
         app = getattr(notebook_module, "app")
@@ -310,5 +311,5 @@ def test_notebook_executes() -> None:
         assert isinstance(defs, dict)
         assert defs
     finally:
-        with suppress(ValueError):
+        if inserted:
             sys.path.remove(notebook_parent)
