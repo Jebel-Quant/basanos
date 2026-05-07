@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -210,7 +211,7 @@ def test_notebook_executes() -> None:
         app = notebook_module.app
         _outputs, defs = app.run()
         assert _outputs is not None
-        assert isinstance(defs, dict)
+        assert isinstance(defs, Mapping)
         assert defs
     finally:
         if inserted:
