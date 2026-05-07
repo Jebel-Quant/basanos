@@ -21,6 +21,7 @@ from __future__ import annotations
 import math
 import importlib
 import sys
+from contextlib import suppress
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -298,10 +299,12 @@ def test_notebook_executes() -> None:
     This catches regressions in notebook cell code itself, not just the API
     that the mirror tests validate.
     """
-    sys.path.insert(0, str(_NOTEBOOK.parent))
+    notebook_parent = str(_NOTEBOOK.parent)
     try:
+        sys.path.insert(0, notebook_parent)
         notebook_module = importlib.import_module(_NOTEBOOK.stem)
         app = getattr(notebook_module, "app")
         app.run()
     finally:
-        sys.path.pop(0)
+        with suppress(ValueError):
+            sys.path.remove(notebook_parent)
