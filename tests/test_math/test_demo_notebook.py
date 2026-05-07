@@ -205,6 +205,7 @@ def test_notebook_executes() -> None:
     try:
         sys.path.insert(0, notebook_parent)
         notebook_module = importlib.import_module(_NOTEBOOK.stem)
+        assert hasattr(notebook_module, "app"), f"Notebook module {_NOTEBOOK.stem} does not define `app`"
         app = getattr(notebook_module, "app")
         _outputs, defs = app.run()
         assert isinstance(defs, dict)
