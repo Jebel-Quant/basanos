@@ -15,6 +15,7 @@
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 ![Last Updated](https://img.shields.io/github/last-commit/jebel-quant/basanos/main?label=Last%20updated&color=blue)
 [![Paper](https://img.shields.io/badge/paper-basanos.pdf-red?logo=adobeacrobatreader)](https://github.com/jebel-quant/basanos/blob/paper/basanos.pdf)
+[![CodeFactor](https://www.codefactor.io/repository/github/jebel-quant/basanos/badge)](https://www.codefactor.io/repository/github/jebel-quant/basanos)
 
 </div>
 
