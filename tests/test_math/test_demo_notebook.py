@@ -206,7 +206,9 @@ def test_notebook_executes() -> None:
         sys.path.insert(0, notebook_parent)
         notebook_module = importlib.import_module(_NOTEBOOK.stem)
         app = getattr(notebook_module, "app")
-        app.run()
+        _outputs, defs = app.run()
+        assert isinstance(defs, dict)
+        assert defs
     finally:
         with suppress(ValueError):
             sys.path.remove(notebook_parent)
