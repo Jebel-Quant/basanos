@@ -19,8 +19,8 @@ after the notebook was first written, making this gate especially important.
 
 from __future__ import annotations
 
-import math
 import importlib
+import math
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -344,7 +344,7 @@ def test_notebook_executes() -> None:
         inserted = True
         notebook_module = importlib.import_module(_NOTEBOOK.stem)
         assert hasattr(notebook_module, "app"), f"Notebook module {_NOTEBOOK.stem} does not define `app`"
-        app = getattr(notebook_module, "app")
+        app = notebook_module.app
         _outputs, defs = app.run()
         assert _outputs is not None
         assert isinstance(defs, dict)
