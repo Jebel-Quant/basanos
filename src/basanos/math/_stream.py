@@ -366,7 +366,20 @@ def _resolve_step_vector(
     n_assets: int,
     arg_name: str,
 ) -> np.ndarray:
-    """Resolve one step input to a validated ``(N,)`` float vector."""
+    """Resolve one step input to a validated ``(N,)`` float vector.
+
+    Args:
+        values: Raw input provided to ``step`` as either dict or array-like.
+        assets: Ordered asset names used when ``values`` is a mapping.
+        n_assets: Expected vector length.
+        arg_name: Argument label used in shape-mismatch errors.
+
+    Returns:
+        A float64 numpy vector of shape ``(n_assets,)``.
+
+    Raises:
+        ValueError: If the resolved vector does not match ``(n_assets,)``.
+    """
     if isinstance(values, dict):
         vector = np.array([float(values[a]) for a in assets], dtype=float)
     else:

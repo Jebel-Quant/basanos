@@ -208,6 +208,7 @@ def test_notebook_executes() -> None:
         assert hasattr(notebook_module, "app"), f"Notebook module {_NOTEBOOK.stem} does not define `app`"
         app = getattr(notebook_module, "app")
         _outputs, defs = app.run()
+        assert _outputs is not None
         assert isinstance(defs, dict)
         assert defs
     finally:
