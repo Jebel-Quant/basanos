@@ -116,6 +116,72 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
+def _validate_required_date_columns(prices: pl.DataFrame, mu: pl.DataFrame) -> None:
+    """Ensure both input frames expose the required ``date`` column."""
+    if "date" not in prices.columns:
+        raise MissingDateColumnError("prices")
+    if "date" not in mu.columns:
+        raise MissingDateColumnError("mu")
+
+
+def _validate_shape_and_column_sets(prices: pl.DataFrame, mu: pl.DataFrame) -> None:
+    """Ensure prices and signals are shape- and schema-compatible."""
+    if prices.shape != mu.shape:
+        raise ShapeMismatchError(prices.shape, mu.shape)
+    if not set(prices.columns) == set(mu.columns):
+        raise ColumnMismatchError(prices.columns, mu.columns)
+
+
+def _numeric_assets(prices: pl.DataFrame) -> list[str]:
+    """Return numeric asset columns, excluding the ``date`` column."""
+    return [c for c in prices.columns if c != "date" and prices[c].dtype.is_numeric()]
+
+
+def _validate_positive_prices(prices: pl.DataFrame, assets: list[str]) -> None:
+    """Ensure all finite/non-null prices are strictly positive."""
+    for asset in assets:
+        col = prices[asset].drop_nulls()
+        if col.len() > 0 and (col <= 0).any():
+            raise NonPositivePricesError(asset)
+
+
+def _validate_null_fraction(prices: pl.DataFrame, assets: list[str], max_nan_fraction: float) -> None:
+    """Reject asset columns whose null fraction exceeds configuration bounds."""
+    n_rows = prices.height
+    if n_rows == 0:
+        return
+    for asset in assets:
+        nan_frac = prices[asset].null_count() / n_rows
+        if nan_frac > max_nan_fraction:
+            raise ExcessiveNullsError(asset, nan_frac, max_nan_fraction)
+
+
+def _validate_non_monotonic_prices(prices: pl.DataFrame, assets: list[str]) -> None:
+    """Reject monotonic asset series that indicate malformed synthetic data."""
+    for asset in assets:
+        col = prices[asset].drop_nulls()
+        if col.len() > 2:
+            diffs = col.diff().drop_nulls()
+            if (diffs >= 0).all() or (diffs <= 0).all():
+                raise MonotonicPricesError(asset)
+
+
+def _warn_short_sliding_window_data(prices: pl.DataFrame, cfg: "BasanosConfig") -> None:
+    """Emit a warning when data is too short relative to the configured SW window."""
+    if cfg.covariance_mode == CovarianceMode.sliding_window and cfg.window is not None:
+        n_rows = prices.height
+        w: int = cfg.window
+        if n_rows < 2 * w:
+            _logger.warning(
+                "Dataset length (%d rows) is less than 2 * window (%d). "
+                "The first %d timestamps will yield zero positions during warm-up; "
+                "consider using a longer history or reducing 'window'.",
+                n_rows,
+                2 * w,
+                w - 1,
+            )
+
+
 def _validate_inputs(prices: pl.DataFrame, mu: pl.DataFrame, cfg: "BasanosConfig") -> None:
     """Validate ``prices``, ``mu``, and ``cfg`` for use with `BasanosEngine`.
 
@@ -148,59 +214,13 @@ def _validate_inputs(prices: pl.DataFrame, mu: pl.DataFrame, cfg: "BasanosConfig
             shorter than the full warm-up period.  During warm-up the first
             ``window - 1`` timestamps will yield zero positions.
     """
-    # ensure 'date' column exists in prices before any other validation
-    if "date" not in prices.columns:
-        raise MissingDateColumnError("prices")
-
-    # ensure 'date' column exists in mu as well (kept for symmetry and downstream assumptions)
-    if "date" not in mu.columns:
-        raise MissingDateColumnError("mu")
-
-    # check that prices and mu have the same shape
-    if prices.shape != mu.shape:
-        raise ShapeMismatchError(prices.shape, mu.shape)
-
-    # check that the columns of prices and mu are identical
-    if not set(prices.columns) == set(mu.columns):
-        raise ColumnMismatchError(prices.columns, mu.columns)
-
-    assets = [c for c in prices.columns if c != "date" and prices[c].dtype.is_numeric()]
-
-    # check for non-positive prices: log returns require strictly positive prices
-    for asset in assets:
-        col = prices[asset].drop_nulls()
-        if col.len() > 0 and (col <= 0).any():
-            raise NonPositivePricesError(asset)
-
-    # check for excessive NaN values: more than cfg.max_nan_fraction null in any asset column
-    n_rows = prices.height
-    if n_rows > 0:
-        for asset in assets:
-            nan_frac = prices[asset].null_count() / n_rows
-            if nan_frac > cfg.max_nan_fraction:
-                raise ExcessiveNullsError(asset, nan_frac, cfg.max_nan_fraction)
-
-    # check for monotonic price series: a strictly non-decreasing or non-increasing
-    # series has no variance in its return sign, indicating malformed or synthetic data
-    for asset in assets:
-        col = prices[asset].drop_nulls()
-        if col.len() > 2:
-            diffs = col.diff().drop_nulls()
-            if (diffs >= 0).all() or (diffs <= 0).all():
-                raise MonotonicPricesError(asset)
-
-    # warn when the dataset is too short to benefit from the sliding window
-    if cfg.covariance_mode == CovarianceMode.sliding_window and cfg.window is not None:
-        w: int = cfg.window
-        if n_rows < 2 * w:
-            _logger.warning(
-                "Dataset length (%d rows) is less than 2 * window (%d). "
-                "The first %d timestamps will yield zero positions during warm-up; "
-                "consider using a longer history or reducing 'window'.",
-                n_rows,
-                2 * w,
-                w - 1,
-            )
+    _validate_required_date_columns(prices, mu)
+    _validate_shape_and_column_sets(prices, mu)
+    assets = _numeric_assets(prices)
+    _validate_positive_prices(prices, assets)
+    _validate_null_fraction(prices, assets, cfg.max_nan_fraction)
+    _validate_non_monotonic_prices(prices, assets)
+    _warn_short_sliding_window_data(prices, cfg)
 
 
 # ---------------------------------------------------------------------------

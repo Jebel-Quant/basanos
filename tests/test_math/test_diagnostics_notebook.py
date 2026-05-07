@@ -20,8 +20,7 @@ after the notebook was first written, making this gate especially important.
 from __future__ import annotations
 
 import math
-import os
-import subprocess
+import importlib
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -333,23 +332,15 @@ class TestSignalUtilisationSw:
 
 
 def test_notebook_executes() -> None:
-    """Execute diagnostics.py directly via marimo export html (no sandbox).
+    """Execute diagnostics.py directly via ``app.run()``.
 
     This catches regressions in notebook cell code itself, not just the API
     that the mirror tests validate.
     """
-    result = subprocess.run(  # nosec
-        [sys.executable, "-m", "marimo", "export", "html", "--no-sandbox", str(_NOTEBOOK), "-o", os.devnull],
-        capture_output=True,
-        text=True,
-    )
-    combined = (result.stdout or "") + "\n" + (result.stderr or "")
-    failure_keywords = ["cells failed to execute", "marimoexceptionraisederror"]
-    for kw in failure_keywords:
-        assert kw.lower() not in combined.lower(), (
-            f"Notebook {_NOTEBOOK.name} reported cell failures (keyword '{kw}'):\n"
-            f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
-        )
-    assert result.returncode == 0, (
-        f"marimo export returned non-zero for {_NOTEBOOK.name}:\nstdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
-    )
+    sys.path.insert(0, str(_NOTEBOOK.parent))
+    try:
+        notebook_module = importlib.import_module(_NOTEBOOK.stem)
+        app = getattr(notebook_module, "app")
+        app.run()
+    finally:
+        sys.path.pop(0)

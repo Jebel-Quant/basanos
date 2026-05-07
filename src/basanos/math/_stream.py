@@ -360,6 +360,22 @@ def _ewm_vol_accumulators_from_batch(
     return s_x, s_x2, s_w, s_w2, count
 
 
+def _resolve_step_vector(
+    values: np.ndarray | dict[str, float],
+    assets: list[str],
+    n_assets: int,
+    arg_name: str,
+) -> np.ndarray:
+    """Resolve one step input to a validated ``(N,)`` float vector."""
+    if isinstance(values, dict):
+        vector = np.array([float(values[a]) for a in assets], dtype=float)
+    else:
+        vector = np.asarray(values, dtype=float).ravel()
+    if vector.shape != (n_assets,):
+        raise ValueError(f"{arg_name} must have shape ({n_assets},); got {vector.shape}")  # noqa: TRY003
+    return vector
+
+
 # ---------------------------------------------------------------------------
 # BasanosStream
 # ---------------------------------------------------------------------------
@@ -585,6 +601,178 @@ class BasanosStream:
     # step
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _warmup_threshold(cfg: BasanosConfig) -> int:
+        """Return the step count at which warmup ends for the configured mode."""
+        if isinstance(cfg.covariance_config, SlidingWindowConfig):
+            return cfg.covariance_config.window
+        return cfg.corr
+
+    @staticmethod
+    def _persist_state(
+        state: _StreamState,
+        *,
+        corr_zi_x: np.ndarray,
+        corr_zi_x2: np.ndarray,
+        corr_zi_xy: np.ndarray,
+        corr_zi_w: np.ndarray,
+        corr_count: np.ndarray,
+        vola_s_x: np.ndarray,
+        vola_s_x2: np.ndarray,
+        vola_s_w: np.ndarray,
+        vola_s_w2: np.ndarray,
+        vola_count: np.ndarray,
+        pct_s_x: np.ndarray,
+        pct_s_x2: np.ndarray,
+        pct_s_w: np.ndarray,
+        pct_s_w2: np.ndarray,
+        pct_count: np.ndarray,
+        new_price: np.ndarray,
+        new_cash_pos: np.ndarray | None = None,
+    ) -> None:
+        """Persist accumulators, last-seen vectors, and increment step count."""
+        state.corr_zi_x = corr_zi_x
+        state.corr_zi_x2 = corr_zi_x2
+        state.corr_zi_xy = corr_zi_xy
+        state.corr_zi_w = corr_zi_w
+        state.corr_count = corr_count
+        state.vola_s_x = vola_s_x
+        state.vola_s_x2 = vola_s_x2
+        state.vola_s_w = vola_s_w
+        state.vola_s_w2 = vola_s_w2
+        state.vola_count = vola_count
+        state.pct_s_x = pct_s_x
+        state.pct_s_x2 = pct_s_x2
+        state.pct_s_w = pct_s_w
+        state.pct_s_w2 = pct_s_w2
+        state.pct_count = pct_count
+        state.prev_price = new_price.copy()
+        if new_cash_pos is not None:
+            state.prev_cash_pos = new_cash_pos.copy()
+        state.step_count += 1
+
+    @staticmethod
+    def _warmup_result(n_assets: int, date: Any) -> StepResult:
+        """Build a standard warmup ``StepResult`` payload."""
+        return StepResult(
+            date=date,
+            cash_position=np.full(n_assets, np.nan),
+            status=SolveStatus.WARMUP,
+            vola=np.full(n_assets, np.nan),
+        )
+
+    def _solve_sliding_window_position(
+        self,
+        *,
+        cfg: BasanosConfig,
+        state: _StreamState,
+        mask: np.ndarray,
+        new_m: np.ndarray,
+        vola_vec: np.ndarray,
+        n_assets: int,
+        date: Any,
+    ) -> tuple[np.ndarray, SolveStatus]:
+        """Solve one step in SlidingWindow mode and return cash position + status."""
+        from ..exceptions import SingularMatrixError
+
+        new_cash_pos = np.full(n_assets, np.nan, dtype=float)
+        status = SolveStatus.DEGENERATE
+        sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
+        if not mask.any():
+            return new_cash_pos, status
+
+        win_w = sw_config.window
+        win_k = sw_config.n_factors
+        window_ret = np.where(
+            np.isfinite(state.sw_ret_buf[:, mask]),  # type: ignore[index]
+            state.sw_ret_buf[:, mask],  # type: ignore[index]
+            0.0,
+        )
+        n_sub = int(mask.sum())
+        k_eff = min(win_k, win_w, n_sub)
+        if sw_config.max_components is not None:
+            k_eff = min(k_eff, sw_config.max_components)
+        try:
+            fm = FactorModel.from_returns(window_ret, k=k_eff)
+        except (np.linalg.LinAlgError, ValueError) as exc:
+            _logger.debug("Sliding window SVD failed at date=%s: %s", date, exc)
+            new_cash_pos[mask] = 0.0
+            return new_cash_pos, status
+
+        expected_mu = np.nan_to_num(new_m[mask])
+        if np.allclose(expected_mu, 0.0):
+            new_cash_pos[mask] = 0.0
+            return new_cash_pos, SolveStatus.ZERO_SIGNAL
+
+        try:
+            x = fm.solve(expected_mu)
+            denom_val = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
+        except (SingularMatrixError, np.linalg.LinAlgError) as exc:
+            _logger.warning("Woodbury solve failed at date=%s: %s", date, exc)
+            new_cash_pos[mask] = 0.0
+            return new_cash_pos, status
+
+        if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
+            _logger.warning(
+                "Positions zeroed at date=%s (sliding_window): normalisation "
+                "denominator degenerate (denom=%s, denom_tol=%s).",
+                date,
+                denom_val,
+                cfg.denom_tol,
+            )
+            new_cash_pos[mask] = 0.0
+            return new_cash_pos, status
+
+        risk_pos = x / denom_val
+        vola_sub = vola_vec[mask]
+        with np.errstate(invalid="ignore"):
+            new_cash_pos[mask] = risk_pos / vola_sub
+        return new_cash_pos, SolveStatus.VALID
+
+    @staticmethod
+    def _solve_ewma_position(
+        *,
+        cfg: BasanosConfig,
+        state: _StreamState,
+        mask: np.ndarray,
+        new_m: np.ndarray,
+        vola_vec: np.ndarray,
+        y_x: np.ndarray,
+        y_x2: np.ndarray,
+        y_xy: np.ndarray,
+        y_w: np.ndarray,
+        corr_count: np.ndarray,
+        n_assets: int,
+        date: Any,
+    ) -> tuple[np.ndarray, SolveStatus]:
+        """Solve one step in EWMA mode and return cash position + status."""
+        new_cash_pos = np.full(n_assets, np.nan, dtype=float)
+        corr = _corr_from_ewm_accumulators(
+            y_x[0],
+            y_x2[0],
+            y_xy[0],
+            y_w[0],
+            corr_count,
+            min_periods=cfg.corr,
+            min_corr_denom=cfg.min_corr_denom,
+        )
+        matrix = shrink2id(corr, lamb=cfg.shrink)
+        expected_mu, early = _SolveMixin._row_early_check(state.step_count, date, mask, new_m)
+        if early is not None:
+            _, _, _, pos, status = early
+            new_cash_pos[mask] = pos
+            return new_cash_pos, status
+
+        corr_sub = matrix[np.ix_(mask, mask)]
+        _, _, _, pos, status = _SolveMixin._compute_position(
+            state.step_count, date, mask, expected_mu, MatrixBundle(matrix=corr_sub), cfg.denom_tol
+        )
+        if status == SolveStatus.VALID:
+            new_cash_pos[mask] = _SolveMixin._scale_to_cash(cast(np.ndarray, pos), vola_vec[mask])
+        else:
+            new_cash_pos[mask] = pos
+        return new_cash_pos, status
+
     def step(
         self,
         new_prices: np.ndarray | dict[str, float],
@@ -611,8 +799,6 @@ class BasanosStream:
             Frozen dataclass with ``cash_position``, ``vola``, ``status``, and
             ``date`` for this timestep.
         """
-        from ..exceptions import SingularMatrixError
-
         cfg = self._cfg
         assets = self._assets
         state = self._state
@@ -633,26 +819,12 @@ class BasanosStream:
         #
         # In both modes all accumulators are still updated during warmup so that
         # the state is ready the moment the warmup period ends.
-        _warmup_thresh = (
-            cfg.covariance_config.window if isinstance(cfg.covariance_config, SlidingWindowConfig) else cfg.corr
-        )
+        _warmup_thresh = self._warmup_threshold(cfg)
         in_warmup: bool = state.step_count < _warmup_thresh
 
         # ── Resolve inputs to (N,) float64 arrays ──────────────────────────
-        if isinstance(new_prices, dict):
-            new_p = np.array([float(new_prices[a]) for a in assets], dtype=float)
-        else:
-            new_p = np.asarray(new_prices, dtype=float).ravel()
-
-        if isinstance(new_mu, dict):
-            new_m = np.array([float(new_mu[a]) for a in assets], dtype=float)
-        else:
-            new_m = np.asarray(new_mu, dtype=float).ravel()
-
-        if new_p.shape != (n_assets,):
-            raise ValueError(f"new_prices must have shape ({n_assets},); got {new_p.shape}")  # noqa: TRY003
-        if new_m.shape != (n_assets,):
-            raise ValueError(f"new_mu must have shape ({n_assets},); got {new_m.shape}")  # noqa: TRY003
+        new_p = _resolve_step_vector(new_prices, assets, n_assets, "new_prices")
+        new_m = _resolve_step_vector(new_mu, assets, n_assets, "new_mu")
 
         prev_p = state.prev_price
         beta_vola: float = (cfg.vola - 1) / cfg.vola
@@ -733,125 +905,57 @@ class BasanosStream:
         # reconstruction and O(N³) Cholesky solve which are wasteful during
         # warmup — the computed positions would be discarded anyway.
         if in_warmup:
-            state.corr_zi_x = corr_zi_x
-            state.corr_zi_x2 = corr_zi_x2
-            state.corr_zi_xy = corr_zi_xy
-            state.corr_zi_w = corr_zi_w
-            state.corr_count = corr_count
-            state.vola_s_x = vola_s_x
-            state.vola_s_x2 = vola_s_x2
-            state.vola_s_w = vola_s_w
-            state.vola_s_w2 = vola_s_w2
-            state.vola_count = vola_count
-            state.pct_s_x = pct_s_x
-            state.pct_s_x2 = pct_s_x2
-            state.pct_s_w = pct_s_w
-            state.pct_s_w2 = pct_s_w2
-            state.pct_count = pct_count
-            state.prev_price = new_p.copy()
-            state.step_count += 1
-            return StepResult(
-                date=date,
-                cash_position=np.full(n_assets, np.nan),
-                status=SolveStatus.WARMUP,
-                vola=np.full(n_assets, np.nan),
+            self._persist_state(
+                state,
+                corr_zi_x=corr_zi_x,
+                corr_zi_x2=corr_zi_x2,
+                corr_zi_xy=corr_zi_xy,
+                corr_zi_w=corr_zi_w,
+                corr_count=corr_count,
+                vola_s_x=vola_s_x,
+                vola_s_x2=vola_s_x2,
+                vola_s_w=vola_s_w,
+                vola_s_w2=vola_s_w2,
+                vola_count=vola_count,
+                pct_s_x=pct_s_x,
+                pct_s_x2=pct_s_x2,
+                pct_s_w=pct_s_w,
+                pct_s_w2=pct_s_w2,
+                pct_count=pct_count,
+                new_price=new_p,
             )
+            return self._warmup_result(n_assets, date)
 
         # ── Compute EWMA volatility (pct-return std) — shared ───────────────
         vola_vec = _ewm_std_from_state(pct_s_x, pct_s_x2, pct_s_w, pct_s_w2, pct_count, min_samples=cfg.vola)
 
         # ── Solve for position ───────────────────────────────────────────────
-        new_cash_pos = np.full(n_assets, np.nan, dtype=float)
-        status = SolveStatus.DEGENERATE
-
         mask = np.isfinite(new_p)
-
         if isinstance(cfg.covariance_config, SlidingWindowConfig):
-            # ── SW path: FactorModel solve via Woodbury identity ─────────────
-            sw_config = cfg.covariance_config
-            if not mask.any():
-                status = SolveStatus.DEGENERATE
-            else:
-                win_w = sw_config.window
-                win_k = sw_config.n_factors
-                window_ret = np.where(
-                    np.isfinite(state.sw_ret_buf[:, mask]),  # type: ignore[index]
-                    state.sw_ret_buf[:, mask],  # type: ignore[index]
-                    0.0,
-                )
-                n_sub = int(mask.sum())
-                k_eff = min(win_k, win_w, n_sub)
-                if sw_config.max_components is not None:
-                    k_eff = min(k_eff, sw_config.max_components)
-                try:
-                    fm = FactorModel.from_returns(window_ret, k=k_eff)
-                except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.debug("Sliding window SVD failed at date=%s: %s", date, exc)
-                    new_cash_pos[mask] = 0.0
-                    status = SolveStatus.DEGENERATE
-                else:
-                    expected_mu = np.nan_to_num(new_m[mask])
-                    if np.allclose(expected_mu, 0.0):
-                        new_cash_pos[mask] = 0.0
-                        status = SolveStatus.ZERO_SIGNAL
-                    else:
-                        try:
-                            x = fm.solve(expected_mu)
-                            denom_val = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
-                        except (SingularMatrixError, np.linalg.LinAlgError) as exc:
-                            _logger.warning("Woodbury solve failed at date=%s: %s", date, exc)
-                            new_cash_pos[mask] = 0.0
-                            status = SolveStatus.DEGENERATE
-                        else:
-                            if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
-                                _logger.warning(
-                                    "Positions zeroed at date=%s (sliding_window): normalisation "
-                                    "denominator degenerate (denom=%s, denom_tol=%s).",
-                                    date,
-                                    denom_val,
-                                    cfg.denom_tol,
-                                )
-                                new_cash_pos[mask] = 0.0
-                                status = SolveStatus.DEGENERATE
-                            else:
-                                risk_pos = x / denom_val
-                                vola_sub = vola_vec[mask]
-                                with np.errstate(invalid="ignore"):
-                                    new_cash_pos[mask] = risk_pos / vola_sub
-                                status = SolveStatus.VALID
-        else:
-            # ── EWM path: shared _corr_from_ewm_accumulators + _SolveMixin solve ──
-            # Reconstruct the EWM correlation matrix from filter outputs using
-            # the shared helper — the same formula as _ewm_corr_with_final_state
-            # but operating on (N, N) slices instead of (T, N, N) tensors.
-            # Use y_*[0] (the filter OUTPUT for this step), not zf[0].
-            corr = _corr_from_ewm_accumulators(
-                y_x[0],
-                y_x2[0],
-                y_xy[0],
-                y_w[0],
-                corr_count,
-                min_periods=cfg.corr,
-                min_corr_denom=cfg.min_corr_denom,
+            new_cash_pos, status = self._solve_sliding_window_position(
+                cfg=cfg,
+                state=state,
+                mask=mask,
+                new_m=new_m,
+                vola_vec=vola_vec,
+                n_assets=n_assets,
+                date=date,
             )
-            matrix = shrink2id(corr, lamb=cfg.shrink)
-
-            # Delegate the signal check and linear solve to _SolveMixin so that
-            # any algorithm change (denominator guard, status labels, etc.) only
-            # needs to be applied in _engine_solve.py.
-            expected_mu, early = _SolveMixin._row_early_check(state.step_count, date, mask, new_m)
-            if early is not None:
-                _, _, _, pos, status = early
-                new_cash_pos[mask] = pos
-            else:
-                corr_sub = matrix[np.ix_(mask, mask)]
-                _, _, _, pos, status = _SolveMixin._compute_position(
-                    state.step_count, date, mask, expected_mu, MatrixBundle(matrix=corr_sub), cfg.denom_tol
-                )
-                if status == SolveStatus.VALID:
-                    new_cash_pos[mask] = _SolveMixin._scale_to_cash(cast(np.ndarray, pos), vola_vec[mask])
-                else:
-                    new_cash_pos[mask] = pos
+        else:
+            new_cash_pos, status = self._solve_ewma_position(
+                cfg=cfg,
+                state=state,
+                mask=mask,
+                new_m=new_m,
+                vola_vec=vola_vec,
+                y_x=y_x,
+                y_x2=y_x2,
+                y_xy=y_xy,
+                y_w=y_w,
+                corr_count=corr_count,
+                n_assets=n_assets,
+                date=date,
+            )
 
         # ── Apply turnover constraint ─────────────────────────────────────────
         if cfg.max_turnover is not None and status == SolveStatus.VALID:
@@ -862,24 +966,26 @@ class BasanosStream:
             )
 
         # ── Persist updated state ───────────────────────────────────────────
-        state.corr_zi_x = corr_zi_x
-        state.corr_zi_x2 = corr_zi_x2
-        state.corr_zi_xy = corr_zi_xy
-        state.corr_zi_w = corr_zi_w
-        state.corr_count = corr_count
-        state.vola_s_x = vola_s_x
-        state.vola_s_x2 = vola_s_x2
-        state.vola_s_w = vola_s_w
-        state.vola_s_w2 = vola_s_w2
-        state.vola_count = vola_count
-        state.pct_s_x = pct_s_x
-        state.pct_s_x2 = pct_s_x2
-        state.pct_s_w = pct_s_w
-        state.pct_s_w2 = pct_s_w2
-        state.pct_count = pct_count
-        state.prev_price = new_p.copy()
-        state.prev_cash_pos = new_cash_pos.copy()
-        state.step_count += 1
+        self._persist_state(
+            state,
+            corr_zi_x=corr_zi_x,
+            corr_zi_x2=corr_zi_x2,
+            corr_zi_xy=corr_zi_xy,
+            corr_zi_w=corr_zi_w,
+            corr_count=corr_count,
+            vola_s_x=vola_s_x,
+            vola_s_x2=vola_s_x2,
+            vola_s_w=vola_s_w,
+            vola_s_w2=vola_s_w2,
+            vola_count=vola_count,
+            pct_s_x=pct_s_x,
+            pct_s_x2=pct_s_x2,
+            pct_s_w=pct_s_w,
+            pct_s_w2=pct_s_w2,
+            pct_count=pct_count,
+            new_price=new_p,
+            new_cash_pos=new_cash_pos,
+        )
 
         return StepResult(
             date=date,
