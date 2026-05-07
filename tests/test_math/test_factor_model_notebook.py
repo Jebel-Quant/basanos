@@ -15,9 +15,9 @@ Covered API surface:
 
 from __future__ import annotations
 
-import os
-import subprocess
+import importlib
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
@@ -201,23 +201,23 @@ class TestFactorModelWoodburySolve:
 
 
 def test_notebook_executes() -> None:
-    """Execute factor_model_guide.py directly via marimo export html (no sandbox).
+    """Execute factor_model_guide.py directly via ``app.run()``.
 
     This catches regressions in notebook cell code itself, not just the API
     that the mirror tests validate.
     """
-    result = subprocess.run(  # nosec
-        [sys.executable, "-m", "marimo", "export", "html", "--no-sandbox", str(_NOTEBOOK), "-o", os.devnull],
-        capture_output=True,
-        text=True,
-    )
-    combined = (result.stdout or "") + "\n" + (result.stderr or "")
-    failure_keywords = ["cells failed to execute", "marimoexceptionraisederror"]
-    for kw in failure_keywords:
-        assert kw.lower() not in combined.lower(), (
-            f"Notebook {_NOTEBOOK.name} reported cell failures (keyword '{kw}'):\n"
-            f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
-        )
-    assert result.returncode == 0, (
-        f"marimo export returned non-zero for {_NOTEBOOK.name}:\nstdout:\n{result.stdout}\n\nstderr:\n{result.stderr}"
-    )
+    notebook_parent = str(_NOTEBOOK.parent)
+    inserted = False
+    try:
+        sys.path.insert(0, notebook_parent)
+        inserted = True
+        notebook_module = importlib.import_module(_NOTEBOOK.stem)
+        assert hasattr(notebook_module, "app"), f"Notebook module {_NOTEBOOK.stem} does not define `app`"
+        app = notebook_module.app
+        _outputs, defs = app.run()
+        assert _outputs is not None
+        assert isinstance(defs, Mapping)
+        assert defs
+    finally:
+        if inserted:
+            sys.path.remove(notebook_parent)
