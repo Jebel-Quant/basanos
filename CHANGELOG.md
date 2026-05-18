@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a horizon parameter `h: int = 1`. Existing code using `engine.ic` must be
   updated to `engine.ic()`. Use `h > 1` to evaluate signal quality against
   multi-period forward returns (e.g. `engine.ic(h=5)` for 5-day IC).
+- `jquantstats` bumped from 0.8.0 to 0.9.1. `Report.save(path)` was removed
+  upstream; calls in the end-to-end notebook migrated to `Report.to_html(path=path)`.
 
 ## [0.6.0] - 2026-03-27
 
