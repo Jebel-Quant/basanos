@@ -437,7 +437,7 @@ def cell_17():
 
         ```python
         # Save to disk
-        saved_path = portfolio.report.save("basanos_report.html")
+        saved_path = portfolio.report.to_html(path="basanos_report.html")
 
         # Or get the HTML string (e.g. to serve via an API)
         html_str = portfolio.report.to_html(title="My Strategy Report")
@@ -456,7 +456,7 @@ def cell_18(portfolio):
     from pathlib import Path
 
     _tmp = Path(tempfile.mkdtemp()) / "basanos_report.html"
-    _saved = portfolio.report.save(_tmp)
+    _saved = portfolio.report.to_html(path=_tmp)
     _size_kb = _saved.stat().st_size / 1_024
 
     mo.callout(
@@ -471,7 +471,7 @@ def cell_18(portfolio):
 
             To save to a custom location:
             ```python
-            portfolio.report.save("my_report.html")
+            portfolio.report.to_html(path="my_report.html")
             ```
             """
         ),
@@ -594,7 +594,7 @@ def cell_25():
         ✅ **Engine instantiation** — `BasanosEngine` computes correlation-adjusted
         cash positions and IC/ICIR signal quality metrics
 
-        ✅ **HTML report generation** — one-call `portfolio.report.save()` producing
+        ✅ **HTML report generation** — one-call `portfolio.report.to_html(path=...)` producing
         a self-contained browser report with eight interactive charts
 
         ✅ **Trading cost analysis** — `portfolio.trading_cost_impact()` sweep showing
