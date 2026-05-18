@@ -24,6 +24,7 @@ from unittest.mock import patch
 import numpy as np
 import polars as pl
 import pytest
+from cvx.linalg import SingularMatrixError
 
 from basanos.exceptions import (
     ColumnMismatchError,
@@ -32,7 +33,6 @@ from basanos.exceptions import (
     MonotonicPricesError,
     NonPositivePricesError,
     ShapeMismatchError,
-    SingularMatrixError,
 )
 from basanos.math import BasanosConfig, BasanosEngine
 from basanos.math._engine_solve import SolveStatus, _SolveMixin

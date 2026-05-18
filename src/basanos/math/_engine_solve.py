@@ -16,12 +16,11 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, TypeAlias, cast
 
 import numpy as np
+from cvx.linalg import SingularMatrixError, inv_a_norm, solve
 
-from ..exceptions import SingularMatrixError
 from ._config import EwmaShrinkConfig, SlidingWindowConfig
 from ._ewm_corr import _ewm_corr_with_final_state, _EwmCorrState
 from ._factor_model import FactorModel
-from ._linalg import inv_a_norm, solve
 from ._signal import shrink2id
 
 if TYPE_CHECKING:

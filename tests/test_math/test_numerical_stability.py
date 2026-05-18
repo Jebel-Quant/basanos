@@ -27,14 +27,14 @@ import warnings
 import numpy as np
 import polars as pl
 import pytest
+from cvx.linalg import IllConditionedMatrixWarning, solve
+from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as np_st
 
-from basanos.exceptions import IllConditionedMatrixWarning
 from basanos.math import BasanosConfig, BasanosEngine, SolveStatus
 from basanos.math._ewm_corr import ewm_corr as _ewm_corr_numpy
-from basanos.math._linalg import _DEFAULT_COND_THRESHOLD, solve
 
 # ---------------------------------------------------------------------------
 # Shared helpers

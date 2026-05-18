@@ -16,17 +16,12 @@ from __future__ import annotations
 import dataclasses
 
 import numpy as np
+from cvx.linalg import DimensionMismatchError, SingularMatrixError
+from cvx.linalg import check_and_warn_condition as _check_and_warn_condition
+from cvx.linalg import cholesky_solve as _cholesky_solve
+from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
 
-from basanos.exceptions import (
-    DimensionMismatchError,
-    FactorModelError,
-    SingularMatrixError,
-)
-from basanos.math._linalg import (
-    _DEFAULT_COND_THRESHOLD,
-    _check_and_warn_condition,
-    _cholesky_solve,
-)
+from basanos.exceptions import FactorModelError
 
 
 @dataclasses.dataclass(frozen=True)
