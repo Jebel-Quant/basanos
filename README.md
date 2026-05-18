@@ -243,11 +243,11 @@ report = portfolio.report
 html_str = report.to_html()
 
 # Or save directly to disk — a .html extension is added automatically
-saved_path = report.save("output/report")
+saved_path = report.to_html(path="output/report")
 # → saves to output/report.html
 
 # Customize the page title
-report.save("output/my_report.html", title="My Strategy Report")
+report.to_html(path="output/my_report.html", title="My Strategy Report")
 ```
 
 The generated report contains the following sections:
