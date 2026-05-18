@@ -28,11 +28,10 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from cvx.linalg import inv_a_norm, solve, valid
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis.extra import numpy as np_st
-
-from basanos.math._linalg import inv_a_norm, solve, valid
 
 # ─── Shared strategies ────────────────────────────────────────────────────────
 

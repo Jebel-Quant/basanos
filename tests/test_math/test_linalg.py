@@ -11,14 +11,16 @@ import warnings
 
 import numpy as np
 import pytest
-
-from basanos.exceptions import (
+from cvx.linalg import (
     DimensionMismatchError,
     IllConditionedMatrixWarning,
     NonSquareMatrixError,
     SingularMatrixError,
+    inv_a_norm,
+    is_positive_definite,
+    solve,
+    valid,
 )
-from basanos.math._linalg import inv_a_norm, is_positive_definite, solve, valid
 
 
 def test_non_quadratic() -> None:
@@ -174,19 +176,23 @@ def test_singular_matrix_inv_a_norm() -> None:
 
 
 def test_exception_hierarchy() -> None:
-    """Test that custom exceptions inherit from BasanosError and ValueError.
+    """Test that linalg exceptions are ValueError subclasses re-exported from cvx.linalg."""
+    from cvx.linalg import (
+        DimensionMismatchError as CvxDimensionMismatchError,
+    )
+    from cvx.linalg import (
+        NonSquareMatrixError as CvxNonSquareMatrixError,
+    )
+    from cvx.linalg import (
+        SingularMatrixError as CvxSingularMatrixError,
+    )
 
-    Verifies the intended inheritance hierarchy so callers can catch either
-    the full family (BasanosError) or the standard ValueError family.
-    """
-    from basanos.exceptions import BasanosError
-
-    assert issubclass(NonSquareMatrixError, BasanosError)
     assert issubclass(NonSquareMatrixError, ValueError)
-    assert issubclass(DimensionMismatchError, BasanosError)
     assert issubclass(DimensionMismatchError, ValueError)
-    assert issubclass(SingularMatrixError, BasanosError)
     assert issubclass(SingularMatrixError, ValueError)
+    assert NonSquareMatrixError is CvxNonSquareMatrixError
+    assert DimensionMismatchError is CvxDimensionMismatchError
+    assert SingularMatrixError is CvxSingularMatrixError
 
 
 def test_non_square_matrix_error_attributes() -> None:

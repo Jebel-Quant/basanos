@@ -15,9 +15,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-
-from ..exceptions import SingularMatrixError
-from ._linalg import solve, valid
+from cvx.linalg import SingularMatrixError, solve, valid
 
 if TYPE_CHECKING:
     from ._engine_protocol import _EngineProtocol

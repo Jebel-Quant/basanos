@@ -15,15 +15,11 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
+from cvx.linalg import DimensionMismatchError, IllConditionedMatrixWarning, SingularMatrixError
+from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
 
-from basanos.exceptions import (
-    DimensionMismatchError,
-    FactorModelError,
-    IllConditionedMatrixWarning,
-    SingularMatrixError,
-)
+from basanos.exceptions import FactorModelError
 from basanos.math._factor_model import FactorModel
-from basanos.math._linalg import _DEFAULT_COND_THRESHOLD
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
 

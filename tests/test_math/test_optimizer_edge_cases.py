@@ -21,8 +21,8 @@ from unittest.mock import patch
 import numpy as np
 import polars as pl
 import pytest
+from cvx.linalg import SingularMatrixError
 
-from basanos.exceptions import SingularMatrixError
 from basanos.math import BasanosConfig, BasanosEngine
 
 # ─── Shared helpers ───────────────────────────────────────────────────────────

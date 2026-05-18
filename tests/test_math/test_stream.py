@@ -1213,7 +1213,7 @@ def test_warmup_state_ewma_singular_inv_a_norm():
     """warmup_state() must not raise when inv_a_norm raises SingularMatrixError (sets denom=nan)."""
     from unittest.mock import patch
 
-    from basanos.exceptions import SingularMatrixError
+    from cvx.linalg import SingularMatrixError
 
     prices, mu, cfg, _ = _make_prices_mu()
     n = 50
@@ -1252,7 +1252,7 @@ def test_warmup_state_ewma_singular_solve():
     """warmup_state() must not raise when solve raises SingularMatrixError after inv_a_norm succeeds."""
     from unittest.mock import patch
 
-    from basanos.exceptions import SingularMatrixError
+    from cvx.linalg import SingularMatrixError
 
     prices, mu, cfg, _ = _make_prices_mu()
     n = 50
@@ -1292,7 +1292,7 @@ def test_ewm_std_from_state_all_counts_below_min_samples_returns_all_nan():
 
 def test_step_singular_inv_a_norm_yields_degenerate():
     """step() must return status='degenerate' when inv_a_norm raises SingularMatrixError."""
-    from basanos.exceptions import SingularMatrixError
+    from cvx.linalg import SingularMatrixError
 
     prices, mu, cfg, assets = _make_prices_mu()
     warmup_len = 50
@@ -1312,7 +1312,7 @@ def test_step_singular_inv_a_norm_yields_degenerate():
 
 def test_step_singular_solve_yields_degenerate():
     """step() must return status='degenerate' when solve raises SingularMatrixError."""
-    from basanos.exceptions import SingularMatrixError
+    from cvx.linalg import SingularMatrixError
 
     prices, mu, cfg, assets = _make_prices_mu()
     warmup_len = 50
@@ -1646,7 +1646,7 @@ def test_sw_step_degenerate_denom_yields_degenerate():
 
 def test_sw_step_fm_solve_raises_yields_degenerate():
     """step() must return 'degenerate' when fm.solve() raises SingularMatrixError."""
-    from basanos.exceptions import SingularMatrixError
+    from cvx.linalg import SingularMatrixError
 
     stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
     warmup_len = 50

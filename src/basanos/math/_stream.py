@@ -686,7 +686,7 @@ class BasanosStream:
         date: Any,
     ) -> tuple[np.ndarray, SolveStatus]:
         """Solve one step in SlidingWindow mode and return cash position + status."""
-        from ..exceptions import SingularMatrixError
+        from cvx.linalg import SingularMatrixError
 
         new_cash_pos = np.full(n_assets, np.nan, dtype=float)
         status = SolveStatus.DEGENERATE
