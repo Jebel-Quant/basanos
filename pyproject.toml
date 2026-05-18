@@ -41,7 +41,7 @@ packages = ["src/basanos"]
 # Explicit module name map so deptry doesn't need to inspect installed packages
 
 [tool.deptry.package_module_name_map]
-"cvx-linalg" = "cvx.linalg"
+"cvx-linalg" = "cvx"
 "jinja2" = "jinja2"
 "jquantstats" = "jquantstats"
 "numpy" = "numpy"
