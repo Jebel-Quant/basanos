@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pytest
-from cvx.linalg import ewm_covariance
+from cvx.linalg.ewm_cov import ewm_covariance
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

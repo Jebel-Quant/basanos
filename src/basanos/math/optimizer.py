@@ -84,7 +84,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
-from cvx.linalg import ewm_covariance
+from cvx.linalg import cov_to_corr
+from cvx.linalg.ewm_cov import ewm_covariance
 from jquantstats import Portfolio
 
 from ..exceptions import (
@@ -111,32 +112,6 @@ if TYPE_CHECKING:
     from ._config_report import ConfigReport
 
 _logger = logging.getLogger(__name__)
-
-
-def _cov_to_corr(cov: np.ndarray, min_corr_denom: float = 1e-14) -> np.ndarray:
-    """Convert a covariance matrix to a correlation matrix.
-
-    Args:
-        cov: Square covariance matrix.
-        min_corr_denom: Threshold below which a variance is treated as zero
-            and the corresponding correlation entry is set to ``nan``.
-
-    Returns:
-        Symmetrised correlation matrix with diagonal entries in ``{1, nan}``.
-    """
-    var = np.diag(cov)
-    denom = np.sqrt(np.outer(var, var))
-    with np.errstate(divide="ignore", invalid="ignore"):
-        corr = np.where(denom > min_corr_denom, cov / denom, np.nan)
-    corr = np.clip(corr, -1.0, 1.0)
-    n = len(var)
-    idx = np.arange(n)
-    corr[idx, idx] = np.where(var > min_corr_denom, 1.0, np.nan)
-    tril_i, tril_j = np.tril_indices(n, k=-1)
-    avg = 0.5 * (corr[tril_i, tril_j] + corr[tril_j, tril_i])
-    corr[tril_i, tril_j] = avg
-    corr[tril_j, tril_i] = avg
-    return corr
 
 
 def _validate_required_date_columns(prices: pl.DataFrame, mu: pl.DataFrame) -> None:
@@ -421,7 +396,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         )
         nan_mat = np.full((n, n), np.nan)
         return {
-            date: _cov_to_corr(cov_dict[date], self.cfg.min_corr_denom) if date in cov_dict else nan_mat.copy()
+            date: cov_to_corr(cov_dict[date], self.cfg.min_corr_denom) if date in cov_dict else nan_mat.copy()
             for date in self.prices["date"].to_list()
         }
 
