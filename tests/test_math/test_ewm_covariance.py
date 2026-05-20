@@ -29,8 +29,6 @@ import polars as pl
 import pytest
 from cvx.linalg import ewm_covariance
 
-from basanos.math._ewm_corr import ewm_corr
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -166,38 +164,3 @@ class TestEwmCovarianceVsPandas:
         rng = np.random.default_rng(7)
         data = rng.normal(size=(200, 1))
         _assert_close(self._cvx(data, 20), _pandas_cov(data, 20, 20), label="single asset")
-
-
-# ── ewm_covariance (normalised) vs ewm_corr ──────────────────────────────────
-
-
-class TestEwmCovarianceVsEwmCorr:
-    """Normalised cvx covariance matches ewm_corr on dense data.
-
-    On sparse data the two diverge: ewm_corr conditions its per-pair variance
-    on the joint availability of both assets, while normalising ewm_covariance
-    uses each asset's marginal variance.  Only the dense comparison is exact.
-    """
-
-    def _cvx_corr(self, data: np.ndarray, com: int) -> np.ndarray:
-        t_len, n = data.shape
-        assets = [str(i) for i in range(n)]
-        cov = ewm_covariance(
-            _to_polars(data, assets), assets=assets, index_col="t", window=_com_to_span(com), warmup=com
-        )
-        return _cov_to_corr(_dict_to_array(cov, t_len, n))
-
-    def test_dense(self, dense: tuple[np.ndarray, int]) -> None:
-        data, com = dense
-        _assert_close(self._cvx_corr(data, com), ewm_corr(data, com=com, min_periods=com), label="dense corr")
-
-    @pytest.mark.parametrize("com", [5, 16, 64])
-    def test_various_com(self, com: int) -> None:
-        rng = np.random.default_rng(99)
-        data = rng.normal(size=(300, 4))
-        _assert_close(self._cvx_corr(data, com), ewm_corr(data, com=com, min_periods=com), label=f"com={com}")
-
-    def test_single_asset(self) -> None:
-        rng = np.random.default_rng(7)
-        data = rng.normal(size=(200, 1))
-        _assert_close(self._cvx_corr(data, 20), ewm_corr(data, com=20, min_periods=20), label="single asset")

@@ -216,7 +216,7 @@ class StreamStateCorruptError(BasanosError, ValueError):
         missing: Collection of key names absent from the archive.
 
     Examples:
-        >>> raise StreamStateCorruptError({"vola_s_x", "corr_zi_x"})  # doctest: +ELLIPSIS
+        >>> raise StreamStateCorruptError({"vola_s_x", "corr_ret_buf"})  # doctest: +ELLIPSIS
         Traceback (most recent call last):
             ...
         basanos.exceptions.StreamStateCorruptError: Stream archive is missing required keys: ...
