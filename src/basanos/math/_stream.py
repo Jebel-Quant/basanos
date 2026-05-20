@@ -2,50 +2,31 @@
 
 This private module defines three public symbols:
 
-* `_StreamState` — mutable dataclass that persists all O(N²) IIR
-  filter and EWMA accumulator state between consecutive
-  `step` calls.  Kept separate from the engine so the
-  state layout can be read and tested in isolation.
+* `_StreamState` — mutable dataclass that persists all O(N²)
+  accumulator state between consecutive `step` calls.  Kept separate
+  from the engine so the state layout can be read and tested in isolation.
 * `StepResult` — frozen dataclass returned by each
   `step` call.
 * `BasanosStream` — incremental façade with a
   `from_warmup` classmethod and a
   `step` method.
 
-IIR state model
----------------
-The EWM recurrence ``s[t] = beta·s[t-1] + v[t]`` is a causal, single-pole IIR
-filter.  When the full history is available, ``scipy.signal.lfilter`` solves
-all N² pairs in one vectorised call and discards the intermediate array.
-
-In the *incremental* setting there is no history — only the current sample
-arrives at each ``step()``.  To continue the same recurrence across calls we
-need the *filter memory*, i.e. the value of the accumulator at the end of the
-previous call.
-
-``scipy.signal.lfilter`` exposes this directly: when called as::
-
-    y, zf = lfilter(b, a, x, zi=zi)
-
-``zi`` is the initial state (shape ``(max(len(a), len(b)) - 1, …)`` = ``(1, …)``
-for our first-order filter) and ``zf`` is the *final* state after processing
-``x``.  Passing the returned ``zf`` back as ``zi`` in the next call is
-mathematically equivalent to having run ``lfilter`` over the concatenated
-input, so the incremental and batch paths produce bit-for-bit identical
-results.
-
-The four correlation accumulators (``corr_zi_x``, ``corr_zi_x2``,
-``corr_zi_xy``, ``corr_zi_w``) follow exactly this pattern.  Each has shape
-``(1, N, N)`` — the leading 1 is the IIR filter order required by
-``lfilter``'s ``zi`` argument.
+EWM correlation state model
+----------------------------
+In EWM mode the correlation at each step is recomputed by calling
+``ewm_covariance`` from ``cvx.linalg`` over the full growing history of
+vol-adjusted returns stored in ``corr_ret_buf``.  This keeps the incremental
+and batch paths numerically identical at the cost of O(T·N²) time per step
+(acceptable for small N or short warmup histories).
 
 The volatility accumulators (``vola_*``, ``pct_*``) use a simpler scalar
 recurrence and store the running sums directly as ``(N,)`` arrays.
 
 Memory
 ------
-Total incremental state is 4x(1,N,N) + (N,N) + 8x(N,) + O(1) scalars,
-giving **O(N^2)** memory independent of the number of timesteps processed.
+Total incremental state is O(T·N) for the growing history buffer plus
+8x(N,) + O(1) scalars.  For the SlidingWindowConfig the buffer is a fixed
+(W, N) array independent of T.
 """
 
 from __future__ import annotations
@@ -53,19 +34,16 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
-from typing import TYPE_CHECKING, Any, cast
-
-if TYPE_CHECKING:
-    from ._ewm_corr import _EwmCorrState
+from typing import Any, cast
 
 import numpy as np
 import polars as pl
+from cvx.linalg import ewm_covariance
 from scipy.signal import lfilter
 
 from ..exceptions import MissingDateColumnError, StreamStateCorruptError
 from ._config import BasanosConfig, EwmaShrinkConfig, SlidingWindowConfig
 from ._engine_solve import MatrixBundle, SolveStatus, _SolveMixin
-from ._ewm_corr import _corr_from_ewm_accumulators
 from ._factor_model import FactorModel
 from ._signal import shrink2id
 
@@ -75,7 +53,7 @@ _logger = logging.getLogger(__name__)
 #: a backward-incompatible way.  `load` asserts the stored
 #: value matches before deserialising anything, so callers get a clear error
 #: instead of a silent ``KeyError`` or wrong state.
-_SAVE_FORMAT_VERSION: int = 2
+_SAVE_FORMAT_VERSION: int = 3
 
 
 @dataclasses.dataclass
@@ -86,15 +64,11 @@ class _StreamState:
     The class is intentionally *not* frozen so that the step method can modify
     fields directly without creating a new object on every tick.
 
-    IIR filter state (correlation)
-    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    The four ``corr_zi_*`` fields are the *final conditions* (``zf``) returned
-    by ``scipy.signal.lfilter`` after the previous step.  They are passed back
-    as the ``zi`` argument on the next step so that the incremental filter
-    produces the same numerical result as a single batch call over all history.
-    See the module docstring for the full derivation.
-
-    ``beta_corr = cfg.corr / (1 + cfg.corr)``  (from ``com = cfg.corr``)
+    EWM correlation state
+    ~~~~~~~~~~~~~~~~~~~~~
+    ``corr_ret_buf`` holds the growing history of vol-adjusted returns used by
+    ``ewm_covariance`` to recompute the correlation matrix on each step.  It
+    is ``None`` for ``SlidingWindowConfig`` (which uses ``sw_ret_buf`` instead).
 
     EWM accumulator state (volatility)
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -109,16 +83,9 @@ class _StreamState:
     ``beta_vola = (cfg.vola - 1) / cfg.vola``  (from ``com = cfg.vola - 1``)
 
     Attributes:
-        corr_zi_x:  IIR filter state for the x-accumulator of the EWM
-            correlation; shape ``(1, N, N)``.
-        corr_zi_x2: IIR filter state for the x²-accumulator; shape
-            ``(1, N, N)``.
-        corr_zi_xy: IIR filter state for the xy-accumulator; shape
-            ``(1, N, N)``.
-        corr_zi_w:  IIR filter state for the weight-accumulator; shape
-            ``(1, N, N)``.
-        corr_count: Cumulative joint-finite observation count per asset pair;
-            shape ``(N, N)`` dtype int.
+        corr_ret_buf: Growing history of vol-adjusted returns used by
+            ``ewm_covariance``; shape ``(T, N)`` for EwmaShrinkConfig.
+            ``None`` for SlidingWindowConfig.
         vola_s_x:   EWM sum of volatility-adjusted log-returns; shape ``(N,)``.
         vola_s_x2:  EWM sum of squared vol-adj log-returns; shape ``(N,)``.
         vola_s_w:   EWM weight sum for vol accumulators; shape ``(N,)``.
@@ -138,12 +105,8 @@ class _StreamState:
         step_count: Number of steps processed so far (0 before first step).
     """
 
-    # ── IIR filter state for EWM correlation — shape (1, N, N) each ──────────
-    corr_zi_x: np.ndarray  # (1, N, N)
-    corr_zi_x2: np.ndarray  # (1, N, N)
-    corr_zi_xy: np.ndarray  # (1, N, N)
-    corr_zi_w: np.ndarray  # (1, N, N)
-    corr_count: np.ndarray  # (N, N) int — cumulative joint-finite observation count
+    # ── EWM correlation history buffer — (T, N) for EwmaShrinkConfig ─────────
+    corr_ret_buf: np.ndarray | None  # (T, N) growing history of vol-adj returns; None for SlidingWindowConfig
 
     # ── EWMA accumulators for vol_adj (log-return std; com=vola-1, min_samples=1) ──
     vola_s_x: np.ndarray  # (N,)
@@ -166,8 +129,8 @@ class _StreamState:
 
     # ── SlidingWindowConfig state — None for EwmaShrinkConfig ────────────────
     # shape (W, N): last W vol-adjusted returns (oldest row first); None when
-    # using EwmaShrinkConfig.  The corr_zi_* fields above are unused (zeros)
-    # in this mode; sw_ret_buf carries all the correlation state instead.
+    # using EwmaShrinkConfig.  corr_ret_buf above is unused (None) in this mode;
+    # sw_ret_buf carries all the correlation state instead.
     sw_ret_buf: np.ndarray | None = None  # (W, N) rolling buffer, or None
 
 
@@ -360,6 +323,32 @@ def _ewm_vol_accumulators_from_batch(
     return s_x, s_x2, s_w, s_w2, count
 
 
+def _cov_to_corr(cov: np.ndarray, min_corr_denom: float = 1e-14) -> np.ndarray:
+    """Convert a covariance matrix to a correlation matrix.
+
+    Args:
+        cov: Square covariance matrix.
+        min_corr_denom: Threshold below which a variance is treated as zero
+            and the corresponding correlation entry is set to ``nan``.
+
+    Returns:
+        Symmetrised correlation matrix with diagonal entries in ``{1, nan}``.
+    """
+    var = np.diag(cov)
+    denom = np.sqrt(np.outer(var, var))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr = np.where(denom > min_corr_denom, cov / denom, np.nan)
+    corr = np.clip(corr, -1.0, 1.0)
+    n = len(var)
+    idx = np.arange(n)
+    corr[idx, idx] = np.where(var > min_corr_denom, 1.0, np.nan)
+    tril_i, tril_j = np.tril_indices(n, k=-1)
+    avg = 0.5 * (corr[tril_i, tril_j] + corr[tril_j, tril_i])
+    corr[tril_i, tril_j] = avg
+    corr[tril_j, tril_i] = avg
+    return corr
+
+
 def _resolve_step_vector(
     values: np.ndarray | dict[str, float],
     assets: list[str],
@@ -529,18 +518,13 @@ class BasanosStream:
         # 3. Extract mode-specific state from WarmupState --------------------
         ws = engine.warmup_state()
         if isinstance(cfg.covariance_config, EwmaShrinkConfig):
-            # EWM: seed the per-step lfilter from the IIR state captured
-            # during the single batch pass in warmup_state().
-            iir = cast("_EwmCorrState", ws.corr_iir_state)
-            corr_zi_x = iir.corr_zi_x
-            corr_zi_x2 = iir.corr_zi_x2
-            corr_zi_xy = iir.corr_zi_xy
-            corr_zi_w = iir.corr_zi_w
-            corr_count: np.ndarray = iir.count
+            # EWM: seed the growing history buffer from engine.ret_adj so that
+            # each subsequent step() can call ewm_covariance over the full history.
+            ret_adj_np = engine.ret_adj.select(assets).to_numpy()
+            corr_ret_buf: np.ndarray | None = ret_adj_np
             sw_ret_buf: np.ndarray | None = None
         else:
             # SW: carry the last W vol-adjusted returns as a rolling buffer.
-            # The IIR fields are initialised to zeros and left unused.
             sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
             win_w = sw_config.window
             ret_adj_np = engine.ret_adj.select(assets).to_numpy()  # (n_rows, N)
@@ -549,11 +533,7 @@ class BasanosStream:
             else:
                 sw_ret_buf = np.full((win_w, n_assets), np.nan)
                 sw_ret_buf[-n_rows:] = ret_adj_np
-            corr_zi_x = np.zeros((1, n_assets, n_assets))
-            corr_zi_x2 = np.zeros((1, n_assets, n_assets))
-            corr_zi_xy = np.zeros((1, n_assets, n_assets))
-            corr_zi_w = np.zeros((1, n_assets, n_assets))
-            corr_count = np.zeros((n_assets, n_assets), dtype=np.int64)
+            corr_ret_buf = None
 
         # 4. Derive EWMA volatility accumulators (vectorised) ---------------
         # Both log-return (for vol_adj) and pct-return (for vola) use the
@@ -588,11 +568,7 @@ class BasanosStream:
 
         # 6. Construct _StreamState and return ------------------------------
         state = _StreamState(
-            corr_zi_x=corr_zi_x,
-            corr_zi_x2=corr_zi_x2,
-            corr_zi_xy=corr_zi_xy,
-            corr_zi_w=corr_zi_w,
-            corr_count=corr_count,
+            corr_ret_buf=corr_ret_buf,
             vola_s_x=vola_s_x,
             vola_s_x2=vola_s_x2,
             vola_s_w=vola_s_w,
@@ -625,11 +601,7 @@ class BasanosStream:
     def _persist_state(
         state: _StreamState,
         *,
-        corr_zi_x: np.ndarray,
-        corr_zi_x2: np.ndarray,
-        corr_zi_xy: np.ndarray,
-        corr_zi_w: np.ndarray,
-        corr_count: np.ndarray,
+        corr_ret_buf: np.ndarray | None,
         vola_s_x: np.ndarray,
         vola_s_x2: np.ndarray,
         vola_s_w: np.ndarray,
@@ -644,11 +616,7 @@ class BasanosStream:
         new_cash_pos: np.ndarray | None = None,
     ) -> None:
         """Persist accumulators, last-seen vectors, and increment step count."""
-        state.corr_zi_x = corr_zi_x
-        state.corr_zi_x2 = corr_zi_x2
-        state.corr_zi_xy = corr_zi_xy
-        state.corr_zi_w = corr_zi_w
-        state.corr_count = corr_count
+        state.corr_ret_buf = corr_ret_buf
         state.vola_s_x = vola_s_x
         state.vola_s_x2 = vola_s_x2
         state.vola_s_w = vola_s_w
@@ -747,28 +715,26 @@ class BasanosStream:
         *,
         cfg: BasanosConfig,
         state: _StreamState,
+        corr_ret_buf: np.ndarray,
         mask: np.ndarray,
         new_m: np.ndarray,
         vola_vec: np.ndarray,
-        y_x: np.ndarray,
-        y_x2: np.ndarray,
-        y_xy: np.ndarray,
-        y_w: np.ndarray,
-        corr_count: np.ndarray,
+        assets: list[str],
         n_assets: int,
         date: Any,
     ) -> tuple[np.ndarray, SolveStatus]:
         """Solve one step in EWMA mode and return cash position + status."""
         new_cash_pos = np.full(n_assets, np.nan, dtype=float)
-        corr = _corr_from_ewm_accumulators(
-            y_x[0],
-            y_x2[0],
-            y_xy[0],
-            y_w[0],
-            corr_count,
-            min_periods=cfg.corr,
-            min_corr_denom=cfg.min_corr_denom,
-        )
+        buf = corr_ret_buf  # (T, N) — already includes the new row
+        span = 2 * cfg.corr + 1
+        t = buf.shape[0]
+        cols = [pl.Series(a, buf[:, i]).fill_nan(None) for i, a in enumerate(assets)]
+        pl_df = pl.DataFrame([pl.Series("t", list(range(t))), *cols])
+        cov_dict = ewm_covariance(pl_df, assets=assets, index_col="t", window=span, warmup=cfg.corr)
+        if not cov_dict:
+            corr = np.full((n_assets, n_assets), np.nan)
+        else:
+            corr = _cov_to_corr(cov_dict[max(cov_dict)], cfg.min_corr_denom)
         matrix = shrink2id(corr, lamb=cfg.shrink)
         expected_mu, early = _SolveMixin._row_early_check(state.step_count, date, mask, new_m)
         if early is not None:
@@ -842,7 +808,6 @@ class BasanosStream:
         prev_p = state.prev_price
         beta_vola: float = (cfg.vola - 1) / cfg.vola
         beta_vola_sq: float = beta_vola**2
-        beta_corr: float = cfg.corr / (1.0 + cfg.corr)
 
         # ── Compute new log-returns and pct-returns ─────────────────────────
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -883,35 +848,14 @@ class BasanosStream:
         # ── Mode-specific correlation state update ───────────────────────────
         if isinstance(cfg.covariance_config, SlidingWindowConfig):
             # SW: shift the rolling window buffer in-place and append this row.
-            # The corr_zi_* fields are unused; alias them to their old values so
-            # the early-return and persist blocks below can reference them safely.
             buf = state.sw_ret_buf  # (W, N), already owned by state
             buf[:-1] = buf[1:]  # type: ignore[index]
             buf[-1] = vol_adj_val  # type: ignore[index]
-            corr_zi_x = state.corr_zi_x
-            corr_zi_x2 = state.corr_zi_x2
-            corr_zi_xy = state.corr_zi_xy
-            corr_zi_w = state.corr_zi_w
-            corr_count = state.corr_count
+            corr_ret_buf = state.corr_ret_buf  # None for SW; pass through
         else:
-            # EWM: Update IIR filter state for EWM correlation
-            fin_va = np.isfinite(vol_adj_val)
-            va_f = np.where(fin_va, vol_adj_val, 0.0)
-            joint_fin = fin_va[:, np.newaxis] & fin_va[np.newaxis, :]  # (N, N)
-
-            new_v_x = (va_f[:, np.newaxis] * joint_fin)[np.newaxis]  # (1, N, N)
-            new_v_x2 = ((va_f**2)[:, np.newaxis] * joint_fin)[np.newaxis]  # (1, N, N)
-            new_v_xy = (va_f[:, np.newaxis] * va_f[np.newaxis, :])[np.newaxis]  # (1, N, N)
-            new_v_w = joint_fin.astype(np.float64)[np.newaxis]  # (1, N, N)
-
-            filt_a_corr = np.array([1.0, -beta_corr])
-            # y_x[0] is the current-step EWM state (filter output); corr_zi_x is
-            # the new filter memory (zf = beta * y[0]) passed as zi next step.
-            y_x, corr_zi_x = lfilter([1.0], filt_a_corr, new_v_x, axis=0, zi=state.corr_zi_x)
-            y_x2, corr_zi_x2 = lfilter([1.0], filt_a_corr, new_v_x2, axis=0, zi=state.corr_zi_x2)
-            y_xy, corr_zi_xy = lfilter([1.0], filt_a_corr, new_v_xy, axis=0, zi=state.corr_zi_xy)
-            y_w, corr_zi_w = lfilter([1.0], filt_a_corr, new_v_w, axis=0, zi=state.corr_zi_w)
-            corr_count = state.corr_count + joint_fin.astype(np.int64)
+            # EWM: append new vol-adjusted return to the growing history buffer.
+            new_row = vol_adj_val[np.newaxis]  # (1, N)
+            corr_ret_buf = np.vstack([state.corr_ret_buf, new_row])
 
         # ── Early return during EWM warmup period ───────────────────────────
         # All accumulators are already updated above; skip the O(N²) matrix
@@ -920,11 +864,7 @@ class BasanosStream:
         if in_warmup:
             self._persist_state(
                 state,
-                corr_zi_x=corr_zi_x,
-                corr_zi_x2=corr_zi_x2,
-                corr_zi_xy=corr_zi_xy,
-                corr_zi_w=corr_zi_w,
-                corr_count=corr_count,
+                corr_ret_buf=corr_ret_buf,
                 vola_s_x=vola_s_x,
                 vola_s_x2=vola_s_x2,
                 vola_s_w=vola_s_w,
@@ -958,14 +898,11 @@ class BasanosStream:
             new_cash_pos, status = self._solve_ewma_position(
                 cfg=cfg,
                 state=state,
+                corr_ret_buf=corr_ret_buf,
                 mask=mask,
                 new_m=new_m,
                 vola_vec=vola_vec,
-                y_x=y_x,
-                y_x2=y_x2,
-                y_xy=y_xy,
-                y_w=y_w,
-                corr_count=corr_count,
+                assets=list(self._assets),
                 n_assets=n_assets,
                 date=date,
             )
@@ -981,11 +918,7 @@ class BasanosStream:
         # ── Persist updated state ───────────────────────────────────────────
         self._persist_state(
             state,
-            corr_zi_x=corr_zi_x,
-            corr_zi_x2=corr_zi_x2,
-            corr_zi_xy=corr_zi_xy,
-            corr_zi_w=corr_zi_w,
-            corr_count=corr_count,
+            corr_ret_buf=corr_ret_buf,
             vola_s_x=vola_s_x,
             vola_s_x2=vola_s_x2,
             vola_s_w=vola_s_w,
@@ -1055,7 +988,7 @@ class BasanosStream:
         state_arrays: dict[str, Any] = {}
         for field in dataclasses.fields(_StreamState):
             value = getattr(state, field.name)
-            if field.name == "sw_ret_buf":
+            if field.name in ("sw_ret_buf", "corr_ret_buf"):
                 # Sentinel: use an empty (0, 0) array to represent None so the
                 # key is always present in the archive and load() can detect it.
                 state_arrays[field.name] = value if value is not None else np.empty((0, 0), dtype=float)
@@ -1140,7 +1073,7 @@ class BasanosStream:
             state_kwargs: dict[str, Any] = {}
             for field in dataclasses.fields(_StreamState):
                 raw = data[field.name]
-                if field.name == "sw_ret_buf":
+                if field.name in ("sw_ret_buf", "corr_ret_buf"):
                     state_kwargs[field.name] = raw if raw.size > 0 else None
                 elif field.name == "step_count":
                     state_kwargs[field.name] = int(raw)
