@@ -4,18 +4,15 @@
 
 **Correlation-aware portfolio optimization and analytics for Python.**
 
-![Synced with Rhiza](https://img.shields.io/badge/synced%20with-rhiza-2FA4A9?color=2FA4A9)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Python versions](https://img.shields.io/badge/Python-3.11%20•%203.12%20•%203.13%20•%203.14-blue?logo=python)](https://www.python.org/)
-[![CI](https://github.com/Jebel-Quant/basanos/actions/workflows/rhiza_ci.yml/badge.svg?event=push)](https://github.com/Jebel-Quant/basanos/actions/workflows/rhiza_ci.yml)
-[![Coverage](https://jebel-quant.github.io/basanos/coverage-badge.svg)](https://jebel-quant.github.io/basanos/reports/html-coverage/)
-[![PyPI version](https://img.shields.io/pypi/v/basanos.svg)](https://pypi.org/project/basanos/)
+[![PyPI version](https://badge.fury.io/py/basanos.svg)](https://badge.fury.io/py/basanos)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/basanos/)
 [![Downloads](https://static.pepy.tech/personalized-badge/basanos?period=month&units=international_system&left_color=black&right_color=orange&left_text=PyPI%20downloads%20per%20month)](https://pepy.tech/project/basanos)
-[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg?logo=ruff)](https://github.com/astral-sh/ruff)
-[![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
-![Last Updated](https://img.shields.io/github/last-commit/jebel-quant/basanos/main?label=Last%20updated&color=blue)
-[![Paper](https://img.shields.io/badge/paper-basanos.pdf-red?logo=adobeacrobatreader)](https://github.com/jebel-quant/basanos/blob/paper/basanos.pdf)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](https://github.com/jebel-quant/basanos/blob/main/LICENSE)
 [![CodeFactor](https://www.codefactor.io/repository/github/jebel-quant/basanos/badge)](https://www.codefactor.io/repository/github/jebel-quant/basanos)
+[![Rhiza](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2Fjebel-quant%2Fbasanos%2Fmain%2F.rhiza%2Ftemplate.yml&query=%24.ref&label=rhiza)](https://github.com/jebel-quant/rhiza)
+[![Coverage](https://jebel-quant.github.io/basanos/coverage-badge.svg)](https://jebel-quant.github.io/basanos/reports/html-coverage/)
+
+[![Paper](https://img.shields.io/badge/paper-basanos.pdf-red?logo=adobeacrobatreader)](https://github.com/jebel-quant/basanos/blob/paper/basanos.pdf)
 
 </div>
 
