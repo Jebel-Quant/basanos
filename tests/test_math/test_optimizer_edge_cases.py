@@ -408,7 +408,7 @@ def test_iter_solve_singular_matrix_yields_degenerate_and_zero_positions(
       1. ``inv_a_norm`` returns a finite denom above ``denom_tol`` (normal path), and
       2. the subsequent ``solve(matrix, expected_mu)`` call raises ``SingularMatrixError``.
 
-    ``inv_a_norm`` calls ``_cholesky_solve`` directly and is therefore unaffected
+    ``inv_a_norm`` calls ``_cholesky`` directly and is therefore unaffected
     by patching ``basanos.math._engine_solve.solve``, so the norm check succeeds while
     the position solve raises — exercising the previously uncovered branch.
 

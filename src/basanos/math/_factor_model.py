@@ -18,7 +18,7 @@ import dataclasses
 import numpy as np
 from cvx.linalg import DimensionMismatchError, SingularMatrixError
 from cvx.linalg import check_and_warn_condition as _check_and_warn_condition
-from cvx.linalg import cholesky_solve as _cholesky_solve
+from cvx.linalg import cholesky as _cholesky
 from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
 
 from basanos.exceptions import FactorModelError
@@ -176,7 +176,7 @@ class FactorModel:
         d_inv_b_mat = d_inv[:, None] * self.factor_loadings  # D^{-1} B, shape (n, k)
         try:
             mid = (
-                _cholesky_solve(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
+                _cholesky(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
             )  # (k, k)
         except np.linalg.LinAlgError:
             return float("inf")
@@ -254,10 +254,10 @@ class FactorModel:
         try:
             _check_and_warn_condition(self.factor_covariance, cond_threshold)
             mid = (
-                _cholesky_solve(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
+                _cholesky(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
             )  # (k, k)
             _check_and_warn_condition(mid, cond_threshold)
-            w = _cholesky_solve(mid, rhs_k)  # (k,)
+            w = _cholesky(mid, rhs_k)  # (k,)
         except np.linalg.LinAlgError as exc:
             raise SingularMatrixError(str(exc)) from exc
 

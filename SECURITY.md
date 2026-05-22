@@ -1,15 +1,13 @@
 # Security Policy
 
-Overwrite this file using Claude and adjust for the Rhiza dependant.
-
 ## Supported Versions
 
 We actively support the following versions with security updates:
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 0.6.x   | :white_check_mark: |
-| < 0.6   | :x:                |
+| 0.7.x   | :white_check_mark: |
+| < 0.7   | :x:                |
 
 ## Reporting a Vulnerability
 
@@ -22,7 +20,7 @@ We take security vulnerabilities seriously. If you discover a security issue, pl
 Instead, please report them via one of the following methods:
 
 1. **GitHub Security Advisories** (Preferred)
-   - Go to the [Security Advisories](https://github.com/jebel-quant/rhiza/security/advisories) page
+   - Go to the [Security Advisories](https://github.com/jebel-quant/basanos/security/advisories) page
    - Click "New draft security advisory"
    - Fill in the details and submit
 
@@ -53,7 +51,7 @@ This security policy applies to:
 
 - The `basanos` Python package and its public API
 - GitHub Actions workflows provided by this repository
-- Shell scripts and utilities in `.rhiza/`
+- Shell scripts and utilities in `.rhiza/scripts/`
 
 ### Out of Scope
 
@@ -107,10 +105,10 @@ When using `basanos` in your projects:
 1. **Keep Updated**: Upgrade to the latest supported minor release promptly
 2. **Watch for DeprecationWarnings**: Run your tests with `python -W error::DeprecationWarning`
    to surface any use of deprecated APIs before they are removed
-3. **Enable Security Features**: Enable CodeQL, secret scanning, and Dependabot in your repositories
-4. **Use Locked Dependencies**: Always commit `uv.lock` for reproducible builds
+3. **Pin Dependencies**: Use `uv.lock` or equivalent for reproducible builds
+4. **Enable Security Features**: Enable CodeQL, secret scanning, and Dependabot in your repositories
 5. **Configure Branch Protection**: Require PR reviews and status checks
 
 ## Acknowledgments
 
-We thank the security researchers and community members who help keep Basanos secure.
+We thank the security researchers and community members who help keep `basanos` secure.

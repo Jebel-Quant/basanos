@@ -343,12 +343,12 @@ def test_solve_from_returns_matches_explicit():
 
 
 def test_solve_raises_singular_matrix_error_when_cholesky_fails():
-    """Solve must raise SingularMatrixError when _cholesky_solve raises LinAlgError."""
+    """Solve must raise SingularMatrixError when _cholesky raises LinAlgError."""
     fm = _make_fm(n=4, k=2)
     rhs = np.ones(4)
     with (
         patch(
-            "basanos.math._factor_model._cholesky_solve",
+            "basanos.math._factor_model._cholesky",
             side_effect=np.linalg.LinAlgError("singular matrix"),
         ),
         pytest.raises(SingularMatrixError),
