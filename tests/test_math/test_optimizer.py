@@ -36,7 +36,7 @@ from basanos.exceptions import (
 )
 from basanos.math import BasanosConfig, BasanosEngine
 from basanos.math._engine_solve import SolveStatus, _SolveMixin
-from basanos.math.optimizer import SlidingWindowConfig, _validate_inputs
+from basanos.math.optimizer import SlidingWindowConfig, _validate_inputs, _validate_null_fraction
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
@@ -2966,3 +2966,9 @@ def test_apply_turnover_constraint_scales_when_delta_exceeds_max():
     result = _SolveMixin._apply_turnover_constraint(new, prev, max_turnover)
     total_delta = float(np.sum(np.abs(result - prev)))
     assert total_delta == pytest.approx(max_turnover, rel=1e-9)
+
+
+def test_validate_null_fraction_empty_prices_is_noop() -> None:
+    """_validate_null_fraction must return early without error when prices has no rows."""
+    empty = pl.DataFrame({"date": pl.Series([], dtype=pl.Int64), "A": pl.Series([], dtype=pl.Float64)})
+    _validate_null_fraction(empty, ["A"], max_nan_fraction=0.9)
