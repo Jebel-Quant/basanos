@@ -6,16 +6,32 @@ when data-validation errors occur within the library.
 All exceptions inherit from `BasanosError` so callers can catch the
 entire family with a single ``except BasanosError`` clause if they prefer.
 
-Linear-algebra exceptions (``NonSquareMatrixError``, ``DimensionMismatchError``,
-``SingularMatrixError``, ``IllConditionedMatrixWarning``) are defined in
-``cvx.linalg`` and should be imported from there directly.
+Linear-algebra exceptions (``DimensionMismatchError``, ``NonSquareMatrixError``,
+``SingularMatrixError``) extend their ``cvx.linalg`` counterparts and are
+importable directly from this module.
 """
 
 from __future__ import annotations
 
+from cvx.linalg import DimensionMismatchError as _DimensionMismatchError
+from cvx.linalg import NonSquareMatrixError as _NonSquareMatrixError
+from cvx.linalg import SingularMatrixError as _SingularMatrixError
+
 
 class BasanosError(Exception):
     """Base class for all Basanos domain errors."""
+
+
+class DimensionMismatchError(_DimensionMismatchError):
+    """Raised when matrix or vector dimensions are incompatible."""
+
+
+class NonSquareMatrixError(_NonSquareMatrixError):
+    """Raised when a square matrix is required but not provided."""
+
+
+class SingularMatrixError(_SingularMatrixError):
+    """Raised when a matrix is singular and cannot be solved."""
 
 
 class InsufficientDataError(BasanosError, ValueError):
