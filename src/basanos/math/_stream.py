@@ -830,7 +830,7 @@ class BasanosStream:
         else:
             # EWM: append new vol-adjusted return to the growing history buffer.
             new_row = vol_adj_val[np.newaxis]  # (1, N)
-            corr_ret_buf = np.vstack([state.corr_ret_buf, new_row])
+            corr_ret_buf = np.vstack([cast(np.ndarray, state.corr_ret_buf), new_row])
 
         # ── Early return during EWM warmup period ───────────────────────────
         # All accumulators are already updated above; skip the O(N²) matrix
@@ -873,7 +873,7 @@ class BasanosStream:
             new_cash_pos, status = self._solve_ewma_position(
                 cfg=cfg,
                 state=state,
-                corr_ret_buf=corr_ret_buf,
+                corr_ret_buf=cast(np.ndarray, corr_ret_buf),
                 mask=mask,
                 new_m=new_m,
                 vola_vec=vola_vec,

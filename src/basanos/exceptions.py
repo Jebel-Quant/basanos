@@ -34,7 +34,6 @@ class SingularMatrixError(_SingularMatrixError):
     """Raised when a matrix is singular and cannot be solved."""
 
 
-
 class InsufficientDataError(BasanosError, ValueError):
     """Raised when there are too few finite entries to perform a computation.
 
