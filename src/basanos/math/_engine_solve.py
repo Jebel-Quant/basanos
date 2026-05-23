@@ -19,7 +19,6 @@ import numpy as np
 from cvx.linalg import SingularMatrixError, inv_a_norm, solve
 
 from ._config import EwmaShrinkConfig, SlidingWindowConfig
-from ._ewm_corr import _ewm_corr_with_final_state, _EwmCorrState
 from ._factor_model import FactorModel
 from ._signal import shrink2id
 
@@ -90,15 +89,9 @@ class WarmupState:
         prev_cash_pos: Cash positions at the last warmup row, shape
             ``(n_assets,)``.  ``NaN`` for assets that were still in their
             own warmup period.
-        corr_iir_state: Final IIR filter memory from the EWM correlation pass,
-            or ``None`` when using `SlidingWindowConfig`.
-            `from_warmup` reads these arrays to seed the
-            incremental ``lfilter`` state without a second pass over the
-            warmup data.
     """
 
     prev_cash_pos: np.ndarray
-    corr_iir_state: _EwmCorrState | None = dataclasses.field(default=None)
 
 
 class _SolveMixin:
@@ -612,23 +605,6 @@ class _SolveMixin:
         risk_pos_np = np.full((n_rows, len(assets)), np.nan, dtype=float)
         cash_pos_np = np.full((n_rows, len(assets)), np.nan, dtype=float)
 
-        if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
-            # Compute the IIR filter state in a single pass over the warmup data
-            # so BasanosStream.from_warmup() can seed the incremental lfilter
-            # without a second sweep.
-            ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            _, iir_state = _ewm_corr_with_final_state(
-                ret_adj_np,
-                com=self.cfg.corr,
-                min_periods=self.cfg.corr,
-                min_corr_denom=self.cfg.min_corr_denom,
-            )
-        else:
-            iir_state = None
-
         _SolveMixin._replay_positions(self, risk_pos_np, cash_pos_np, vola_np)
         prev_cash_pos = cash_pos_np[-1].copy()
-        return WarmupState(
-            prev_cash_pos=prev_cash_pos,
-            corr_iir_state=iir_state,
-        )
+        return WarmupState(prev_cash_pos=prev_cash_pos)

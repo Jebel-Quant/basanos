@@ -34,7 +34,6 @@ from hypothesis import strategies as st
 from hypothesis.extra import numpy as np_st
 
 from basanos.math import BasanosConfig, BasanosEngine, SolveStatus
-from basanos.math._ewm_corr import ewm_corr as _ewm_corr_numpy
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -100,78 +99,6 @@ def test_near_singular_corr_residual_finite() -> None:
         x = solve(matrix=matrix, rhs=rhs)
 
     assert np.all(np.isfinite(x)), f"Expected finite solution, got {x}"
-
-
-# ---------------------------------------------------------------------------
-# 2. min_corr_denom boundary (1e-14)
-# ---------------------------------------------------------------------------
-
-
-def test_min_corr_denom_zero_variance_gives_nan() -> None:
-    """Constant (zero-variance) returns produce denom=0 < 1e-14 → NaN off-diagonal.
-
-    When both assets have identically zero returns the EWM variance is zero,
-    so the correlation denominator ``sqrt(var_x * var_y) = 0`` falls below
-    the guard threshold of 1e-14.  The off-diagonal entries must be NaN.
-    """
-    # All-zero returns → zero variance → denom = 0 < 1e-14 → NaN correlation.
-    data = np.zeros((40, 2))
-    result = _ewm_corr_numpy(data, com=5, min_periods=1, min_corr_denom=1e-14)
-
-    # Off-diagonal entries should be NaN (denom = 0, which is not > 1e-14).
-    assert np.all(np.isnan(result[:, 0, 1])), "Expected NaN off-diagonal for zero-variance data"
-    assert np.all(np.isnan(result[:, 1, 0])), "Expected NaN off-diagonal for zero-variance data"
-
-
-def test_min_corr_denom_normal_variance_gives_finite() -> None:
-    """Non-trivial returns produce denom >> 1e-14 → finite off-diagonal correlation.
-
-    With alternating returns of magnitude ~0.02 the variance is ~4e-4, and
-    the denominator is far above the 1e-14 guard, so correlations are finite.
-    """
-    rng = np.random.default_rng(0)
-    # Two similar but non-identical alternating series with normal-scale returns.
-    n = 60
-    pct = rng.uniform(0.01, 0.03, size=(n, 2))
-    signs = np.array([1.0 if i % 2 == 0 else -1.0 for i in range(n)])
-    data = (pct * signs[:, np.newaxis]).astype(np.float64)
-
-    result = _ewm_corr_numpy(data, com=10, min_periods=5, min_corr_denom=1e-14)
-
-    # After warmup, the off-diagonal entries must be finite.
-    finite_mask = np.isfinite(result[:, 0, 1])
-    assert finite_mask.any(), "Expected at least some finite off-diagonal correlations"
-    finite_vals = result[finite_mask, 0, 1]
-    assert np.all(np.abs(finite_vals) <= 1.0 + 1e-9), f"Correlations out of [-1, 1]: {finite_vals}"
-
-
-def test_min_corr_denom_boundary_is_strict_greater_than() -> None:
-    """The guard is ``denom > min_corr_denom`` (strict), so at exactly 1e-14 → NaN.
-
-    By setting ``min_corr_denom = 0`` we disable the guard entirely; even
-    near-zero denominator data then produces a finite (±1) correlation,
-    confirming the guard is what drives NaN for all-zero input.
-    """
-    # Zero returns → denom = 0.  With guard=0 (disabled), no NaN is forced
-    # by the threshold, but the EWM variance is 0 so the expression is 0/0 = NaN
-    # from floating-point arithmetic.  The key test is on non-zero tiny returns.
-    tiny = 1e-8  # very small, constant magnitude → var ≈ 1e-16, denom ≈ 1e-16
-    n = 100
-    signs = np.array([1.0 if i % 2 == 0 else -1.0 for i in range(n)])
-    # Both assets have the same sign pattern → perfect correlation.
-    data = np.column_stack([signs * tiny, signs * tiny])
-
-    # With the default guard (1e-14): denom ≈ 1e-16 < 1e-14 → NaN.
-    result_guarded = _ewm_corr_numpy(data, com=10, min_periods=1, min_corr_denom=1e-14)
-    assert np.all(np.isnan(result_guarded[10:, 0, 1])), "Expected NaN when tiny-variance denom is below guard threshold"
-
-    # With guard disabled (=0): correlation is computable and should be ±1.
-    result_unguarded = _ewm_corr_numpy(data, com=10, min_periods=1, min_corr_denom=0.0)
-    finite_mask = np.isfinite(result_unguarded[:, 0, 1])
-    if finite_mask.any():
-        assert np.allclose(result_unguarded[finite_mask, 0, 1], 1.0, atol=1e-6), (
-            "Expected correlation ≈ 1 for identical tiny-variance series"
-        )
 
 
 # ---------------------------------------------------------------------------

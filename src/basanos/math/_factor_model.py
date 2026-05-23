@@ -18,7 +18,8 @@ import dataclasses
 import numpy as np
 from cvx.linalg import DimensionMismatchError, SingularMatrixError
 from cvx.linalg import check_and_warn_condition as _check_and_warn_condition
-from cvx.linalg import cholesky as _cholesky
+from cvx.linalg import inv as _inv
+from cvx.linalg import solve as _solve
 from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
 
 from basanos.exceptions import FactorModelError
@@ -175,10 +176,9 @@ class FactorModel:
         d_inv = 1.0 / self.idiosyncratic_var  # (n,)
         d_inv_b_mat = d_inv[:, None] * self.factor_loadings  # D^{-1} B, shape (n, k)
         try:
-            mid = (
-                _cholesky(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
-            )  # (k, k)
-        except np.linalg.LinAlgError:
+            f_inv = _inv(self.factor_covariance)
+            mid = f_inv + self.factor_loadings.T @ d_inv_b_mat  # (k, k)
+        except (np.linalg.LinAlgError, SingularMatrixError):
             return float("inf")
         return float(np.linalg.cond(mid))
 
@@ -253,11 +253,9 @@ class FactorModel:
         rhs_k = self.factor_loadings.T @ d_inv_rhs  # (k,)
         try:
             _check_and_warn_condition(self.factor_covariance, cond_threshold)
-            mid = (
-                _cholesky(self.factor_covariance, np.eye(self.n_factors)) + self.factor_loadings.T @ d_inv_b_mat
-            )  # (k, k)
+            mid = _inv(self.factor_covariance, cond_threshold) + self.factor_loadings.T @ d_inv_b_mat  # (k, k)
             _check_and_warn_condition(mid, cond_threshold)
-            w = _cholesky(mid, rhs_k)  # (k,)
+            w = _solve(mid, rhs_k, cond_threshold)  # (k,)
         except np.linalg.LinAlgError as exc:
             raise SingularMatrixError(str(exc)) from exc
 

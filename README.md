@@ -320,7 +320,7 @@ installs everything automatically.
 |---|---|---|
 | **[`end_to_end.py`](book/marimo/notebooks/end_to_end.py)** | **Complete worked example from raw prices to HTML report using realistic synthetic equity data** | Data preparation, config selection with shrinkage guidance, engine instantiation, HTML report generation, trading cost analysis |
 | [`demo.py`](book/marimo/notebooks/demo.py) | End-to-end interactive demo of the Basanos optimizer | Signal generation, correlation-aware position sizing, portfolio analytics, reactive UI |
-| [`ewm_benchmark.py`](book/marimo/notebooks/ewm_benchmark.py) | Validates and benchmarks the NumPy/SciPy EWM correlation implementation against the legacy pandas version | EWM, `scipy.signal.lfilter`, NaN handling, performance comparison |
+| `ewm_benchmark.py` | Notebook removed; benchmark content no longer shipped in this repo | EWM, benchmarking |
 | [`shrinkage_guide.py`](book/marimo/notebooks/shrinkage_guide.py) | Theoretical and empirical guide to tuning the shrinkage parameter λ | Marchenko-Pastur law, linear shrinkage `C(λ) = λ·C_EWMA + (1−λ)·I`, Sharpe vs. λ sweep, turnover analysis |
 | [`diagnostics.py`](book/marimo/notebooks/diagnostics.py) | Guided tour of all five engine diagnostic properties on a dataset with engineered edge cases | `position_status`, `condition_number`, `effective_rank`, `solver_residual`, `signal_utilisation` |
 
@@ -339,7 +339,6 @@ marimo run book/marimo/notebooks/end_to_end.py
 # Self-contained via uv — no prior install needed
 uv run book/marimo/notebooks/end_to_end.py
 uv run book/marimo/notebooks/demo.py
-uv run book/marimo/notebooks/ewm_benchmark.py
 uv run book/marimo/notebooks/shrinkage_guide.py
 uv run book/marimo/notebooks/diagnostics.py
 ```
