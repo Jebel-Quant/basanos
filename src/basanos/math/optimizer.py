@@ -18,8 +18,8 @@ Let *N* be the number of assets and *T* the number of timestamps.
 | EWM volatility (``ret_adj``,     | O(T·N)           | Linear in both T and N; negligible   |
 | ``vola``)                        |                  |                                      |
 +----------------------------------+------------------+--------------------------------------+
-| EWM correlation (``cor``)        | O(T·N²)          | ``lfilter`` over all N² asset pairs  |
-|                                  |                  | simultaneously                       |
+| EWM correlation (``cor``)        | O(T·N²)          | ``ewm_covariance`` from              |
+|                                  |                  | ``cvx.linalg`` over all N² pairs     |
 +----------------------------------+------------------+--------------------------------------+
 | Linear solve per timestamp       | O(N³)            | Cholesky / LU per row in             |
 | (``cash_position``)              | * T solves       | ``cash_position``                    |
@@ -27,10 +27,9 @@ Let *N* be the number of assets and *T* the number of timestamps.
 
 **Memory usage** (peak, approximate)
 
-``ewm_corr`` allocates roughly **14 float64 arrays** of shape
-``(T, N, N)`` at peak (input sequences, IIR filter outputs, EWM components,
-and the result tensor).  Peak RAM ≈ **112 * T * N²** bytes.  Typical
-working sizes on a 16 GB machine:
+``ewm_covariance`` from ``cvx.linalg`` processes the input Polars DataFrame
+and returns a dict of covariance matrices.  Peak RAM ≈ **O(T · N²)** bytes.
+Typical working sizes on a 16 GB machine:
 
 +--------+--------------------------+------------------------------------+
 | N      | T (daily rows)           | Peak memory (approx.)              |
@@ -66,8 +65,6 @@ readable and independently testable:
 
 * `_config` — `BasanosConfig` and all
   covariance-mode configuration classes.
-* `_ewm_corr` — `ewm_corr`, the vectorised
-  IIR-filter implementation of per-row EWM correlation matrices.
 * `_engine_solve` — private helpers providing the
   ``_iter_matrices`` and ``_iter_solve`` generators (per-timestamp solve
   logic).
@@ -87,6 +84,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
+from cvx.linalg import cov_to_corr
+from cvx.linalg.ewm_cov import ewm_covariance
 from jquantstats import Portfolio
 
 from ..exceptions import (
@@ -107,7 +106,6 @@ from ._config import (
 from ._engine_diagnostics import _DiagnosticsMixin as _DiagnosticsMixin
 from ._engine_ic import _SignalEvaluatorMixin as _SignalEvaluatorMixin
 from ._engine_solve import _SolveMixin as _SolveMixin
-from ._ewm_corr import ewm_corr as _ewm_corr_numpy
 from ._signal import vol_adj
 
 if TYPE_CHECKING:
@@ -267,7 +265,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
           │
           ├─ vol_adj ──► ret_adj (volatility-adjusted log returns)
           │                │
-          │                ├─ ewm_corr ──► cor / cor_tensor
+          │                ├─ ewm_covariance ──► cor / cor_tensor
           │                │                │
           │                │                └─ shrink2id / FactorModel
           │                │                        │
@@ -382,21 +380,25 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
             dict: Mapping ``date -> np.ndarray`` of shape (n_assets, n_assets).
 
         Performance:
-            Delegates to `ewm_corr`, which is O(T·N²) in both
-            time and memory.  The returned dict holds *T* references into the
-            result tensor (one N*N view per date); no extra copies are made.
+            Delegates to ``ewm_covariance`` from ``cvx.linalg``.
             For large *N* or *T*, prefer ``cor_tensor`` to keep a single
             contiguous array rather than building a Python dict.
         """
-        index = self.prices["date"]
-        ret_adj_np = self.ret_adj.select(self.assets).to_numpy()
-        tensor = _ewm_corr_numpy(
-            ret_adj_np,
-            com=self.cfg.corr,
-            min_periods=self.cfg.corr,
-            min_corr_denom=self.cfg.min_corr_denom,
+        assets = list(self.assets)
+        n = len(assets)
+        span = 2 * self.cfg.corr + 1
+        cov_dict = ewm_covariance(
+            self.ret_adj,
+            assets=assets,
+            index_col="date",
+            window=span,
+            warmup=self.cfg.corr,
         )
-        return {index[t]: tensor[t] for t in range(len(index))}
+        nan_mat = np.full((n, n), np.nan)
+        return {
+            date: cov_to_corr(cov_dict[date], self.cfg.min_corr_denom) if date in cov_dict else nan_mat.copy()
+            for date in self.prices["date"].to_list()
+        }
 
     @property
     def cor_tensor(self) -> np.ndarray:
@@ -473,7 +475,7 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
 
         Performance:
             For ``ewma_shrink``: dominant cost is ``self.cor`` (O(T·N²) time,
-            O(T·N²) memory — see `ewm_corr`).  The per-timestamp
+            O(T·N²) memory).  The per-timestamp
             linear solve adds O(N³) per row.
 
             For ``sliding_window``: O(T·W·N·k) for sliding SVDs plus

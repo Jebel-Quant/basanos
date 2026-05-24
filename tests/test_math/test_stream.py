@@ -58,11 +58,7 @@ from basanos.math._stream import StepResult as StepResultDirect
 def _make_state(n: int = 3) -> _StreamState:
     """Return a zero-initialised _StreamState for *n* assets."""
     return _StreamState(
-        corr_zi_x=np.zeros((1, n, n)),
-        corr_zi_x2=np.zeros((1, n, n)),
-        corr_zi_xy=np.zeros((1, n, n)),
-        corr_zi_w=np.zeros((1, n, n)),
-        corr_count=np.zeros((n, n), dtype=int),
+        corr_ret_buf=None,
         vola_s_x=np.zeros(n),
         vola_s_x2=np.zeros(n),
         vola_s_w=np.zeros(n),
@@ -83,20 +79,10 @@ def _make_state(n: int = 3) -> _StreamState:
 
 
 @pytest.mark.parametrize("n", [1, 3, 10])
-def test_corr_zi_shapes(n: int) -> None:
-    """corr_zi_* arrays must have shape (1, N, N)."""
+def test_corr_ret_buf_is_none_by_default(n: int) -> None:
+    """corr_ret_buf defaults to None (set to None in _make_state for SW mode)."""
     s = _make_state(n)
-    for attr in ("corr_zi_x", "corr_zi_x2", "corr_zi_xy", "corr_zi_w"):
-        arr = getattr(s, attr)
-        assert arr.shape == (1, n, n), f"{attr}.shape expected (1,{n},{n}), got {arr.shape}"
-
-
-@pytest.mark.parametrize("n", [1, 3, 10])
-def test_corr_count_shape(n: int) -> None:
-    """corr_count must have shape (N, N) with integer dtype."""
-    s = _make_state(n)
-    assert s.corr_count.shape == (n, n)
-    assert np.issubdtype(s.corr_count.dtype, np.integer)
+    assert s.corr_ret_buf is None
 
 
 @pytest.mark.parametrize("n", [1, 3, 10])
@@ -142,12 +128,12 @@ def test_step_count_is_mutable() -> None:
 
 
 def test_array_field_replacement() -> None:
-    """Array fields can be replaced with new arrays of the same shape."""
+    """Array fields can be replaced with new arrays."""
     n = 4
     s = _make_state(n)
-    new_zi = np.ones((1, n, n))
-    s.corr_zi_x = new_zi
-    np.testing.assert_array_equal(s.corr_zi_x, new_zi)
+    new_buf = np.ones((10, n))
+    s.corr_ret_buf = new_buf
+    np.testing.assert_array_equal(s.corr_ret_buf, new_buf)
 
 
 def test_not_frozen() -> None:
@@ -182,11 +168,7 @@ def test_field_count() -> None:
     """_StreamState must expose exactly the documented fields."""
     fields = {f.name for f in dataclasses.fields(_StreamState)}
     expected = {
-        "corr_zi_x",
-        "corr_zi_x2",
-        "corr_zi_xy",
-        "corr_zi_w",
-        "corr_count",
+        "corr_ret_buf",
         "vola_s_x",
         "vola_s_x2",
         "vola_s_w",
@@ -866,68 +848,12 @@ def test_warmup_state_single_row():
 # but would be caught here.
 
 
-def test_corr_iir_state_is_beta_times_last_filter_output():
-    """corr_zi_x[0] must equal beta_corr * s_x[-1] from scipy lfilter on the warmup data.
+def test_corr_ret_buf_matches_ret_adj_from_warmup():
+    """corr_ret_buf must equal engine.ret_adj.select(assets).to_numpy() for EwmaShrinkConfig.
 
-    For a first-order IIR filter y[t] = beta*y[t-1] + x[t], the final filter
-    memory (zf) satisfies zf[0] = beta * y[T-1].  from_warmup must store that
-    memory in corr_zi_x so that the next step() call correctly continues the
-    same recurrence.  This test reconstructs s_x[-1] from the same IIR inputs
-    that _ewm_corr_numpy uses and verifies the stored memory matches, without
-    exercising the downstream solve path.
-    """
-    from scipy.signal import lfilter as scipy_lfilter
-
-    prices, mu, cfg, assets = _make_prices_mu(n_total=60)
-    warmup_prices = prices.head(50)
-    warmup_mu = mu.head(50)
-
-    stream = BasanosStream.from_warmup(warmup_prices, warmup_mu, cfg)
-
-    # Independently reconstruct the same IIR inputs that _ewm_corr_numpy uses
-    engine = BasanosEngine(prices=warmup_prices, mu=warmup_mu, cfg=cfg)
-    ret_adj_np = engine.ret_adj.select(assets).to_numpy()  # (T, N)
-
-    beta_corr = cfg.corr / (1.0 + cfg.corr)
-    fin = np.isfinite(ret_adj_np)
-    xt_f = np.where(fin, ret_adj_np, 0.0)
-    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]
-
-    v_x = xt_f[:, :, np.newaxis] * joint_fin
-    v_x2 = (xt_f**2)[:, :, np.newaxis] * joint_fin
-    v_xy = xt_f[:, :, np.newaxis] * xt_f[:, np.newaxis, :]
-    v_w = joint_fin.astype(np.float64)
-
-    filt_a = np.array([1.0, -beta_corr])
-    # Run lfilter without zi (same as _ewm_corr_numpy) to get the last output.
-    # The IIR memory after the last step is: zf[0] = beta * y[-1].
-    s_x = scipy_lfilter([1.0], filt_a, v_x, axis=0)
-    s_x2 = scipy_lfilter([1.0], filt_a, v_x2, axis=0)
-    s_xy = scipy_lfilter([1.0], filt_a, v_xy, axis=0)
-    s_w = scipy_lfilter([1.0], filt_a, v_w, axis=0)
-
-    n = len(assets)
-    expected_zi_x = np.zeros((1, n, n))
-    expected_zi_x2 = np.zeros((1, n, n))
-    expected_zi_xy = np.zeros((1, n, n))
-    expected_zi_w = np.zeros((1, n, n))
-    expected_zi_x[0] = beta_corr * s_x[-1]
-    expected_zi_x2[0] = beta_corr * s_x2[-1]
-    expected_zi_xy[0] = beta_corr * s_xy[-1]
-    expected_zi_w[0] = beta_corr * s_w[-1]
-
-    np.testing.assert_allclose(stream._state.corr_zi_x, expected_zi_x, rtol=1e-12)
-    np.testing.assert_allclose(stream._state.corr_zi_x2, expected_zi_x2, rtol=1e-12)
-    np.testing.assert_allclose(stream._state.corr_zi_xy, expected_zi_xy, rtol=1e-12)
-    np.testing.assert_allclose(stream._state.corr_zi_w, expected_zi_w, rtol=1e-12)
-
-
-def test_corr_count_matches_cumulative_joint_finite():
-    """corr_count must equal the cumulative sum of joint-finite observations.
-
-    Each entry corr_count[i, j] must equal the number of warmup rows at which
-    both asset i and asset j had a finite vol-adjusted return — the same
-    quantity that _ewm_corr_numpy accumulates in its count tensor.
+    from_warmup must store the full vol-adjusted return history in corr_ret_buf
+    so that each step() call can pass it to ewm_covariance to recompute the
+    correlation matrix without revisiting the raw warmup data.
     """
     prices, mu, cfg, assets = _make_prices_mu(n_total=60)
     warmup_prices = prices.head(50)
@@ -935,14 +861,35 @@ def test_corr_count_matches_cumulative_joint_finite():
 
     stream = BasanosStream.from_warmup(warmup_prices, warmup_mu, cfg)
 
+    # Independently compute the expected buffer from the engine
     engine = BasanosEngine(prices=warmup_prices, mu=warmup_mu, cfg=cfg)
-    ret_adj_np = engine.ret_adj.select(assets).to_numpy()  # (T, N)
+    expected_buf = engine.ret_adj.select(assets).to_numpy()  # (T, N)
 
-    fin = np.isfinite(ret_adj_np)  # (T, N)
-    joint_fin = fin[:, :, np.newaxis] & fin[:, np.newaxis, :]  # (T, N, N)
-    expected_count = joint_fin.astype(np.int64).sum(axis=0)  # (N, N)
+    assert stream._state.corr_ret_buf is not None
+    np.testing.assert_allclose(stream._state.corr_ret_buf, expected_buf, rtol=1e-12)
 
-    np.testing.assert_array_equal(stream._state.corr_count, expected_count)
+
+def test_corr_ret_buf_grows_after_step():
+    """corr_ret_buf must have one more row after each step() call in EWM mode.
+
+    Each step() appends the new vol-adjusted return to the buffer, so after k
+    additional steps the buffer shape must be (n_warmup + k, n_assets).
+    """
+    prices, mu, cfg, assets = _make_prices_mu(n_total=60)
+    warmup_prices = prices.head(50)
+    warmup_mu = mu.head(50)
+
+    stream = BasanosStream.from_warmup(warmup_prices, warmup_mu, cfg)
+
+    assert stream._state.corr_ret_buf is not None
+    initial_rows = stream._state.corr_ret_buf.shape[0]
+
+    # Step once (use rows 50 and beyond)
+    price_row = prices.select(assets).to_numpy()[50]
+    mu_row = mu.select(assets).to_numpy()[50]
+    stream.step(price_row, mu_row, date=50)
+
+    assert stream._state.corr_ret_buf.shape[0] == initial_rows + 1
 
 
 def test_pct_accumulators_match_polars_ewm_std():
@@ -1104,64 +1051,24 @@ def test_ewm_vol_accumulators_output_shapes():
     assert np.issubdtype(count.dtype, np.integer)
 
 
-# ─── corr_iir_state tests ──────────────────────────────────────────────────────
+# ─── WarmupState tests ──────────────────────────────────────────────────────
 
 
-def test_warmup_state_has_corr_iir_state_for_ewma_shrink():
-    """corr_iir_state must be non-None for EwmaShrinkConfig."""
-    prices, mu, cfg, _ = _make_prices_mu()
-    engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
-    ws = engine.warmup_state()
-    assert ws.corr_iir_state is not None
-
-
-def test_warmup_state_corr_iir_state_is_none_for_sliding_window():
-    """corr_iir_state must be None for SlidingWindowConfig."""
-    prices, mu, _, _assets = _make_prices_mu(n_total=80)
-    cfg = BasanosConfig(
-        vola=5,
-        corr=10,
-        clip=3.0,
-        shrink=0.5,
-        aum=1e6,
-        covariance_config=SlidingWindowConfig(window=20, n_factors=2),
-    )
-    engine = BasanosEngine(prices=prices.head(60), mu=mu.head(60), cfg=cfg)
-    ws = engine.warmup_state()
-    assert ws.corr_iir_state is None
-
-
-def test_warmup_state_corr_iir_state_shapes():
-    """corr_iir_state fields must have documented shapes."""
+def test_warmup_state_has_prev_cash_pos():
+    """warmup_state() must return a WarmupState with a prev_cash_pos array."""
     prices, mu, cfg, assets = _make_prices_mu()
-    n_assets = len(assets)
     engine = BasanosEngine(prices=prices.head(50), mu=mu.head(50), cfg=cfg)
     ws = engine.warmup_state()
-    iir = ws.corr_iir_state
-    assert iir is not None
-    assert iir.corr_zi_x.shape == (1, n_assets, n_assets)
-    assert iir.corr_zi_x2.shape == (1, n_assets, n_assets)
-    assert iir.corr_zi_xy.shape == (1, n_assets, n_assets)
-    assert iir.corr_zi_w.shape == (1, n_assets, n_assets)
-    assert iir.count.shape == (n_assets, n_assets)
-    assert iir.count.dtype == np.int64
+    assert isinstance(ws, WarmupState)
+    assert ws.prev_cash_pos.shape == (len(assets),)
 
 
-def test_warmup_state_corr_iir_state_matches_stream_state():
-    """IIR state from warmup_state() must match the IIR state seeded into _StreamState by from_warmup()."""
-    prices, mu, cfg, _assets = _make_prices_mu()
-    n = 50
-    engine = BasanosEngine(prices=prices.head(n), mu=mu.head(n), cfg=cfg)
-    ws = engine.warmup_state()
-    iir = ws.corr_iir_state
-    assert iir is not None
+def test_warmup_state_only_has_prev_cash_pos():
+    """WarmupState must only expose prev_cash_pos (no corr_iir_state)."""
+    import dataclasses
 
-    stream = BasanosStream.from_warmup(prices.head(n), mu.head(n), cfg)
-    np.testing.assert_allclose(iir.corr_zi_x, stream._state.corr_zi_x, rtol=1e-12)
-    np.testing.assert_allclose(iir.corr_zi_x2, stream._state.corr_zi_x2, rtol=1e-12)
-    np.testing.assert_allclose(iir.corr_zi_xy, stream._state.corr_zi_xy, rtol=1e-12)
-    np.testing.assert_allclose(iir.corr_zi_w, stream._state.corr_zi_w, rtol=1e-12)
-    np.testing.assert_array_equal(iir.count, stream._state.corr_count)
+    fields = {f.name for f in dataclasses.fields(WarmupState)}
+    assert fields == {"prev_cash_pos"}
 
 
 def test_warmup_state_ewma_zero_signal_row():
@@ -1206,7 +1113,6 @@ def test_warmup_state_ewma_all_nan_prices_row():
     engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
     ws = engine.warmup_state()
     assert isinstance(ws, WarmupState)
-    assert ws.corr_iir_state is not None
 
 
 def test_warmup_state_ewma_singular_inv_a_norm():
@@ -1407,7 +1313,7 @@ def test_save_writes_format_version():
         stream.save(p)
         with np.load(p, allow_pickle=False) as data:
             assert "format_version" in data
-            assert int(data["format_version"]) == 2
+            assert int(data["format_version"]) == 3
 
 
 def test_load_raises_on_missing_format_version():
