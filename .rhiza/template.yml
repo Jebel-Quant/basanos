@@ -1,16 +1,8 @@
 repository: jebel-quant/rhiza
-ref: "v0.15.2"
+ref: "v0.15.3"
 
 profiles:
   - github-project
+
 templates:
-  #- tests
-  - marimo
-  - github
   - legal
-
-exclude:
-  - book/marimo/notebooks/rhiza.py‎
-  - .rhiza/make.d/custom-env.mk
-  - .rhiza/make.d/custom-task.mk
-
