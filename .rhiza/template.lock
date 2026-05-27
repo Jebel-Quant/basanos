@@ -1,15 +1,10 @@
-sha: 4051814fc1976da3a86cefa499be5bada21eb674
+sha: b46e11380e4073802302c551ab666ba9dec1cd88
 repo: jebel-quant/rhiza
 host: github
-ref: v0.15.3
+ref: v0.17.0
 include: []
-exclude:
-- "book/marimo/notebooks/rhiza.py\u200E"
-- .rhiza/make.d/custom-env.mk
-- .rhiza/make.d/custom-task.mk
+exclude: []
 templates:
-- marimo
-- github
 - legal
 files:
 - .bandit
@@ -107,5 +102,5 @@ files:
 - ruff.toml
 profiles:
 - github-project
-synced_at: '2026-05-26T14:40:06Z'
+synced_at: '2026-05-27T10:56:21Z'
 strategy: merge
