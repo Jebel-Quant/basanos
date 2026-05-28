@@ -16,9 +16,14 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
+
 # Sentinel used in BasanosConfig.replace() to distinguish "not provided"
 # (keep existing value) from "explicitly set to None" (clear the field).
-_SENTINEL: object = object()
+class _SentinelType:
+    """Sentinel type for BasanosConfig.replace() to distinguish 'not provided' from None."""
+
+
+_SENTINEL = _SentinelType()
 
 
 class CovarianceMode(enum.StrEnum):
@@ -479,7 +484,7 @@ class BasanosConfig(BaseModel):
         max_nan_fraction: float | None = None,
         covariance_config: "CovarianceConfig | None" = None,
         cost_per_unit: float | None = None,
-        max_turnover: float | None = _SENTINEL,  # type: ignore[assignment]
+        max_turnover: float | None | _SentinelType = _SENTINEL,
     ) -> "BasanosConfig":
         """Return a new `BasanosConfig` with selected fields replaced.
 
@@ -523,7 +528,7 @@ class BasanosConfig(BaseModel):
             >>> cfg3.max_turnover
             100000.0
         """
-        new_max_turnover: float | None = self.max_turnover if max_turnover is _SENTINEL else max_turnover
+        new_max_turnover: float | None = self.max_turnover if isinstance(max_turnover, _SentinelType) else max_turnover
         return BasanosConfig(
             vola=self.vola if vola is None else vola,
             corr=self.corr if corr is None else corr,

@@ -546,7 +546,7 @@ class _SolveMixin:
             return
 
         # SlidingWindowConfig path: sequential per-row solve (lazy factor models).
-        win_w: int = cast(SlidingWindowConfig, self.cfg.covariance_config).window
+        win_w: int = self.cfg.covariance_config.window
 
         for i, t, mask, bundle in self._iter_matrices():
             if bundle is None:
