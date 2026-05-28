@@ -639,9 +639,10 @@ class BasanosStream:
 
         win_w = sw_config.window
         win_k = sw_config.n_factors
+        sw_ret_buf = cast(np.ndarray, state.sw_ret_buf)
         window_ret = np.where(
-            np.isfinite(state.sw_ret_buf[:, mask]),  # type: ignore[index]
-            state.sw_ret_buf[:, mask],  # type: ignore[index]
+            np.isfinite(sw_ret_buf[:, mask]),
+            sw_ret_buf[:, mask],
             0.0,
         )
         n_sub = int(mask.sum())
@@ -823,9 +824,9 @@ class BasanosStream:
         # ── Mode-specific correlation state update ───────────────────────────
         if isinstance(cfg.covariance_config, SlidingWindowConfig):
             # SW: shift the rolling window buffer in-place and append this row.
-            buf = state.sw_ret_buf  # (W, N), already owned by state
-            buf[:-1] = buf[1:]  # type: ignore[index]
-            buf[-1] = vol_adj_val  # type: ignore[index]
+            buf = cast(np.ndarray, state.sw_ret_buf)  # (W, N), already owned by state
+            buf[:-1] = buf[1:]
+            buf[-1] = vol_adj_val
             corr_ret_buf = state.corr_ret_buf  # None for SW; pass through
         else:
             # EWM: append new vol-adjusted return to the growing history buffer.
