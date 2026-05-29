@@ -96,6 +96,9 @@ ignore-init-method = true
 ignore-magic = true
 exclude = ["book"]
 
+[tool.uv.extra-build-dependencies]
+pandas = ["setuptools"]
+
 [tool.ty.environment]
 python-version = "3.12"
 
