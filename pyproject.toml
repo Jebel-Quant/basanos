@@ -39,7 +39,7 @@ Issues = "https://github.com/Jebel-Quant/basanos/issues"
 [dependency-groups]
 dev = [
     "marimo>=0.21.0",
-    "pandas>=2.0",
+    "pandas>=3.0",
     "pyarrow>=14.0"
 ]
 test = [
@@ -95,9 +95,6 @@ fail-under = 100
 ignore-init-method = true
 ignore-magic = true
 exclude = ["book"]
-
-[tool.uv.extra-build-dependencies]
-pandas = ["setuptools"]
 
 [tool.ty.environment]
 python-version = "3.12"

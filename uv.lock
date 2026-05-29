@@ -81,7 +81,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "marimo", specifier = ">=0.21.0" },
-    { name = "pandas", specifier = ">=2.0" },
+    { name = "pandas", specifier = ">=3.0" },
     { name = "pyarrow", specifier = ">=14.0" },
 ]
 lint = [
