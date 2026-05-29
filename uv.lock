@@ -68,7 +68,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cvx-linalg", specifier = ">=0.6" },
+    { name = "cvx-linalg", specifier = ">=0.6.1" },
     { name = "jinja2", specifier = ">=3" },
     { name = "jquantstats", specifier = ">=0.9" },
     { name = "numpy", specifier = ">=2.4" },
@@ -81,7 +81,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "marimo", specifier = ">=0.21.0" },
-    { name = "pandas", specifier = ">=2.0" },
+    { name = "pandas", specifier = ">=3.0" },
     { name = "pyarrow", specifier = ">=14.0" },
 ]
 lint = [
