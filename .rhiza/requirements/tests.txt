@@ -7,6 +7,7 @@ pytest-mock>=3.0
 pytest-xdist>=3.0
 PyYAML>=6.0
 defusedxml>=0.7.0
+mutmut>=2.0,<3.0
 
 # For property-based testing
 hypothesis>=6.150.0
