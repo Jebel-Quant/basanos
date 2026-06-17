@@ -710,7 +710,9 @@ class BasanosStream:
         if not cov_dict:
             corr = np.full((n_assets, n_assets), np.nan)
         else:
-            corr = cov_to_corr(cov_dict[max(cov_dict)], cfg.min_corr_denom)
+            # keys are the integer ``t`` index values built from ``range(t)`` above
+            latest = max(cov_dict, key=lambda k: cast("int", k))
+            corr = cov_to_corr(cov_dict[latest], cfg.min_corr_denom)
         matrix = shrink2id(corr, lamb=cfg.shrink)
         expected_mu, early = _SolveMixin._row_early_check(state.step_count, date, mask, new_m)
         if early is not None:
