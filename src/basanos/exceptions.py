@@ -22,15 +22,15 @@ class BasanosError(Exception):
     """Base class for all Basanos domain errors."""
 
 
-class DimensionMismatchError(_DimensionMismatchError):  # type: ignore[misc]  # base class is untyped (cvx.linalg ships no stubs)
+class DimensionMismatchError(_DimensionMismatchError):
     """Raised when matrix or vector dimensions are incompatible."""
 
 
-class NonSquareMatrixError(_NonSquareMatrixError):  # type: ignore[misc]  # base class is untyped (cvx.linalg ships no stubs)
+class NonSquareMatrixError(_NonSquareMatrixError):
     """Raised when a square matrix is required but not provided."""
 
 
-class SingularMatrixError(_SingularMatrixError):  # type: ignore[misc]  # base class is untyped (cvx.linalg ships no stubs)
+class SingularMatrixError(_SingularMatrixError):
     """Raised when a matrix is singular and cannot be solved."""
 
 
