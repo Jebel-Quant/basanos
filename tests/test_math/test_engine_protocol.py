@@ -114,18 +114,18 @@ def test_mixin_self_annotation_is_engine_protocol(cls_name: str, method_name: st
 def test_engine_protocol_declares_all_required_attributes() -> None:
     """_EngineProtocol must declare every attribute used by the mixin methods.
 
-    This test reads the ``__annotations__`` of ``_EngineProtocol`` at import
-    time (safe because pyproject.toml excludes the file from coverage, but the
-    module itself is importable) and checks that the documented engine
-    attributes are all present.
+    Each required attribute may be declared either as a plain annotation or as
+    a read-only ``@property`` (the latter is needed so that BasanosEngine's
+    ``@property`` accessors satisfy the protocol under strict type checking).
+    This test checks both declaration styles so the protocol stays complete.
     """
     from basanos.math._engine_protocol import _EngineProtocol
 
-    protocol_annotations = _EngineProtocol.__annotations__
+    declared = set(_EngineProtocol.__annotations__) | set(vars(_EngineProtocol))
     required_attrs = {"assets", "prices", "mu", "cfg", "cor", "ret_adj", "vola"}
-    missing = required_attrs - set(protocol_annotations)
+    missing = required_attrs - declared
     assert not missing, (
-        f"_EngineProtocol is missing annotations for: {missing}.  "
+        f"_EngineProtocol is missing declarations for: {missing}.  "
         f"Add them to _engine_protocol.py so that mixin self-typing is complete."
     )
 
