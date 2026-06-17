@@ -16,6 +16,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 from cvx.linalg import DimensionMismatchError, IllConditionedMatrixWarning, SingularMatrixError
+
 try:  # cvx-linalg >= 0.7 renamed this constant from the private to the public name
     from cvx.linalg.solve import DEFAULT_COND_THRESHOLD as _DEFAULT_COND_THRESHOLD  # type: ignore[attr-defined]
 except ImportError:  # older cvx-linalg only exposes the private name
