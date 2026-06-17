@@ -93,10 +93,12 @@ def _make_dataset(
 
 
 def _ewma_cfg(vola: int = 5, corr: int = 10) -> BasanosConfig:
+    """Build a BasanosConfig using the default EWMA covariance estimator."""
     return BasanosConfig(vola=vola, corr=corr, clip=3.0, shrink=0.5, aum=1e6)
 
 
 def _sw_cfg(vola: int = 5, corr: int = 10, window: int = 20, n_factors: int = 2) -> BasanosConfig:
+    """Build a BasanosConfig using the sliding-window factor covariance estimator."""
     return BasanosConfig(
         vola=vola,
         corr=corr,

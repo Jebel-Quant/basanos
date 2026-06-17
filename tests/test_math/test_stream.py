@@ -1635,6 +1635,7 @@ def test_sw_max_components_caps_k_eff():
     original_from_returns = FactorModel.from_returns
 
     def capture_k(returns, k):
+        """Record the k passed to FactorModel.from_returns and delegate to the original."""
         captured_k.append(k)
         return original_from_returns(returns, k)
 
@@ -1741,6 +1742,7 @@ def test_step_tight_max_turnover_reduces_total_turnover():
     prices, mu, _, assets = _make_prices_mu(n_total=n_total, n_assets=5, seed=9)
 
     def collect_positions(max_turnover: float | None) -> np.ndarray:
+        """Stream all steps under the given max_turnover and return the position rows."""
         cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6, max_turnover=max_turnover)
         stream = BasanosStream.from_warmup(prices.head(warmup_len), mu.head(warmup_len), cfg)
         prices_np = prices.select(assets).to_numpy()
@@ -1752,6 +1754,7 @@ def test_step_tight_max_turnover_reduces_total_turnover():
     pos_constrained = collect_positions(5e3)
 
     def total_l1(pos: np.ndarray) -> float:
+        """Sum the L1 position changes across consecutive rows."""
         total = 0.0
         for i in range(1, len(pos)):
             prev = np.nan_to_num(pos[i - 1], nan=0.0)

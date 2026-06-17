@@ -279,6 +279,7 @@ class TestSingleNonNullAssetPerRow:
 
         # Build full non-monotonic price walks, then apply alternating mask.
         def _walk(start: float, pct: np.ndarray, signs: np.ndarray) -> np.ndarray:
+            """Build a non-monotonic price path from a starting value and signed pct moves."""
             p = np.empty(n)
             p[0] = start
             for j in range(1, n):
@@ -490,6 +491,7 @@ def test_batched_solve_matches_sequential_to_float64_epsilon() -> None:
     # Run 2: sequential fallback — override _iter_solve_ewma_batched to call
     # _compute_position per row, reproducing the old sequential behaviour.
     def _sequential_fallback(mu_np, matrix_yields, denom_tol):
+        """Solve each row independently, reproducing the old per-row sequential behaviour."""
         mu_local = mu_np
         for i, t, mask, bundle in matrix_yields:
             if bundle is None:

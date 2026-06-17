@@ -32,34 +32,42 @@ class TestWarnDeprecated:
     """Unit tests for warn_deprecated."""
 
     def test_emits_exactly_one_warning(self) -> None:
+        """warn_deprecated emits exactly one warning per call."""
         captured = _collect("old_func", since="0.6", remove_in="0.8")
         assert len(captured) == 1
 
     def test_category_is_deprecation_warning(self) -> None:
+        """The emitted warning's category is DeprecationWarning."""
         captured = _collect("old_func", since="0.6", remove_in="0.8")
         assert issubclass(captured[0].category, DeprecationWarning)
 
     def test_message_contains_name(self) -> None:
+        """The warning message includes the deprecated symbol's name."""
         captured = _collect("my_api", since="0.6", remove_in="0.8")
         assert "my_api" in str(captured[0].message)
 
     def test_message_contains_since_version(self) -> None:
+        """The warning message includes the since version."""
         captured = _collect("my_api", since="0.6", remove_in="0.8")
         assert "0.6" in str(captured[0].message)
 
     def test_message_contains_remove_in_version(self) -> None:
+        """The warning message includes the remove_in version."""
         captured = _collect("my_api", since="0.6", remove_in="0.8")
         assert "0.8" in str(captured[0].message)
 
     def test_no_replacement_by_default(self) -> None:
+        """No replacement guidance appears when replacement is not given."""
         captured = _collect("old_func", since="0.6", remove_in="0.8")
         assert "Use" not in str(captured[0].message)
 
     def test_replacement_included_when_provided(self) -> None:
+        """The replacement symbol is mentioned when provided."""
         captured = _collect("old_func", since="0.6", remove_in="0.8", replacement="new_func")
         assert "new_func" in str(captured[0].message)
 
     def test_warn_deprecated_importable_from_basanos_top_level(self) -> None:
+        """warn_deprecated is importable and callable from the basanos package root."""
         import basanos
 
         assert callable(basanos.warn_deprecated)
