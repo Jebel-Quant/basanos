@@ -2890,6 +2890,7 @@ class TestMaxTurnoverConstraint:
     """max_turnover in BasanosConfig limits the L1 norm of position changes per step."""
 
     def _build_engine(self, n: int = 50, max_turnover: float | None = None, seed: int = 1) -> BasanosEngine:
+        """Build a BasanosEngine for cost tests with the given max_turnover budget."""
         prices, mu = _make_engine_for_cost_tests(n=n, seed=seed)
         cfg = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6, max_turnover=max_turnover)
         return BasanosEngine(prices=prices, mu=mu, cfg=cfg)
@@ -2928,6 +2929,7 @@ class TestMaxTurnoverConstraint:
         cfg_tight = BasanosConfig(vola=5, corr=10, clip=2.0, shrink=0.5, aum=1e6, max_turnover=5e3)
 
         def total_turnover(engine: BasanosEngine) -> float:
+            """Sum the L1 position changes across all steps of the engine."""
             cp = engine.cash_position
             assets = [c for c in cp.columns if c != "date"]
             pos = cp.select(assets).to_numpy()

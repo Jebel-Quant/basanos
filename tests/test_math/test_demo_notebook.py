@@ -83,17 +83,21 @@ class TestDemoEngineApi:
     """BasanosEngine properties used in the demo notebook (cell_12 / cell_13)."""
 
     def test_assets_list(self, demo_engine: BasanosEngine) -> None:
+        """Engine exposes the expected list of asset names."""
         assert demo_engine.assets == _ASSETS
 
     def test_cash_position_columns(self, demo_engine: BasanosEngine) -> None:
+        """cash_position has a date column plus one column per asset."""
         cols = demo_engine.cash_position.columns
         assert "date" in cols
         assert all(a in cols for a in _ASSETS)
 
     def test_cash_position_row_count(self, demo_engine: BasanosEngine) -> None:
+        """cash_position has one row per time step."""
         assert demo_engine.cash_position.height == _N
 
     def test_cash_position_values_are_finite_or_nan(self, demo_engine: BasanosEngine) -> None:
+        """All cash_position values are finite or NaN (never inf)."""
         for asset in _ASSETS:
             vals = demo_engine.cash_position[asset].to_numpy()
             assert np.all(np.isfinite(vals) | np.isnan(vals))
@@ -106,27 +110,33 @@ class TestDemoPortfolioStats:
     """Portfolio analytics properties used in the demo notebook (cell_16 / cell_17)."""
 
     def test_stats_summary_is_dataframe(self, demo_engine: BasanosEngine) -> None:
+        """stats.summary() returns a Polars DataFrame."""
         result = demo_engine.portfolio.stats.summary()
         assert isinstance(result, pl.DataFrame)
 
     def test_stats_summary_has_rows(self, demo_engine: BasanosEngine) -> None:
+        """stats.summary() returns at least one row."""
         assert demo_engine.portfolio.stats.summary().height > 0
 
     def test_sharpe_returns_dict(self, demo_engine: BasanosEngine) -> None:
+        """stats.sharpe() returns a dict keyed by 'returns'."""
         sharpe = demo_engine.portfolio.stats.sharpe(periods=252)
         assert isinstance(sharpe, dict)
         assert "returns" in sharpe
 
     def test_sharpe_is_finite(self, demo_engine: BasanosEngine) -> None:
+        """The annualised Sharpe ratio is finite."""
         sharpe = demo_engine.portfolio.stats.sharpe(periods=252)
         assert np.isfinite(sharpe["returns"])
 
     def test_volatility_returns_dict(self, demo_engine: BasanosEngine) -> None:
+        """stats.volatility() returns a dict keyed by 'returns'."""
         vol = demo_engine.portfolio.stats.volatility(periods=252)
         assert isinstance(vol, dict)
         assert "returns" in vol
 
     def test_volatility_is_positive(self, demo_engine: BasanosEngine) -> None:
+        """The annualised volatility is strictly positive."""
         vol = demo_engine.portfolio.stats.volatility(periods=252)
         assert vol["returns"] > 0
 
@@ -138,15 +148,18 @@ class TestDemoPortfolioTurnover:
     """Turnover summary used in demo notebook cell_16b."""
 
     def test_turnover_summary_is_dataframe(self, demo_engine: BasanosEngine) -> None:
+        """turnover_summary() returns a Polars DataFrame."""
         result = demo_engine.portfolio.turnover_summary()
         assert isinstance(result, pl.DataFrame)
 
     def test_turnover_summary_has_metric_and_value_columns(self, demo_engine: BasanosEngine) -> None:
+        """turnover_summary() has 'metric' and 'value' columns."""
         cols = demo_engine.portfolio.turnover_summary().columns
         assert "metric" in cols
         assert "value" in cols
 
     def test_turnover_summary_contains_expected_metrics(self, demo_engine: BasanosEngine) -> None:
+        """turnover_summary() includes the expected turnover metrics."""
         metrics = set(demo_engine.portfolio.turnover_summary()["metric"].to_list())
         assert "mean_daily_turnover" in metrics
         assert "mean_weekly_turnover" in metrics
@@ -160,16 +173,20 @@ class TestDemoPortfolioDecomposition:
     """Tilt/timing decomposition and monthly returns (cell_17 / cell_18)."""
 
     def test_tilt_timing_decomp_is_dataframe(self, demo_engine: BasanosEngine) -> None:
+        """tilt_timing_decomp is a Polars DataFrame."""
         assert isinstance(demo_engine.portfolio.tilt_timing_decomp, pl.DataFrame)
 
     def test_tilt_timing_decomp_has_rows(self, demo_engine: BasanosEngine) -> None:
+        """tilt_timing_decomp has at least one row."""
         assert demo_engine.portfolio.tilt_timing_decomp.height > 0
 
     def test_monthly_has_expected_columns(self, demo_engine: BasanosEngine) -> None:
+        """The monthly returns table contains the required columns."""
         required = {"year", "month_name", "returns", "profit", "NAV_accumulated"}
         assert required.issubset(set(demo_engine.portfolio.monthly.columns))
 
     def test_monthly_has_rows(self, demo_engine: BasanosEngine) -> None:
+        """The monthly returns table has at least one row."""
         assert demo_engine.portfolio.monthly.height > 0
 
 
@@ -180,14 +197,17 @@ class TestDemoPortfolioPlots:
     """Plot methods return Plotly figures (cell_21 / cell_22 / cell_23)."""
 
     def test_snapshot_returns_plotly_figure(self, demo_engine: BasanosEngine) -> None:
+        """plots.snapshot() returns a Plotly Figure."""
         fig = demo_engine.portfolio.plots.snapshot()
         assert isinstance(fig, go.Figure)
 
     def test_lead_lag_ir_plot_returns_plotly_figure(self, demo_engine: BasanosEngine) -> None:
+        """plots.lead_lag_ir_plot() returns a Plotly Figure."""
         fig = demo_engine.portfolio.plots.lead_lag_ir_plot(start=-5, end=10)
         assert isinstance(fig, go.Figure)
 
     def test_correlation_heatmap_returns_plotly_figure(self, demo_engine: BasanosEngine) -> None:
+        """plots.correlation_heatmap() returns a Plotly Figure."""
         fig = demo_engine.portfolio.plots.correlation_heatmap()
         assert isinstance(fig, go.Figure)
 

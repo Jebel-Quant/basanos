@@ -33,6 +33,7 @@ from cvx.linalg.ewm_cov import ewm_covariance
 
 
 def _to_polars(data: np.ndarray, assets: list[str]) -> pl.DataFrame:
+    """Convert a numpy array to a Polars DataFrame with a 't' index and null-filled NaNs."""
     # fill_nan(None) converts float NaN to Polars null; ewm_covariance expects nulls, not NaN
     t = data.shape[0]
     cols = [pl.Series(a, data[:, i]).fill_nan(None) for i, a in enumerate(assets)]
@@ -73,6 +74,7 @@ def _cov_to_corr(cov_tensor: np.ndarray) -> np.ndarray:
 
 
 def _pandas_cov(data: np.ndarray, com: int, min_periods: int) -> np.ndarray:
+    """Compute the reference EWM covariance tensor via pandas.ewm(com).cov(bias=True)."""
     t_len, n = data.shape
     df = pd.DataFrame(data)
     raw = df.ewm(com=com, min_periods=min_periods).cov(bias=True)
@@ -135,6 +137,7 @@ class TestEwmCovarianceVsPandas:
     """
 
     def _cvx(self, data: np.ndarray, com: int) -> np.ndarray:
+        """Run cvx ewm_covariance on the data and return a dense (T, N, N) tensor."""
         t_len, n = data.shape
         assets = [str(i) for i in range(n)]
         cov = ewm_covariance(
@@ -143,10 +146,12 @@ class TestEwmCovarianceVsPandas:
         return _dict_to_array(cov, t_len, n)
 
     def test_dense(self, dense: tuple[np.ndarray, int]) -> None:
+        """On dense data, cvx matches pandas with identical NaN patterns and values."""
         data, com = dense
         _assert_close(self._cvx(data, com), _pandas_cov(data, com, com), label="dense cov")
 
     def test_sparse_values_match_where_finite(self, sparse: tuple[np.ndarray, int]) -> None:
+        """On sparse data, cvx matches pandas wherever cvx is finite and is never finite where pandas is NaN."""
         data, com = sparse
         cvx_arr = self._cvx(data, com)
         pd_arr = _pandas_cov(data, com, com)
@@ -156,11 +161,13 @@ class TestEwmCovarianceVsPandas:
 
     @pytest.mark.parametrize("com", [5, 16, 64])
     def test_various_com(self, com: int) -> None:
+        """Cvx matches pandas across a range of center-of-mass values."""
         rng = np.random.default_rng(99)
         data = rng.normal(size=(300, 4))
         _assert_close(self._cvx(data, com), _pandas_cov(data, com, com), label=f"com={com}")
 
     def test_single_asset(self) -> None:
+        """Cvx matches pandas for the single-asset (variance) case."""
         rng = np.random.default_rng(7)
         data = rng.normal(size=(200, 1))
         _assert_close(self._cvx(data, 20), _pandas_cov(data, 20, 20), label="single asset")

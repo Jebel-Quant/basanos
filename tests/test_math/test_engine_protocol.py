@@ -73,6 +73,7 @@ _MUST_USE_PROTOCOL: list[tuple[str, str]] = [
 
 
 def _resolve_class(name: str) -> type:
+    """Import and return the mixin class for the given short name."""
     if name == "_DiagnosticsMixin":
         from basanos.math._engine_diagnostics import _DiagnosticsMixin
 

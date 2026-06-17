@@ -97,26 +97,31 @@ class TestPaperPositionOutputs:
     """Verify cash_position, position_status, and risk_position from the paper listing."""
 
     def test_cash_position_shape(self, paper_engine: BasanosEngine) -> None:
+        """cash_position has one row per day and a column per asset."""
         cp = paper_engine.cash_position
         assert cp.height == _N_DAYS
         assert set(_ASSETS).issubset(cp.columns)
 
     def test_cash_position_values_finite_or_nan(self, paper_engine: BasanosEngine) -> None:
+        """All cash_position values are finite or NaN (never inf)."""
         for asset in _ASSETS:
             vals = paper_engine.cash_position[asset].to_numpy()
             assert np.all(np.isfinite(vals) | np.isnan(vals))
 
     def test_position_status_shape(self, paper_engine: BasanosEngine) -> None:
+        """position_status has one row per day and a 'status' column."""
         ps = paper_engine.position_status
         assert ps.height == _N_DAYS
         assert "status" in ps.columns
 
     def test_position_status_valid_codes(self, paper_engine: BasanosEngine) -> None:
+        """position_status only contains the recognised status codes."""
         allowed = {"warmup", "zero_signal", "degenerate", "valid"}
         actual = set(paper_engine.position_status["status"].to_list())
         assert actual.issubset(allowed)
 
     def test_position_status_has_valid_rows(self, paper_engine: BasanosEngine) -> None:
+        """At least one row has a 'valid' status."""
         statuses = paper_engine.position_status["status"].to_list()
         assert "valid" in statuses
 
@@ -128,18 +133,22 @@ class TestPaperOptimizerDiagnostics:
     """Verify condition_number, effective_rank, solver_residual, signal_utilisation."""
 
     def test_condition_number_is_dataframe(self, paper_engine: BasanosEngine) -> None:
+        """condition_number is a Polars DataFrame."""
         assert isinstance(paper_engine.condition_number, pl.DataFrame)
 
     def test_condition_number_positive(self, paper_engine: BasanosEngine) -> None:
+        """All finite condition numbers are strictly positive."""
         kappa = paper_engine.condition_number
         vals = kappa.select(pl.exclude("date")).to_numpy().flatten()
         finite = vals[np.isfinite(vals)]
         assert np.all(finite > 0)
 
     def test_effective_rank_is_dataframe(self, paper_engine: BasanosEngine) -> None:
+        """effective_rank is a Polars DataFrame."""
         assert isinstance(paper_engine.effective_rank, pl.DataFrame)
 
     def test_effective_rank_bounded(self, paper_engine: BasanosEngine) -> None:
+        """Effective rank lies between 1 and the number of assets."""
         er = paper_engine.effective_rank
         vals = er.select(pl.exclude("date")).to_numpy().flatten()
         finite = vals[np.isfinite(vals)]
@@ -147,18 +156,22 @@ class TestPaperOptimizerDiagnostics:
         assert np.all(finite <= len(_ASSETS) + 1e-9)
 
     def test_solver_residual_is_dataframe(self, paper_engine: BasanosEngine) -> None:
+        """solver_residual is a Polars DataFrame."""
         assert isinstance(paper_engine.solver_residual, pl.DataFrame)
 
     def test_solver_residual_small(self, paper_engine: BasanosEngine) -> None:
+        """All finite solver residuals are below 1e-6."""
         res = paper_engine.solver_residual
         vals = res.select(pl.exclude("date")).to_numpy().flatten()
         finite = vals[np.isfinite(vals)]
         assert np.all(finite < 1e-6)
 
     def test_signal_utilisation_is_dataframe(self, paper_engine: BasanosEngine) -> None:
+        """signal_utilisation is a Polars DataFrame."""
         assert isinstance(paper_engine.signal_utilisation, pl.DataFrame)
 
     def test_signal_utilisation_columns(self, paper_engine: BasanosEngine) -> None:
+        """signal_utilisation has a column per asset."""
         assert set(_ASSETS).issubset(paper_engine.signal_utilisation.columns)
 
 
@@ -169,24 +182,30 @@ class TestPaperSignalQuality:
     """Verify ic, rank_ic, icir, and naive_sharpe from the paper listing."""
 
     def test_ic_is_dataframe(self, paper_engine: BasanosEngine) -> None:
+        """ic() returns a Polars DataFrame."""
         assert isinstance(paper_engine.ic(), pl.DataFrame)
 
     def test_ic_height(self, paper_engine: BasanosEngine) -> None:
+        """ic() has one fewer row than the price/signal history (no forward return on the last day)."""
         assert paper_engine.prices.height == _N_DAYS
         assert paper_engine.mu.height == _N_DAYS
         assert paper_engine.ic().height == _N_DAYS - 1  # no data for the last day!
 
     def test_rank_ic_is_dataframe(self, paper_engine: BasanosEngine) -> None:
+        """rank_ic() returns a Polars DataFrame."""
         assert isinstance(paper_engine.rank_ic(), pl.DataFrame)
 
     def test_rank_ic_height(self, paper_engine: BasanosEngine) -> None:
+        """rank_ic() has one fewer row than the price/signal history."""
         assert paper_engine.rank_ic().height == _N_DAYS - 1
 
     def test_icir_is_finite_float(self, paper_engine: BasanosEngine) -> None:
+        """icir() returns a finite float."""
         assert isinstance(paper_engine.icir(), float)
         assert np.isfinite(paper_engine.icir())
 
     def test_naive_sharpe_is_finite_float(self, paper_engine: BasanosEngine) -> None:
+        """naive_sharpe is a finite float."""
         assert isinstance(paper_engine.naive_sharpe, float)
         assert np.isfinite(paper_engine.naive_sharpe)
 
@@ -198,17 +217,21 @@ class TestPaperPortfolioAnalytics:
     """Verify portfolio.stats, tilt_timing_decomp from the paper listing."""
 
     def test_stats_sharpe_is_finite(self, paper_engine: BasanosEngine) -> None:
+        """portfolio.stats.sharpe() returns a finite value."""
         sharpe = paper_engine.portfolio.stats.sharpe()
         assert np.isfinite(sharpe["returns"])
 
     def test_stats_max_drawdown_is_finite(self, paper_engine: BasanosEngine) -> None:
+        """portfolio.stats.max_drawdown() returns a finite value."""
         mdd = paper_engine.portfolio.stats.max_drawdown()
         assert np.isfinite(mdd["returns"])
 
     def test_tilt_timing_decomp_is_dataframe(self, paper_engine: BasanosEngine) -> None:
+        """tilt_timing_decomp is a Polars DataFrame."""
         assert isinstance(paper_engine.portfolio.tilt_timing_decomp, pl.DataFrame)
 
     def test_tilt_timing_decomp_has_rows(self, paper_engine: BasanosEngine) -> None:
+        """tilt_timing_decomp has at least one row."""
         assert paper_engine.portfolio.tilt_timing_decomp.height > 0
 
 
@@ -219,9 +242,11 @@ class TestPaperVisualisations:
     """Verify snapshot() and lead_lag_ir_plot() return Plotly figures."""
 
     def test_snapshot_returns_figure(self, paper_engine: BasanosEngine) -> None:
+        """portfolio.plots.snapshot() returns a Plotly Figure."""
         fig = paper_engine.portfolio.plots.snapshot()
         assert isinstance(fig, go.Figure)
 
     def test_lead_lag_ir_plot_returns_figure(self, paper_engine: BasanosEngine) -> None:
+        """portfolio.plots.lead_lag_ir_plot() returns a Plotly Figure."""
         fig = paper_engine.portfolio.plots.lead_lag_ir_plot(-5, 15)
         assert isinstance(fig, go.Figure)
