@@ -21,7 +21,11 @@ from cvx.linalg import DimensionMismatchError, SingularMatrixError
 from cvx.linalg import check_and_warn_condition as _check_and_warn_condition
 from cvx.linalg import inv as _inv
 from cvx.linalg import solve as _solve
-from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
+
+try:  # cvx-linalg >= 0.7 renamed this constant from the private to the public name
+    from cvx.linalg.solve import DEFAULT_COND_THRESHOLD as _DEFAULT_COND_THRESHOLD  # ty: ignore[unresolved-import]
+except ImportError:  # older cvx-linalg only exposes the private name
+    from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
 
 from basanos.exceptions import FactorModelError
 
