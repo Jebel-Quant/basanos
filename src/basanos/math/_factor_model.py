@@ -14,6 +14,7 @@ Singular Value Decomposition (Section 4.2).
 from __future__ import annotations
 
 import dataclasses
+from typing import cast
 
 import numpy as np
 from cvx.linalg import DimensionMismatchError, SingularMatrixError
@@ -109,12 +110,12 @@ class FactorModel:
     @property
     def n_assets(self) -> int:
         """Number of assets *n* (rows of ``factor_loadings``)."""
-        return self.factor_loadings.shape[0]
+        return int(self.factor_loadings.shape[0])
 
     @property
     def n_factors(self) -> int:
         """Number of factors *k* (columns of ``factor_loadings``)."""
-        return self.factor_loadings.shape[1]
+        return int(self.factor_loadings.shape[1])
 
     @property
     def covariance(self) -> np.ndarray:
@@ -136,7 +137,10 @@ class FactorModel:
             >>> fm.covariance.diagonal().tolist()
             [2.0, 2.0, 1.0]
         """
-        return self.factor_loadings @ self.factor_covariance @ self.factor_loadings.T + np.diag(self.idiosyncratic_var)
+        return cast(
+            "np.ndarray",
+            self.factor_loadings @ self.factor_covariance @ self.factor_loadings.T + np.diag(self.idiosyncratic_var),
+        )
 
     @property
     def woodbury_condition_number(self) -> float:
@@ -260,7 +264,7 @@ class FactorModel:
             raise SingularMatrixError(str(exc)) from exc
 
         # x = D^{-1} b - D^{-1} B w
-        return d_inv_rhs - d_inv_b_mat @ w
+        return cast("np.ndarray", d_inv_rhs - d_inv_b_mat @ w)
 
     @classmethod
     def from_returns(cls, returns: np.ndarray, k: int) -> FactorModel:

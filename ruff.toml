@@ -142,6 +142,8 @@ line-ending = "auto"
 # Marimo notebooks - allow flexible coding patterns for interactive exploration
 "**/notebooks/*.py" = [
     "ANN",     # notebooks prioritize interactive readability over strict annotation coverage
+    "ARG",     # marimo cells declare reactive dependencies as arguments, not always read in-cell
+    "BLE001",  # broad except is idiomatic for interactive cells that degrade to NaN/placeholder
     "D100",    # No module docstring - marimo requires `import marimo` as the first statement
     "N803",    # Allow non-lowercase variable names in notebooks
     "S101",    # Allow assert statements in notebooks

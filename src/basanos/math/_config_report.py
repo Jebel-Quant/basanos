@@ -229,7 +229,7 @@ def _guidance_table_html() -> str:
 
 def _figure_div(fig: go.Figure, include_plotlyjs: bool | str) -> str:
     """Return an HTML div string for *fig*."""
-    return pio.to_html(fig, full_html=False, include_plotlyjs=include_plotlyjs)
+    return str(pio.to_html(fig, full_html=False, include_plotlyjs=include_plotlyjs))
 
 
 # ── ConfigReport dataclass ────────────────────────────────────────────────────
@@ -290,7 +290,7 @@ class ConfigReport:
                 fig = _lambda_sweep_fig(self.engine)  # type: ignore[arg-type]
                 sweep_div = _figure_div(fig, include_plotlyjs="cdn")
                 sweep_section = f'<div class="chart-card">{sweep_div}</div>'
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - optional chart: any rendering failure degrades to a placeholder
                 sweep_section = f'<p class="chart-unavailable">Lambda sweep unavailable: {exc}</p>'
         else:
             sweep_section = (

@@ -106,7 +106,8 @@ class _SolveMixin:
     @staticmethod
     def _compute_mask(prices_row: np.ndarray) -> np.ndarray:
         """Return boolean mask indicating which assets have finite prices in the given row."""
-        return np.isfinite(prices_row)
+        mask: np.ndarray = np.isfinite(prices_row)
+        return mask
 
     @staticmethod
     def _check_signal(mu: np.ndarray, mask: np.ndarray) -> SolveStatus | None:
@@ -128,7 +129,7 @@ class _SolveMixin:
         internally so NaN volatility values propagate quietly.
         """
         with np.errstate(invalid="ignore"):
-            return pos / vola_active
+            return cast("np.ndarray", pos / vola_active)
 
     @staticmethod
     def _row_early_check(
@@ -285,7 +286,7 @@ class _SolveMixin:
         total_delta = float(np.sum(np.abs(delta)))
         if total_delta > max_turnover:
             scale = max_turnover / total_delta
-            return prev + delta * scale
+            return cast("np.ndarray", prev + delta * scale)
         return new_cash
 
     def _replay_positions(
@@ -362,7 +363,7 @@ class _SolveMixin:
                 matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
                 yield i, t, mask, MatrixBundle(matrix=matrix)
         else:
-            sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
+            sw_config = self.cfg.covariance_config
             win_w: int = sw_config.window
             win_k: int = sw_config.n_factors
             ret_adj_np = self.ret_adj.select(assets).to_numpy()
@@ -538,15 +539,15 @@ class _SolveMixin:
             `SolveYield` for detailed field descriptions.
         """
         mu_np = self.mu.select(self.assets).to_numpy()
-        is_sw = isinstance(self.cfg.covariance_config, SlidingWindowConfig)
+        cov_config = self.cfg.covariance_config
 
-        if not is_sw:
+        if not isinstance(cov_config, SlidingWindowConfig):
             # EwmaShrinkConfig path: vectorised batch solve grouped by mask pattern.
             yield from _SolveMixin._iter_solve_ewma_batched(mu_np, list(self._iter_matrices()), self.cfg.denom_tol)
             return
 
         # SlidingWindowConfig path: sequential per-row solve (lazy factor models).
-        win_w: int = self.cfg.covariance_config.window
+        win_w: int = cov_config.window
 
         for i, t, mask, bundle in self._iter_matrices():
             if bundle is None:
