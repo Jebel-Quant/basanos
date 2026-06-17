@@ -104,3 +104,11 @@ python-version = "3.12"
 call-non-callable = "error"
 # Catch overload resolution failures.
 no-matching-overload = "error"
+
+[tool.mypy]
+# `make typecheck` runs `mypy --strict` as a cross-check; the settings here only
+# scope the scientific dependencies that ship no type information (no py.typed).
+
+[[tool.mypy.overrides]]
+module = ["cvx.*", "scipy.*", "plotly.*"]
+ignore_missing_imports = true

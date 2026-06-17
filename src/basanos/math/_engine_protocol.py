@@ -98,13 +98,45 @@ class _EngineProtocol(Protocol):
     `_SignalEvaluatorMixin`, and `_SolveMixin`.
     """
 
-    assets: list[str]
-    prices: pl.DataFrame
-    mu: pl.DataFrame
-    cfg: BasanosConfig
-    cor: dict[datetime.date, np.ndarray]
-    ret_adj: pl.DataFrame
-    vola: pl.DataFrame
+    # Declared as read-only properties because the concrete consumer
+    # (`BasanosEngine`) exposes several of these as ``@property`` accessors.
+    # A read-only protocol member is satisfied by both a property and a plain
+    # attribute, whereas a plain (writable) attribute declaration is not
+    # satisfied by a read-only property.
+    @property
+    def assets(self) -> list[str]:
+        """Tradable asset symbols, column order matching the data frames."""
+        ...
+
+    @property
+    def prices(self) -> pl.DataFrame:
+        """Price panel with a ``date`` column and one column per asset."""
+        ...
+
+    @property
+    def mu(self) -> pl.DataFrame:
+        """Expected-return panel aligned with ``prices``."""
+        ...
+
+    @property
+    def cfg(self) -> BasanosConfig:
+        """Engine configuration."""
+        ...
+
+    @property
+    def cor(self) -> dict[datetime.date, np.ndarray]:
+        """Per-date correlation matrices."""
+        ...
+
+    @property
+    def ret_adj(self) -> pl.DataFrame:
+        """Volatility-adjusted return panel."""
+        ...
+
+    @property
+    def vola(self) -> pl.DataFrame:
+        """EWMA volatility panel aligned with ``prices``."""
+        ...
 
     def _iter_matrices(self) -> Generator[MatrixYield, None, None]:
         """Yield ``(i, t, mask, matrix)`` tuples over all timestamps."""

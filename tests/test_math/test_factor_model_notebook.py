@@ -84,37 +84,47 @@ class TestFactorModelDirectConstruction:
     """FactorModel constructed from explicit arrays (cell_04)."""
 
     def test_n_assets(self, fm_manual: FactorModel) -> None:
+        """n_assets reflects the number of assets passed to the constructor."""
         assert fm_manual.n_assets == 3
 
     def test_n_factors(self, fm_manual: FactorModel) -> None:
+        """n_factors reflects the number of factors passed to the constructor."""
         assert fm_manual.n_factors == 2
 
     def test_factor_loadings_shape(self, fm_manual: FactorModel) -> None:
+        """factor_loadings has shape (n_assets, n_factors)."""
         assert fm_manual.factor_loadings.shape == (3, 2)
 
     def test_factor_covariance_shape(self, fm_manual: FactorModel) -> None:
+        """factor_covariance has shape (n_factors, n_factors)."""
         assert fm_manual.factor_covariance.shape == (2, 2)
 
     def test_idiosyncratic_var_shape(self, fm_manual: FactorModel) -> None:
+        """idiosyncratic_var has shape (n_assets,)."""
         assert fm_manual.idiosyncratic_var.shape == (3,)
 
     def test_covariance_shape(self, fm_manual: FactorModel) -> None:
+        """The assembled covariance has shape (n_assets, n_assets)."""
         assert fm_manual.covariance.shape == (3, 3)
 
     def test_covariance_is_symmetric(self, fm_manual: FactorModel) -> None:
+        """The assembled covariance matrix is symmetric."""
         cov = fm_manual.covariance
         np.testing.assert_allclose(cov, cov.T, atol=1e-12)
 
     def test_covariance_is_positive_definite(self, fm_manual: FactorModel) -> None:
+        """The assembled covariance matrix is positive definite."""
         eigvals = np.linalg.eigvalsh(fm_manual.covariance)
         assert float(eigvals.min()) > 0
 
     def test_covariance_diagonal_equals_systematic_plus_idiosyncratic(self, fm_manual: FactorModel) -> None:
+        """The covariance diagonal equals systematic variance plus idiosyncratic variance."""
         systematic_diag = np.diag(_LOADINGS @ _FACTOR_COV @ _LOADINGS.T)
         expected_diag = systematic_diag + _IDIO_VAR
         np.testing.assert_allclose(np.diag(fm_manual.covariance), expected_diag, rtol=1e-10)
 
     def test_frozen_dataclass_rejects_attribute_assignment(self, fm_manual: FactorModel) -> None:
+        """FactorModel is frozen and rejects attribute assignment."""
         with pytest.raises((AttributeError, TypeError)):
             fm_manual.n_assets = 99  # type: ignore[misc]
 
@@ -126,35 +136,45 @@ class TestFactorModelFromReturns:
     """FactorModel.from_returns() mirrors cell_08 / cell_13 of the notebook."""
 
     def test_n_assets(self, fm_fitted: FactorModel) -> None:
+        """A fitted model reports the expected number of assets."""
         assert fm_fitted.n_assets == _N_ASSETS
 
     def test_n_factors(self, fm_fitted: FactorModel) -> None:
+        """A fitted model reports the expected number of factors."""
         assert fm_fitted.n_factors == _K
 
     def test_factor_loadings_shape(self, fm_fitted: FactorModel) -> None:
+        """A fitted model's factor_loadings has shape (n_assets, k)."""
         assert fm_fitted.factor_loadings.shape == (_N_ASSETS, _K)
 
     def test_factor_covariance_shape(self, fm_fitted: FactorModel) -> None:
+        """A fitted model's factor_covariance has shape (k, k)."""
         assert fm_fitted.factor_covariance.shape == (_K, _K)
 
     def test_idiosyncratic_var_shape(self, fm_fitted: FactorModel) -> None:
+        """A fitted model's idiosyncratic_var has shape (n_assets,)."""
         assert fm_fitted.idiosyncratic_var.shape == (_N_ASSETS,)
 
     def test_idiosyncratic_var_is_positive(self, fm_fitted: FactorModel) -> None:
+        """Fitted idiosyncratic variances are strictly positive."""
         assert float(fm_fitted.idiosyncratic_var.min()) > 0
 
     def test_covariance_shape(self, fm_fitted: FactorModel) -> None:
+        """A fitted model's covariance has shape (n_assets, n_assets)."""
         assert fm_fitted.covariance.shape == (_N_ASSETS, _N_ASSETS)
 
     def test_covariance_is_symmetric(self, fm_fitted: FactorModel) -> None:
+        """A fitted model's covariance matrix is symmetric."""
         cov = fm_fitted.covariance
         np.testing.assert_allclose(cov, cov.T, atol=1e-12)
 
     def test_covariance_is_positive_definite(self, fm_fitted: FactorModel) -> None:
+        """A fitted model's covariance matrix is positive definite."""
         eigvals = np.linalg.eigvalsh(fm_fitted.covariance)
         assert float(eigvals.min()) > 0
 
     def test_explained_variance_increases_with_k(self, returns: np.ndarray) -> None:
+        """Cumulative explained variance strictly increases as more factors are added."""
         _, sv, _ = np.linalg.svd(returns, full_matrices=False)
         total = float((sv**2).sum())
         prev = 0.0
@@ -171,6 +191,7 @@ class TestFactorModelWoodburySolve:
     """FactorModel.solve(b) matches np.linalg.solve(fm.covariance, b) (cell_22)."""
 
     def test_solve_matches_direct_within_tolerance(self, fm_fitted: FactorModel) -> None:
+        """Woodbury solve matches the direct dense solve for a fitted model."""
         rng = np.random.default_rng(99)
         b = rng.standard_normal(fm_fitted.n_assets)
         x_woodbury = fm_fitted.solve(b)
@@ -178,6 +199,7 @@ class TestFactorModelWoodburySolve:
         np.testing.assert_allclose(x_woodbury, x_direct, rtol=1e-8, atol=1e-10)
 
     def test_solve_satisfies_linear_system(self, fm_fitted: FactorModel) -> None:
+        """The Woodbury solution x satisfies covariance @ x == b."""
         rng = np.random.default_rng(99)
         b = rng.standard_normal(fm_fitted.n_assets)
         x = fm_fitted.solve(b)
@@ -185,11 +207,13 @@ class TestFactorModelWoodburySolve:
         assert residual < 1e-10
 
     def test_solve_output_shape(self, fm_fitted: FactorModel) -> None:
+        """solve() returns a vector with shape (n_assets,)."""
         b = np.ones(fm_fitted.n_assets)
         x = fm_fitted.solve(b)
         assert x.shape == (fm_fitted.n_assets,)
 
     def test_manual_model_woodbury_matches_direct(self, fm_manual: FactorModel) -> None:
+        """Woodbury solve matches the direct dense solve for a manually constructed model."""
         rng = np.random.default_rng(7)
         b = rng.standard_normal(fm_manual.n_assets)
         x_woodbury = fm_manual.solve(b)

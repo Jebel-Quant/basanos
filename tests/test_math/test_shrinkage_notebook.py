@@ -85,16 +85,19 @@ class TestShrink2Id:
     """``shrink2id`` function used in condition-number cell (cell_12)."""
 
     def test_full_shrinkage_returns_identity(self) -> None:
+        """lamb=0.0 (full shrinkage) returns the identity matrix."""
         corr = np.array([[1.0, 0.8], [0.8, 1.0]])
         result = shrink2id(corr, lamb=0.0)
         np.testing.assert_allclose(result, np.eye(2), atol=1e-12)
 
     def test_no_shrinkage_returns_original(self) -> None:
+        """lamb=1.0 (no shrinkage) returns the original correlation matrix."""
         corr = np.array([[1.0, 0.6], [0.6, 1.0]])
         result = shrink2id(corr, lamb=1.0)
         np.testing.assert_allclose(result, corr, atol=1e-12)
 
     def test_mid_shrinkage_is_convex_combination(self) -> None:
+        """An intermediate lamb yields the convex combination of corr and identity."""
         corr = np.array([[1.0, 0.5], [0.5, 1.0]])
         lamb = 0.5
         result = shrink2id(corr, lamb=lamb)
@@ -102,12 +105,14 @@ class TestShrink2Id:
         np.testing.assert_allclose(result, expected, atol=1e-12)
 
     def test_output_diagonal_is_one(self) -> None:
+        """The output diagonal is all ones for every shrinkage level."""
         corr = np.array([[1.0, 0.9, 0.3], [0.9, 1.0, 0.4], [0.3, 0.4, 1.0]])
         for lamb in [0.0, 0.3, 0.7, 1.0]:
             result = shrink2id(corr, lamb=lamb)
             np.testing.assert_allclose(np.diag(result), np.ones(3), atol=1e-12)
 
     def test_shrinkage_reduces_condition_number(self) -> None:
+        """Shrinking toward the identity lowers the correlation matrix condition number."""
         rng = np.random.default_rng(0)
         data = rng.normal(size=(30, 6))
         corr = np.corrcoef(data.T)
@@ -127,30 +132,36 @@ class TestShrinkageEngineApi:
     def test_engine_constructs_at_all_shrinkage_levels(
         self, shrinkage_prices: pl.DataFrame, shrinkage_mu: pl.DataFrame, shrink: float
     ) -> None:
+        """The engine builds successfully at every shrinkage level in the sweep."""
         cfg = BasanosConfig(vola=16, corr=32, clip=3.5, shrink=shrink, aum=1_000_000)
         engine = BasanosEngine(prices=shrinkage_prices, mu=shrinkage_mu, cfg=cfg)
         assert engine.cash_position.height == _N
 
     def test_sharpe_returns_finite_float(self, shrinkage_engine: BasanosEngine) -> None:
+        """stats.sharpe() returns a dict with a finite 'returns' Sharpe."""
         sharpe = shrinkage_engine.portfolio.stats.sharpe(periods=252)
         assert isinstance(sharpe, dict)
         assert np.isfinite(sharpe["returns"])
 
     def test_volatility_returns_positive_float(self, shrinkage_engine: BasanosEngine) -> None:
+        """stats.volatility() returns a strictly positive value."""
         vol = shrinkage_engine.portfolio.stats.volatility(periods=252)
         assert vol["returns"] > 0
 
     def test_turnover_summary_has_mean_daily_turnover(self, shrinkage_engine: BasanosEngine) -> None:
+        """turnover_summary() includes the mean_daily_turnover metric."""
         summary = shrinkage_engine.portfolio.turnover_summary()
         metrics = summary["metric"].to_list()
         assert "mean_daily_turnover" in metrics
 
     def test_turnover_summary_mean_daily_is_non_negative_or_nan(self, shrinkage_engine: BasanosEngine) -> None:
+        """The mean daily turnover is non-negative or NaN."""
         summary = shrinkage_engine.portfolio.turnover_summary()
         mean_to = float(summary.filter(pl.col("metric") == "mean_daily_turnover")["value"][0])
         assert np.isnan(mean_to) or mean_to >= 0.0
 
     def test_snapshot_returns_plotly_figure(self, shrinkage_engine: BasanosEngine) -> None:
+        """portfolio.plots.snapshot() returns a Plotly Figure."""
         fig = shrinkage_engine.portfolio.plots.snapshot()
         assert isinstance(fig, go.Figure)
 
@@ -162,6 +173,7 @@ class TestConditionNumberVsShrinkage:
     """Condition number decreases monotonically as shrinkage increases (cell_12)."""
 
     def test_condition_number_decreases_with_more_shrinkage(self, shrinkage_prices: pl.DataFrame) -> None:
+        """Condition number is monotonically non-increasing as shrinkage increases (lambda decreases)."""
         subset = ["AAPL", "GOOGL", "MSFT", "AMZN"]
         data = shrinkage_prices.select(subset).to_numpy().astype(float)
         log_ret = np.diff(np.log(data), axis=0)
@@ -181,6 +193,7 @@ class TestConditionNumberVsShrinkage:
             assert kappas[i] >= kappas[i + 1]
 
     def test_full_shrinkage_gives_condition_number_one(self, shrinkage_prices: pl.DataFrame) -> None:
+        """Full shrinkage (lamb=0.0) yields the identity, with condition number one."""
         subset = ["AAPL", "GOOGL"]
         data = shrinkage_prices.select(subset).to_numpy().astype(float)
         log_ret = np.diff(np.log(data), axis=0)

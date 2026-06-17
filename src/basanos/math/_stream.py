@@ -500,7 +500,7 @@ class BasanosStream:
             sw_ret_buf: np.ndarray | None = None
         else:
             # SW: carry the last W vol-adjusted returns as a rolling buffer.
-            sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
+            sw_config = cfg.covariance_config
             win_w = sw_config.window
             ret_adj_np = engine.ret_adj.select(assets).to_numpy()  # (n_rows, N)
             if n_rows >= win_w:
