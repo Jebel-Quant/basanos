@@ -1,10 +1,24 @@
-## Description
+## Summary
 
-<!-- Describe the changes introduced by this PR and the motivation behind them. -->
+<!-- One or two sentences describing what this PR does and why. -->
+
+Closes #<!-- issue number -->
+
+## Changes
+
+<!-- Bullet list of what changed. -->
+
+-
+
+## Testing
+
+- [ ] `make test` passes locally
+- [ ] `make fmt` has been run
+- [ ] New tests added (or explain why not needed)
 
 ## Checklist
 
-- [ ] Tests added or updated
-- [ ] Docstrings updated for any new or changed public API
-- [ ] `CHANGELOG.md` entry added
-- [ ] `make fmt` has been run
+- [ ] Commit messages follow the [Conventional Commits](https://www.conventionalcommits.org/) format
+- [ ] `CHANGELOG.md` entry added (or not needed for this change)
+- [ ] Documentation updated if behaviour changed
+- [ ] `make deptry` passes (no unused or missing dependencies)
