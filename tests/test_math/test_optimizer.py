@@ -1059,7 +1059,7 @@ class TestCorMatrixAssetAvailability:
 class TestCashPositionWithStaggeredAssets:
     """BasanosEngine.cash_position must be NaN exactly where prices are absent."""
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def cash_pos(self, prices: pl.DataFrame, mu: pl.DataFrame, cfg: BasanosConfig) -> pl.DataFrame:
         """Build the cash_position DataFrame once per test class."""
         return BasanosEngine(prices=prices, mu=mu, cfg=cfg).cash_position
