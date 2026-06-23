@@ -132,7 +132,7 @@ class TestSmoke:
     properties return non-trivially empty results.
     """
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def engine(self) -> BasanosEngine:
         """Provide a 100-row, 5-asset BasanosEngine for smoke tests."""
         return _make_engine(n=100, n_assets=5)

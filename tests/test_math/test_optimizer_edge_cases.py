@@ -159,7 +159,7 @@ def test_zero_mu_position_leverage_is_zero_after_warmup(n_assets: int) -> None:
 class TestSingleAsset:
     """BasanosEngine with exactly one asset (N=1)."""
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def engine(self) -> BasanosEngine:
         """Build a 30-row single-asset engine."""
         cfg = BasanosConfig(vola=3, corr=5, clip=2.0, shrink=0.5, aum=1e6)
@@ -220,7 +220,7 @@ class TestSingleTimestep:
     - cash_position uses NaN vola as denominator → all NaN.
     """
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def engine(self) -> BasanosEngine:
         """Minimal 1-row, 1-asset engine."""
         prices = pl.DataFrame({"date": [0], "A": pl.Series([100.0], dtype=pl.Float64)})
@@ -270,7 +270,7 @@ class TestSingleNonNullAssetPerRow:
     and NaN for unavailable ones.
     """
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def engine(self) -> BasanosEngine:
         """60-row engine where asset A is null in odd rows, B in even rows."""
         n = 60

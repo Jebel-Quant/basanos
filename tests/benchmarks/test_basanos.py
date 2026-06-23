@@ -271,12 +271,12 @@ class TestPortfolioBenchmarks:
 class TestStatsBenchmarks:
     """Benchmark Stats computations on portfolio returns."""
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def stats_252_5(self, pf_252_5) -> Stats:
         """Stats built from the 252-day portfolio."""
         return pf_252_5.stats
 
-    @pytest.fixture(scope="class")
+    @pytest.fixture
     def stats_1260_5(self, pf_1260_5) -> Stats:
         """Stats built from the 1260-day portfolio."""
         return pf_1260_5.stats
