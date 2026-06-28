@@ -1873,3 +1873,48 @@ def test_stream_state_corrupt_error_exported_from_basanos():
 
     assert hasattr(basanos, "StreamStateCorruptError")
     assert basanos.StreamStateCorruptError is StreamStateCorruptError
+
+
+def test_solve_ewma_position_empty_cov_dict_yields_nan_correlation():
+    """Empty ewm_covariance result drives the defensive all-NaN correlation branch.
+
+    When ``ewm_covariance`` returns an empty mapping (e.g. the correlation
+    buffer is shorter than the warmup window so no estimate is emitted),
+    ``_solve_ewma_position`` must fall back to an all-NaN correlation matrix.
+    That degenerate correlation cannot be solved, so the step reports a
+    non-VALID status and zeroes the masked cash positions.
+    """
+    from basanos.math._stream import SolveStatus as _SolveStatus
+
+    n_assets = 3
+    assets = ["A", "B", "C"]
+    cfg = BasanosConfig(vola=5, corr=10, clip=3.0, shrink=0.5, aum=1e6)
+    state = _make_state(n_assets)
+    state.step_count = 50  # past warmup so the early-check does not short-circuit
+
+    # Non-degenerate mask and a non-zero signal so _row_early_check returns None
+    # and execution proceeds to the cov_dict branch.
+    mask = np.ones(n_assets, dtype=bool)
+    new_m = np.array([1.0, -1.0, 0.5])
+    vola_vec = np.ones(n_assets)
+    corr_ret_buf = np.ones((cfg.corr + 5, n_assets))
+
+    with patch("basanos.math._stream.ewm_covariance", return_value={}) as mocked:
+        cash_pos, status = BasanosStream._solve_ewma_position(
+            cfg=cfg,
+            state=state,
+            corr_ret_buf=corr_ret_buf,
+            mask=mask,
+            new_m=new_m,
+            vola_vec=vola_vec,
+            assets=assets,
+            n_assets=n_assets,
+            date=date(2024, 1, 1),
+        )
+
+    assert mocked.called
+    # Degenerate (all-NaN) correlation cannot produce a VALID solve.
+    assert status is not _SolveStatus.VALID
+    assert cash_pos.shape == (n_assets,)
+    # A degenerate solve zeroes the masked positions rather than leaving stale values.
+    assert np.allclose(cash_pos[mask], 0.0)
