@@ -68,7 +68,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cvx-linalg", specifier = ">=0.6.1" },
+    { name = "cvx-linalg", specifier = ">=0.9.0" },
     { name = "jinja2", specifier = ">=3" },
     { name = "jquantstats", specifier = ">=0.9" },
     { name = "numpy", specifier = ">=2.4" },
@@ -303,14 +303,14 @@ toml = [
 
 [[package]]
 name = "cvx-linalg"
-version = "0.8.0"
+version = "1.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b8/a0/a1c198e4e01bf1eb2e61bdc81943be7fe80aad5c1fdff2504bf209505503/cvx_linalg-0.8.0.tar.gz", hash = "sha256:38533d446b88300c7dd776efee10105fce293e5a51819f9c42be38bbc8352ed8", size = 25520, upload-time = "2026-06-16T14:25:31.41Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/bb/80/06c3d348fc0665de348888d14f2134c210b0720fc5d0e24b3da41f5052c7/cvx_linalg-1.0.0.tar.gz", hash = "sha256:c3626155679434344bbe1a765db7c16c943f4f424ef1ee34e7b464f32fdb570a", size = 41122, upload-time = "2026-07-07T04:32:50.891Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/3f/1a/13c31e88049fb033d3e858ba94e6d0a5aff812aff4f5857e29105efc18b8/cvx_linalg-0.8.0-py3-none-any.whl", hash = "sha256:8c2fc777037eb26ec30b5dc242ddfc05663a8d78f85e96180acd25a0a9cea61a", size = 28527, upload-time = "2026-06-16T14:25:30.238Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/7f/e8ae0b18c421c53ab7c47e982b2aeda8f80844240b82e7118a5d5192f5c0/cvx_linalg-1.0.0-py3-none-any.whl", hash = "sha256:b59231d1bc7db260986e9527e9c2aa2c2f374259f135b8463353c6bd515eecf9", size = 51349, upload-time = "2026-07-07T04:32:49.601Z" },
 ]
 
 [[package]]
