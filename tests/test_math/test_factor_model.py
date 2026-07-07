@@ -17,10 +17,13 @@ import numpy as np
 import pytest
 from cvx.linalg import DimensionMismatchError, IllConditionedMatrixWarning, SingularMatrixError
 
-try:  # cvx-linalg >= 0.7 renamed this constant from the private to the public name
-    from cvx.linalg.solve import DEFAULT_COND_THRESHOLD as _DEFAULT_COND_THRESHOLD  # type: ignore[attr-defined]
-except ImportError:  # older cvx-linalg only exposes the private name
-    from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
+try:  # cvx-linalg >= 1.0 re-exports the public constant at the package root
+    from cvx.linalg import DEFAULT_COND_THRESHOLD as _DEFAULT_COND_THRESHOLD
+except ImportError:
+    try:  # cvx-linalg >= 0.7 exposed the public name under .solve
+        from cvx.linalg.solve import DEFAULT_COND_THRESHOLD as _DEFAULT_COND_THRESHOLD  # type: ignore[attr-defined]
+    except ImportError:  # older cvx-linalg only exposes the private name
+        from cvx.linalg.solve import _DEFAULT_COND_THRESHOLD
 
 from basanos.exceptions import FactorModelError
 from basanos.math._factor_model import FactorModel
