@@ -9,7 +9,7 @@ description = "Correlation-aware portfolio optimization and analytics for Python
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "cvx-linalg>=0.6.1",
+    "cvx-linalg>=0.9.0",
     "jinja2>=3",
     "jquantstats>=0.9",
     "numpy>=2.4",
