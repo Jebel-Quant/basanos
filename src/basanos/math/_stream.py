@@ -39,7 +39,7 @@ from typing import Any, cast
 import numpy as np
 import polars as pl
 from cvx.linalg import cov_to_corr
-from cvx.linalg.ewm_cov import ewm_covariance
+from cvx.linalg.covariance.ewm_cov import ewm_covariance
 from scipy.signal import lfilter
 
 from ..exceptions import MissingDateColumnError, StreamStateCorruptError

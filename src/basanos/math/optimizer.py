@@ -85,7 +85,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import polars as pl
 from cvx.linalg import cov_to_corr
-from cvx.linalg.ewm_cov import ewm_covariance
+from cvx.linalg.covariance.ewm_cov import ewm_covariance
 from jquantstats import Portfolio
 
 from ..exceptions import (
