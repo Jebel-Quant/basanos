@@ -7,7 +7,7 @@ unaffected.
 
 import enum
 import logging
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, TypeVar
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
@@ -24,6 +24,19 @@ class _SentinelType:
 
 
 _SENTINEL = _SentinelType()
+
+_T = TypeVar("_T")
+
+
+def _coalesce(override: _T | None, current: _T) -> _T:
+    """Return *override* when it is not ``None``, otherwise *current*.
+
+    Helper for `BasanosConfig.replace`: a ``None`` override means
+    "keep the existing value". Factoring the per-field ``x if x is None
+    else y`` choice into a named call keeps `replace` flat rather than a
+    long ternary chain.
+    """
+    return current if override is None else override
 
 
 class CovarianceMode(enum.StrEnum):
@@ -530,17 +543,17 @@ class BasanosConfig(BaseModel):
         """
         new_max_turnover: float | None = self.max_turnover if isinstance(max_turnover, _SentinelType) else max_turnover
         return BasanosConfig(
-            vola=self.vola if vola is None else vola,
-            corr=self.corr if corr is None else corr,
-            clip=self.clip if clip is None else clip,
-            shrink=self.shrink if shrink is None else shrink,
-            aum=self.aum if aum is None else aum,
-            denom_tol=self.denom_tol if denom_tol is None else denom_tol,
-            position_scale=self.position_scale if position_scale is None else position_scale,
-            min_corr_denom=self.min_corr_denom if min_corr_denom is None else min_corr_denom,
-            max_nan_fraction=self.max_nan_fraction if max_nan_fraction is None else max_nan_fraction,
-            covariance_config=self.covariance_config if covariance_config is None else covariance_config,
-            cost_per_unit=self.cost_per_unit if cost_per_unit is None else cost_per_unit,
+            vola=_coalesce(vola, self.vola),
+            corr=_coalesce(corr, self.corr),
+            clip=_coalesce(clip, self.clip),
+            shrink=_coalesce(shrink, self.shrink),
+            aum=_coalesce(aum, self.aum),
+            denom_tol=_coalesce(denom_tol, self.denom_tol),
+            position_scale=_coalesce(position_scale, self.position_scale),
+            min_corr_denom=_coalesce(min_corr_denom, self.min_corr_denom),
+            max_nan_fraction=_coalesce(max_nan_fraction, self.max_nan_fraction),
+            covariance_config=_coalesce(covariance_config, self.covariance_config),
+            cost_per_unit=_coalesce(cost_per_unit, self.cost_per_unit),
             max_turnover=new_max_turnover,
         )
 
@@ -587,6 +600,11 @@ class BasanosConfig(BaseModel):
             >>> "Parameters" in html
             True
         """
+        # Lazy import by design: `_config` is the lowest layer and
+        # `_config_report` (the rendering layer) imports `BasanosConfig` from
+        # here at module load. Importing it eagerly would invert that edge and
+        # reintroduce a cycle; deferring keeps the module-level graph acyclic
+        # while still offering the `.report` accessor (cf. pandas' `.plot`).
         from ._config_report import ConfigReport
 
         return ConfigReport(config=self)

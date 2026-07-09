@@ -24,8 +24,14 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+# BasanosConfig lives in the lower-layer `_config` module; import it directly
+# rather than via `optimizer` (which re-exports it) so this rendering layer
+# never depends on the composition root. BasanosEngine is only ever referenced
+# as a type hint, so it stays under TYPE_CHECKING and creates no runtime edge.
+from ._config import BasanosConfig
+
 if TYPE_CHECKING:
-    from .optimizer import BasanosConfig, BasanosEngine
+    from .optimizer import BasanosEngine
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 _env = Environment(
@@ -37,20 +43,21 @@ _env = Environment(
 # ── Parameter metadata ────────────────────────────────────────────────────────
 
 
+# Pydantic v2 constraint attributes on a metadata object, paired with the
+# comparison symbol used to render them.
+_CONSTRAINT_SYMBOLS = (("gt", ">"), ("ge", "≥"), ("lt", "<"), ("le", "≤"))
+
+
 def _constraint_str(field_info: object) -> str:
     """Extract a compact constraint string from a pydantic FieldInfo."""
     parts: list[str] = []
     # Pydantic v2 stores constraints inside field_info.metadata
     metadata = getattr(field_info, "metadata", [])
     for m in metadata:
-        if hasattr(m, "gt") and m.gt is not None:
-            parts.append(f"> {m.gt}")
-        if hasattr(m, "ge") and m.ge is not None:
-            parts.append(f"≥ {m.ge}")
-        if hasattr(m, "lt") and m.lt is not None:
-            parts.append(f"< {m.lt}")
-        if hasattr(m, "le") and m.le is not None:
-            parts.append(f"≤ {m.le}")
+        for attr, symbol in _CONSTRAINT_SYMBOLS:
+            bound = getattr(m, attr, None)
+            if bound is not None:
+                parts.append(f"{symbol} {bound}")
     return ", ".join(parts) if parts else "—"
 
 
@@ -74,8 +81,6 @@ def _params_table_html(config: BasanosConfig) -> str:
     Returns:
         An HTML ``<table>`` string ready to embed in a page.
     """
-    from .optimizer import BasanosConfig  # local import to avoid circularity
-
     rows: list[str] = []
     for name, field_info in BasanosConfig.model_fields.items():
         value = getattr(config, name)

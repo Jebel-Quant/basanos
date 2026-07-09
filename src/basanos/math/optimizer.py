@@ -80,7 +80,6 @@ readable and independently testable:
 import dataclasses
 import datetime
 import logging
-from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -103,13 +102,11 @@ from ._config import (
     EwmaShrinkConfig,
     SlidingWindowConfig,
 )
+from ._config_report import ConfigReport
 from ._engine_diagnostics import _DiagnosticsMixin as _DiagnosticsMixin
 from ._engine_ic import _SignalEvaluatorMixin as _SignalEvaluatorMixin
 from ._engine_solve import _SolveMixin as _SolveMixin
 from ._signal import vol_adj
-
-if TYPE_CHECKING:
-    from ._config_report import ConfigReport
 
 _logger = logging.getLogger(__name__)
 
@@ -771,8 +768,6 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
             >>> "Lambda" in html
             True
         """
-        from ._config_report import ConfigReport
-
         return ConfigReport(config=self.cfg, engine=self)
 
     # ------------------------------------------------------------------
