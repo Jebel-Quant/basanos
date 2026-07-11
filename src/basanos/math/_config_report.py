@@ -24,13 +24,13 @@ import plotly.graph_objects as go
 import plotly.io as pio
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-# BasanosConfig lives in the lower-layer `_config` module; import it directly
-# rather than via `optimizer` (which re-exports it) so this rendering layer
-# never depends on the composition root. BasanosEngine is only ever referenced
-# as a type hint, so it stays under TYPE_CHECKING and creates no runtime edge.
-from ._config import BasanosConfig
-
+# Both BasanosConfig and BasanosEngine are referenced only as type hints here;
+# `type(config).model_fields` reads the model metadata off the instance at
+# runtime instead of the class, so neither needs a runtime import. Keeping them
+# under TYPE_CHECKING means this rendering layer creates no runtime edge back to
+# `_config`/`optimizer`, so `_config` can import `ConfigReport` at module level.
 if TYPE_CHECKING:
+    from ._config import BasanosConfig
     from .optimizer import BasanosEngine
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -82,7 +82,7 @@ def _params_table_html(config: BasanosConfig) -> str:
         An HTML ``<table>`` string ready to embed in a page.
     """
     rows: list[str] = []
-    for name, field_info in BasanosConfig.model_fields.items():
+    for name, field_info in type(config).model_fields.items():
         value = getattr(config, name)
         constraint = _constraint_str(field_info)
         description = field_info.description or "—"
