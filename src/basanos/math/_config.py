@@ -7,12 +7,11 @@ unaffected.
 
 import enum
 import logging
-from typing import TYPE_CHECKING, Annotated, Literal, TypeVar
+from typing import Annotated, Literal, TypeVar
 
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
-if TYPE_CHECKING:
-    from ._config_report import ConfigReport
+from ._config_report import ConfigReport
 
 _logger = logging.getLogger(__name__)
 
@@ -577,7 +576,7 @@ class BasanosConfig(BaseModel):
         return None
 
     @property
-    def report(self) -> "ConfigReport":
+    def report(self) -> ConfigReport:
         """Return a `ConfigReport` facade for this config.
 
         Generates a self-contained HTML report summarising all configuration
@@ -600,13 +599,6 @@ class BasanosConfig(BaseModel):
             >>> "Parameters" in html
             True
         """
-        # Lazy import by design: `_config` is the lowest layer and
-        # `_config_report` (the rendering layer) imports `BasanosConfig` from
-        # here at module load. Importing it eagerly would invert that edge and
-        # reintroduce a cycle; deferring keeps the module-level graph acyclic
-        # while still offering the `.report` accessor (cf. pandas' `.plot`).
-        from ._config_report import ConfigReport
-
         return ConfigReport(config=self)
 
     @field_validator("corr")

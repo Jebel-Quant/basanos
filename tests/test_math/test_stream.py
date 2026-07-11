@@ -42,15 +42,11 @@ from basanos.math import (
 )
 
 # _StreamState, _ewm_std_from_state, and _ewm_vol_accumulators_from_batch are
-# imported from the private module to enable isolation testing of the state
+# imported from the private modules to enable isolation testing of the state
 # extraction logic independently of the public API.
-from basanos.math._stream import (
-    _REQUIRED_KEYS,
-    _ewm_std_from_state,
-    _ewm_vol_accumulators_from_batch,
-    _StreamState,
-)
-from basanos.math._stream import StepResult as StepResultDirect
+from basanos.math._stream_math import _ewm_std_from_state, _ewm_vol_accumulators_from_batch
+from basanos.math._stream_state import _REQUIRED_KEYS, _StreamState
+from basanos.math._stream_state import StepResult as StepResultDirect
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -626,7 +622,7 @@ def test_stream_warmup_step_skips_shrink2id():
     assert full_stream._state.step_count >= cfg.corr, "fixture: stream must be past warmup"
 
     # shrink2id must NOT be called during warmup steps
-    with patch("basanos.math._stream.shrink2id", wraps=None) as mock_shrink:
+    with patch("basanos.math._stream_solve.shrink2id", wraps=None) as mock_shrink:
         for i in range(n_steps):
             warmup_stream.step(prices_np[short_warmup + i], mu_np[short_warmup + i])
         assert mock_shrink.call_count == 0, (
@@ -635,10 +631,10 @@ def test_stream_warmup_step_skips_shrink2id():
         )
 
     # shrink2id must be called for every post-warmup step
-    import basanos.math._stream as _stream_mod
+    import basanos.math._stream_solve as _stream_solve_mod
 
-    real_shrink2id = _stream_mod.shrink2id
-    with patch("basanos.math._stream.shrink2id", wraps=real_shrink2id) as mock_shrink:
+    real_shrink2id = _stream_solve_mod.shrink2id
+    with patch("basanos.math._stream_solve.shrink2id", wraps=real_shrink2id) as mock_shrink:
         for i in range(n_steps):
             full_stream.step(prices_np[long_warmup + i], mu_np[long_warmup + i])
         assert mock_shrink.call_count == n_steps, (
@@ -1535,7 +1531,7 @@ def test_sw_step_singular_woodbury_yields_degenerate():
     """step() must return 'degenerate' when the Woodbury solve raises SingularMatrixError."""
     stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
     warmup_len = 50
-    with patch("basanos.math._stream.FactorModel.from_returns") as mock_fm:
+    with patch("basanos.math._stream_solve.FactorModel.from_returns") as mock_fm:
         mock_fm.side_effect = ValueError("singular")
         result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
     assert result.status == "degenerate"
@@ -1545,7 +1541,7 @@ def test_sw_step_degenerate_denom_yields_degenerate():
     """step() must return 'degenerate' when the Woodbury denominator is non-finite."""
     stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
     warmup_len = 50
-    with patch("basanos.math._stream.FactorModel.solve", return_value=np.zeros(3)):
+    with patch("basanos.math._stream_solve.FactorModel.solve", return_value=np.zeros(3)):
         result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
     assert result.status == "degenerate"
 
@@ -1556,7 +1552,7 @@ def test_sw_step_fm_solve_raises_yields_degenerate():
 
     stream, prices_np, mu_np, prices, _mu, _assets = _make_sw_stream(warmup_len=50, window=20)
     warmup_len = 50
-    with patch("basanos.math._stream.FactorModel.solve", side_effect=SingularMatrixError("singular")):
+    with patch("basanos.math._stream_solve.FactorModel.solve", side_effect=SingularMatrixError("singular")):
         result = stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
     assert result.status == "degenerate"
 
@@ -1639,7 +1635,7 @@ def test_sw_max_components_caps_k_eff():
         captured_k.append(k)
         return original_from_returns(returns, k)
 
-    with patch("basanos.math._stream.FactorModel.from_returns", side_effect=capture_k):
+    with patch("basanos.math._stream_solve.FactorModel.from_returns", side_effect=capture_k):
         stream.step(prices_np[warmup_len], mu_np[warmup_len], prices["date"][warmup_len])
 
     assert len(captured_k) == 1, "from_returns should be called exactly once"
@@ -1885,6 +1881,7 @@ def test_solve_ewma_position_empty_cov_dict_yields_nan_correlation():
     non-VALID status and zeroes the masked cash positions.
     """
     from basanos.math._stream import SolveStatus as _SolveStatus
+    from basanos.math._stream_solve import solve_ewma_position
 
     n_assets = 3
     assets = ["A", "B", "C"]
@@ -1899,8 +1896,8 @@ def test_solve_ewma_position_empty_cov_dict_yields_nan_correlation():
     vola_vec = np.ones(n_assets)
     corr_ret_buf = np.ones((cfg.corr + 5, n_assets))
 
-    with patch("basanos.math._stream.ewm_covariance", return_value={}) as mocked:
-        cash_pos, status = BasanosStream._solve_ewma_position(
+    with patch("basanos.math._stream_solve.ewm_covariance", return_value={}) as mocked:
+        cash_pos, status = solve_ewma_position(
             cfg=cfg,
             state=state,
             corr_ret_buf=corr_ret_buf,
