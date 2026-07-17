@@ -8,17 +8,21 @@ the per-timestamp solve logic independently readable and testable.
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 import logging
 from collections.abc import Generator
-from enum import StrEnum
-from typing import TYPE_CHECKING, TypeAlias, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from cvx.linalg import SingularMatrixError, inv_a_norm, solve
 
 from ._config import EwmaShrinkConfig, SlidingWindowConfig
+from ._engine_solve_base import MatrixBundle as MatrixBundle
+from ._engine_solve_base import MatrixYield as MatrixYield
+from ._engine_solve_base import SolveStatus as SolveStatus
+from ._engine_solve_base import SolveYield as SolveYield
+from ._engine_solve_base import WarmupState as WarmupState
+from ._engine_solve_base import _SolvePrimitivesMixin
 from ._factor_model import FactorModel
 from ._signal import shrink2id
 
@@ -28,191 +32,15 @@ if TYPE_CHECKING:
 _logger = logging.getLogger(__name__)
 
 
-class SolveStatus(StrEnum):
-    """Solver outcome labels for each timestamp.
-
-    Since `SolveStatus` inherits from `str` via ``StrEnum``,
-    values compare equal to their string equivalents (e.g.
-    ``SolveStatus.VALID == "valid"``), preserving backward compatibility
-    with code that matches on string literals.
-
-    Attributes:
-        WARMUP: Insufficient history for the sliding-window covariance mode.
-        ZERO_SIGNAL: The expected-return vector was all-zero; positions zeroed.
-        DEGENERATE: Normalisation denominator was non-finite, solve failed, or
-            no asset had a finite price; positions zeroed for safety.
-        VALID: Linear system solved successfully; positions are non-trivially
-            non-zero.
-    """
-
-    WARMUP = "warmup"
-    ZERO_SIGNAL = "zero_signal"
-    DEGENERATE = "degenerate"
-    VALID = "valid"
-
-
-@dataclasses.dataclass(frozen=True)
-class MatrixBundle:
-    """Container for the covariance matrix and any mode-specific auxiliary state.
-
-    Wrapping the covariance matrix in a dataclass decouples
-    `_compute_position` from the raw array so that future
-    covariance modes (e.g. DCC-GARCH, RMT-cleaned) can carry additional fields
-    through the same interface without changing the method signature.
-
-    Attributes:
-        matrix: The ``(n_active, n_active)`` covariance sub-matrix for the
-            active assets at a given timestamp.
-    """
-
-    matrix: np.ndarray
-
-
-#: Yield type for `_iter_matrices`:
-#: ``(i, t, mask, bundle)`` where ``bundle`` is ``None`` during warmup/no-data.
-MatrixYield: TypeAlias = tuple[int, datetime.date, np.ndarray, MatrixBundle | None]
-
-#: Yield type for `_iter_solve`:
-#: ``(i, t, mask, pos_or_none, status)`` where ``pos_or_none`` is ``None`` only for warmup rows.
-SolveYield: TypeAlias = tuple[int, datetime.date, np.ndarray, np.ndarray | None, SolveStatus]
-
-
-@dataclasses.dataclass(frozen=True)
-class WarmupState:
-    """Final state produced by a full batch solve; consumed by `from_warmup`.
-
-    Returned by `warmup_state` and used by
-    `from_warmup` to initialise the streaming state without
-    coupling to the private `_iter_solve` generator.
-
-    Attributes:
-        prev_cash_pos: Cash positions at the last warmup row, shape
-            ``(n_assets,)``.  ``NaN`` for assets that were still in their
-            own warmup period.
-    """
-
-    prev_cash_pos: np.ndarray
-
-
-class _SolveMixin:
+class _SolveMixin(_SolvePrimitivesMixin):
     """Mixin that provides ``_iter_matrices`` and ``_iter_solve`` generators.
 
-    Consumers must also inherit from (or satisfy the interface of)
-    `_EngineProtocol` so that
+    Inherits the stateless helpers from `_SolvePrimitivesMixin` and adds the
+    per-timestamp solve orchestration.  Consumers must also inherit from (or
+    satisfy the interface of) `_EngineProtocol` so that
     ``self.assets``, ``self.prices``, ``self.mu``, ``self.cfg``, ``self.cor``,
     and ``self.ret_adj`` are all available.
     """
-
-    @staticmethod
-    def _compute_mask(prices_row: np.ndarray) -> np.ndarray:
-        """Return boolean mask indicating which assets have finite prices in the given row."""
-        mask: np.ndarray = np.isfinite(prices_row)
-        return mask
-
-    @staticmethod
-    def _check_signal(mu: np.ndarray, mask: np.ndarray) -> SolveStatus | None:
-        """Return ``ZERO_SIGNAL`` when the masked expected-return vector is all-zero.
-
-        Returns ``None`` when the signal is non-trivially non-zero, indicating
-        that the caller should proceed to the linear solve.
-        """
-        if np.allclose(np.nan_to_num(mu[mask]), 0.0):
-            return SolveStatus.ZERO_SIGNAL
-        return None
-
-    @staticmethod
-    def _scale_to_cash(pos: np.ndarray, vola_active: np.ndarray) -> np.ndarray:
-        """Convert raw solver positions to cash-adjusted positions.
-
-        Divides *pos* by *vola_active* (volatility for the active asset subset)
-        to get cash positions.  ``np.errstate(invalid="ignore")`` is applied
-        internally so NaN volatility values propagate quietly.
-        """
-        with np.errstate(invalid="ignore"):
-            return cast("np.ndarray", pos / vola_active)
-
-    @staticmethod
-    def _row_early_check(
-        i: int,
-        t: datetime.date,
-        mask: np.ndarray,
-        mu_row: np.ndarray,
-    ) -> tuple[np.ndarray, SolveYield | None]:
-        """Validate the price mask and expected-return signal for a single row.
-
-        Returns an ``(expected_mu, early_yield)`` pair.  When ``early_yield``
-        is not ``None``, the caller should ``yield early_yield; continue``
-        immediately — the row is either degenerate (empty mask) or has an
-        all-zero signal.  When ``early_yield`` is ``None`` the row is ready
-        for the mode-specific solve step.
-
-        Args:
-            i: Row index.
-            t: Timestamp.
-            mask: Boolean array of shape ``(n_assets,)`` indicating finite prices.
-            mu_row: Expected-return row of shape ``(n_assets,)``.
-
-        Returns:
-            tuple: ``(expected_mu, early_yield)`` where ``expected_mu`` is
-            ``np.nan_to_num(mu_row[mask])`` and ``early_yield`` is either a
-            complete `SolveYield` tuple (when the caller should yield
-            and continue) or ``None`` (when the caller should proceed to solve).
-        """
-        if not mask.any():
-            return np.zeros(0), (i, t, mask, np.zeros(0), SolveStatus.DEGENERATE)
-        expected_mu = np.nan_to_num(mu_row[mask])
-        sig_status = _SolveMixin._check_signal(mu_row, mask)
-        if sig_status is not None:
-            return expected_mu, (i, t, mask, np.zeros_like(expected_mu), sig_status)
-        return expected_mu, None
-
-    @staticmethod
-    def _denom_guard_yield(
-        i: int,
-        t: datetime.date,
-        mask: np.ndarray,
-        expected_mu: np.ndarray,
-        pos_raw: np.ndarray,
-        denom: float,
-        denom_tol: float,
-    ) -> SolveYield:
-        """Apply the normalisation-denominator guard and return the appropriate yield tuple.
-
-        Emits a `WARNING` and returns a
-        `DEGENERATE` yield when *denom* is non-finite or at
-        or below *denom_tol*; otherwise returns a `VALID`
-        yield with normalised positions ``pos_raw / denom``.
-
-        Args:
-            i: Row index.
-            t: Timestamp.
-            mask: Boolean asset mask of shape ``(n_assets,)``.
-            expected_mu: Masked expected-return vector of shape ``(n_active,)``.
-            pos_raw: Raw (pre-normalisation) position vector of shape ``(n_active,)``.
-            denom: Computed normalisation denominator.
-            denom_tol: Tolerance threshold below which *denom* is treated as degenerate.
-
-        Returns:
-            SolveYield: Either a degenerate or valid ``(i, t, mask, pos, status)`` tuple.
-        """
-        n_active = len(expected_mu)
-        if not np.isfinite(denom) or denom <= denom_tol:
-            _logger.warning(
-                "Positions zeroed at t=%s: normalisation denominator is degenerate "
-                "(denom=%s, denom_tol=%s). Check signal magnitude and covariance matrix.",
-                t,
-                denom,
-                denom_tol,
-                extra={
-                    "context": {
-                        "t": str(t),
-                        "denom": denom,
-                        "denom_tol": denom_tol,
-                    }
-                },
-            )
-            return i, t, mask, np.zeros(n_active), SolveStatus.DEGENERATE
-        return i, t, mask, pos_raw / denom, SolveStatus.VALID
 
     @staticmethod
     def _compute_position(
@@ -256,38 +84,6 @@ class _SolveMixin:
         except SingularMatrixError:
             return i, t, mask, np.zeros_like(expected_mu), SolveStatus.DEGENERATE
         return _SolveMixin._denom_guard_yield(i, t, mask, expected_mu, pos, denom, denom_tol)
-
-    @staticmethod
-    def _apply_turnover_constraint(
-        new_cash: np.ndarray,
-        prev_cash: np.ndarray,
-        max_turnover: float,
-    ) -> np.ndarray:
-        """Cap the L1 norm of the position change to *max_turnover*.
-
-        When ``sum(|new_cash - prev_cash|) > max_turnover``, the delta is
-        scaled back proportionally toward *prev_cash* so that the constraint
-        is exactly met.  When the constraint is already satisfied the input is
-        returned unchanged.
-
-        Args:
-            new_cash: Proposed cash positions after the solve step, shape
-                ``(n_active,)`` — ``NaN`` values treated as zero.
-            prev_cash: Cash positions at the previous step, shape
-                ``(n_active,)`` — ``NaN`` values treated as zero.
-            max_turnover: Maximum allowed L1 norm of the position change.
-
-        Returns:
-            np.ndarray: The (possibly scaled) new cash positions.
-        """
-        curr = np.nan_to_num(new_cash, nan=0.0)
-        prev = np.nan_to_num(prev_cash, nan=0.0)
-        delta = curr - prev
-        total_delta = float(np.sum(np.abs(delta)))
-        if total_delta > max_turnover:
-            scale = max_turnover / total_delta
-            return cast("np.ndarray", prev + delta * scale)
-        return new_cash
 
     def _replay_positions(
         self: _EngineProtocol,
@@ -348,40 +144,65 @@ class _SolveMixin:
             * ``bundle`` (`MatrixBundle` | ``None``): Covariance bundle
               of shape ``(mask.sum(), mask.sum())``, or ``None``.
         """
-        assets = self.assets
-        prices_num = self.prices.select(assets).to_numpy()
+        prices_num = self.prices.select(self.assets).to_numpy()
         dates = self.prices["date"].to_list()
 
         if isinstance(self.cfg.covariance_config, EwmaShrinkConfig):
-            cor = self.cor
-            for i, t in enumerate(dates):
-                mask = _SolveMixin._compute_mask(prices_num[i])
-                if not mask.any():
-                    yield i, t, mask, None
-                    continue
-                corr_n = cor[t]
-                matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
-                yield i, t, mask, MatrixBundle(matrix=matrix)
+            yield from _SolveMixin._iter_matrices_ewma(self, prices_num, dates)
         else:
-            sw_config = self.cfg.covariance_config
-            win_w: int = sw_config.window
-            win_k: int = sw_config.n_factors
-            ret_adj_np = self.ret_adj.select(assets).to_numpy()
-            for i, t in enumerate(dates):
-                mask = _SolveMixin._compute_mask(prices_num[i])
-                if not mask.any() or i + 1 < win_w:
-                    yield i, t, mask, None
-                    continue
-                window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
-                window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
-                n_sub = int(mask.sum())
-                k_eff = min(win_k, win_w, n_sub)
-                try:
-                    fm = FactorModel.from_returns(window_ret, k=k_eff)
-                    yield i, t, mask, MatrixBundle(matrix=fm.covariance)
-                except (np.linalg.LinAlgError, ValueError) as exc:
-                    _logger.warning("Factor model fit failed at t=%s: %s", t, exc)
-                    yield i, t, mask, None
+            yield from _SolveMixin._iter_matrices_sliding(self, prices_num, dates)
+
+    def _iter_matrices_ewma(
+        self: _EngineProtocol,
+        prices_num: np.ndarray,
+        dates: list[datetime.date],
+    ) -> Generator[MatrixYield, None, None]:
+        """Yield per-timestamp `MatrixYield` for the `EwmaShrinkConfig` path.
+
+        Applies `shrink2id` to the EWMA correlation matrix and restricts it to
+        the active-asset sub-matrix; yields ``None`` when no asset has a finite
+        price at that row.
+        """
+        cor = self.cor
+        for i, t in enumerate(dates):
+            mask = _SolveMixin._compute_mask(prices_num[i])
+            if not mask.any():
+                yield i, t, mask, None
+                continue
+            corr_n = cor[t]
+            matrix = shrink2id(corr_n, lamb=self.cfg.shrink)[np.ix_(mask, mask)]
+            yield i, t, mask, MatrixBundle(matrix=matrix)
+
+    def _iter_matrices_sliding(
+        self: _EngineProtocol,
+        prices_num: np.ndarray,
+        dates: list[datetime.date],
+    ) -> Generator[MatrixYield, None, None]:
+        """Yield per-timestamp `MatrixYield` for the `SlidingWindowConfig` path.
+
+        Fits a `FactorModel` from the last ``window`` rows of vol-adjusted
+        returns; yields ``None`` during warm-up, when no asset has a finite
+        price, or when the factor-model fit fails.
+        """
+        sw_config = cast(SlidingWindowConfig, self.cfg.covariance_config)
+        win_w: int = sw_config.window
+        win_k: int = sw_config.n_factors
+        ret_adj_np = self.ret_adj.select(self.assets).to_numpy()
+        for i, t in enumerate(dates):
+            mask = _SolveMixin._compute_mask(prices_num[i])
+            if not mask.any() or i + 1 < win_w:
+                yield i, t, mask, None
+                continue
+            window_ret = ret_adj_np[i + 1 - win_w : i + 1][:, mask]
+            window_ret = np.where(np.isfinite(window_ret), window_ret, 0.0)
+            n_sub = int(mask.sum())
+            k_eff = min(win_k, win_w, n_sub)
+            try:
+                fm = FactorModel.from_returns(window_ret, k=k_eff)
+                yield i, t, mask, MatrixBundle(matrix=fm.covariance)
+            except (np.linalg.LinAlgError, ValueError) as exc:
+                _logger.warning("Factor model fit failed at t=%s: %s", t, exc)
+                yield i, t, mask, None
 
     @staticmethod
     def _batched_solve_group(
@@ -420,11 +241,7 @@ class _SolveMixin:
             pos_stack = np.linalg.solve(a_stack, mu_stack[..., np.newaxis])[..., 0]  # (G, n)
         except np.linalg.LinAlgError:
             # At least one matrix is singular — fall back to sequential per-row solve.
-            for i, t, mask, expected_mu, matrix in group:
-                results[i] = _SolveMixin._compute_position(
-                    i, t, mask, expected_mu, MatrixBundle(matrix=matrix), denom_tol
-                )
-            return results
+            return _SolveMixin._sequential_solve_group(group, denom_tol)
 
         # Denominators: sqrt(mu_i^T A_i^{-1} mu_i) = sqrt(mu_i · pos_i).
         dots = (mu_stack * pos_stack).sum(axis=1)  # (G,)
@@ -434,6 +251,21 @@ class _SolveMixin:
             results[i] = _SolveMixin._denom_guard_yield(i, t, mask, expected_mu, pos, float(denom), denom_tol)
 
         return results
+
+    @staticmethod
+    def _sequential_solve_group(
+        group: list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]],
+        denom_tol: float,
+    ) -> dict[int, SolveYield]:
+        """Row-by-row fallback used when a batched solve hits a singular matrix.
+
+        Solves each system in *group* independently via `_compute_position` so a
+        single ill-conditioned matrix does not abort the whole batch.
+        """
+        return {
+            i: _SolveMixin._compute_position(i, t, mask, expected_mu, MatrixBundle(matrix=matrix), denom_tol)
+            for i, t, mask, expected_mu, matrix in group
+        }
 
     @staticmethod
     def _iter_solve_ewma_batched(
@@ -468,22 +300,7 @@ class _SolveMixin:
             `SolveYield` tuples in original row order.
         """
         # First pass: categorise each row as early-exit or a solve candidate.
-        all_results: dict[int, SolveYield] = {}
-        # mask.tobytes() → list of (i, t, mask, expected_mu, matrix)
-        solve_groups: dict[bytes, list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]]] = {}
-
-        for i, t, mask, bundle in matrix_yields:
-            if bundle is None:
-                all_results[i] = (i, t, mask, np.zeros(int(mask.sum())), SolveStatus.DEGENERATE)
-                continue
-            expected_mu, early = _SolveMixin._row_early_check(i, t, mask, mu_np[i])
-            if early is not None:
-                all_results[i] = early
-                continue
-            mask_key = mask.tobytes()
-            if mask_key not in solve_groups:
-                solve_groups[mask_key] = []
-            solve_groups[mask_key].append((i, t, mask, expected_mu, bundle.matrix))
+        all_results, solve_groups = _SolveMixin._partition_ewma_rows(mu_np, matrix_yields)
 
         # Second pass: batch-solve each mask group.
         for group in solve_groups.values():
@@ -493,6 +310,37 @@ class _SolveMixin:
         for i in range(len(matrix_yields)):
             if i in all_results:
                 yield all_results[i]
+
+    @staticmethod
+    def _partition_ewma_rows(
+        mu_np: np.ndarray,
+        matrix_yields: list[MatrixYield],
+    ) -> tuple[
+        dict[int, SolveYield],
+        dict[bytes, list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]]],
+    ]:
+        """Split rows into resolved early-exits and mask-grouped solve candidates.
+
+        Returns ``(early_results, solve_groups)`` where ``early_results`` maps a
+        row index to its final `SolveYield` (no-data / warmup or an early
+        mask/signal exit) and ``solve_groups`` maps each ``mask.tobytes()`` key
+        to the rows sharing that active-asset pattern.
+        """
+        early_results: dict[int, SolveYield] = {}
+        # mask.tobytes() → list of (i, t, mask, expected_mu, matrix)
+        solve_groups: dict[bytes, list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]]] = {}
+
+        for i, t, mask, bundle in matrix_yields:
+            if bundle is None:
+                early_results[i] = (i, t, mask, np.zeros(int(mask.sum())), SolveStatus.DEGENERATE)
+                continue
+            expected_mu, early = _SolveMixin._row_early_check(i, t, mask, mu_np[i])
+            if early is not None:
+                early_results[i] = early
+                continue
+            solve_groups.setdefault(mask.tobytes(), []).append((i, t, mask, expected_mu, bundle.matrix))
+
+        return early_results, solve_groups
 
     def _iter_solve(self: _EngineProtocol) -> Generator[SolveYield, None, None]:
         r"""Yield ``(i, t, mask, pos_or_none, status)`` for every timestamp.
@@ -547,15 +395,22 @@ class _SolveMixin:
             return
 
         # SlidingWindowConfig path: sequential per-row solve (lazy factor models).
-        win_w: int = cov_config.window
+        yield from _SolveMixin._iter_solve_sliding(self, mu_np, cov_config.window)
 
+    def _iter_solve_sliding(
+        self: _EngineProtocol,
+        mu_np: np.ndarray,
+        win_w: int,
+    ) -> Generator[SolveYield, None, None]:
+        """Sequential per-row solve for the `SlidingWindowConfig` path.
+
+        Factor-model matrices are constructed lazily and may vary in numerical
+        character across rows, so each row is solved individually via
+        `_compute_position` rather than batched.
+        """
         for i, t, mask, bundle in self._iter_matrices():
             if bundle is None:
-                # Distinguish SW warmup (insufficient history) from no-data / model-failure.
-                if mask.any() and i + 1 < win_w:
-                    yield i, t, mask, None, SolveStatus.WARMUP
-                else:
-                    yield i, t, mask, np.zeros(int(mask.sum())), SolveStatus.DEGENERATE
+                yield _SolveMixin._sliding_warmup_or_degenerate(i, t, mask, win_w)
                 continue
             expected_mu, early = _SolveMixin._row_early_check(i, t, mask, mu_np[i])
             if early is not None:

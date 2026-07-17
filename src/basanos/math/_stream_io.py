@@ -65,6 +65,32 @@ def save_stream_archive(
     )
 
 
+def _validate_archive_version(data: Any) -> None:
+    """Raise if *data* lacks a format tag or has an incompatible version."""
+    if "format_version" not in data:
+        raise ValueError(  # noqa: TRY003
+            "Stream file is missing a format version tag. "
+            "It was written with an incompatible version of BasanosStream. "
+            "Re-generate it via BasanosStream.from_warmup()."
+        )
+    found = int(data["format_version"])
+    if found != _SAVE_FORMAT_VERSION:
+        raise ValueError(  # noqa: TRY003
+            f"Stream file was written with format version {found}, "
+            f"but the current version is {_SAVE_FORMAT_VERSION}. "
+            "Re-generate it via BasanosStream.from_warmup()."
+        )
+
+
+def _state_field_from_archive(field_name: str, raw: Any) -> Any:
+    """Deserialise a single `_StreamState` field from its archive representation."""
+    if field_name in ("sw_ret_buf", "corr_ret_buf"):
+        return raw if raw.size > 0 else None
+    if field_name == "step_count":
+        return int(raw)
+    return raw
+
+
 def load_stream_archive(
     path: str | os.PathLike[str],
 ) -> tuple[BasanosConfig, list[str], _StreamState]:
@@ -83,19 +109,7 @@ def load_stream_archive(
         StreamStateCorruptError: If a required key is absent from the archive.
     """
     with np.load(path, allow_pickle=False) as data:
-        if "format_version" not in data:
-            raise ValueError(  # noqa: TRY003
-                "Stream file is missing a format version tag. "
-                "It was written with an incompatible version of BasanosStream. "
-                "Re-generate it via BasanosStream.from_warmup()."
-            )
-        found = int(data["format_version"])
-        if found != _SAVE_FORMAT_VERSION:
-            raise ValueError(  # noqa: TRY003
-                f"Stream file was written with format version {found}, "
-                f"but the current version is {_SAVE_FORMAT_VERSION}. "
-                "Re-generate it via BasanosStream.from_warmup()."
-            )
+        _validate_archive_version(data)
         # Validate that every required key is present.  This catches archives
         # that were produced by an older codebase missing a newly added field,
         # or archives that have been manually edited, with a descriptive error
@@ -106,14 +120,9 @@ def load_stream_archive(
             raise StreamStateCorruptError(missing)
         cfg = BasanosConfig.model_validate_json(data["cfg_json"].item())
         assets: list[str] = list(data["assets"])
-        state_kwargs: dict[str, Any] = {}
-        for field in dataclasses.fields(_StreamState):
-            raw = data[field.name]
-            if field.name in ("sw_ret_buf", "corr_ret_buf"):
-                state_kwargs[field.name] = raw if raw.size > 0 else None
-            elif field.name == "step_count":
-                state_kwargs[field.name] = int(raw)
-            else:
-                state_kwargs[field.name] = raw
+        state_kwargs: dict[str, Any] = {
+            field.name: _state_field_from_archive(field.name, data[field.name])
+            for field in dataclasses.fields(_StreamState)
+        }
     state = _StreamState(**state_kwargs)
     return cfg, assets, state

@@ -20,6 +20,33 @@ if TYPE_CHECKING:
     from ._engine_protocol import _EngineProtocol
 
 
+def _correlate(signal: np.ndarray, fwd_ret: np.ndarray, *, use_rank: bool) -> float:
+    """Correlate two finite vectors, returning ``nan`` for degenerate input.
+
+    Both `np.corrcoef` and `scipy.stats.spearmanr` emit warnings (numpy
+    ``invalid value encountered in divide``; scipy ``ConstantInputWarning``)
+    and yield ``nan`` when either input has zero variance (a constant column).
+    That degenerate case is expected — an IC is undefined when a signal or the
+    forward returns are flat — so it is short-circuited to ``nan`` here before
+    the correlation is attempted, keeping the test log and any downstream
+    caller free of the warning.
+
+    Args:
+        signal: Finite signal values for the assets valid at this timestamp.
+        fwd_ret: Matching finite forward returns.
+        use_rank: When ``True`` use Spearman rank correlation; otherwise Pearson.
+
+    Returns:
+        float: The correlation, or ``nan`` when either input is constant.
+    """
+    if signal.std() == 0.0 or fwd_ret.std() == 0.0:
+        return float("nan")
+    if use_rank:
+        corr, _ = spearmanr(signal, fwd_ret)
+        return float(corr)
+    return float(np.corrcoef(signal, fwd_ret)[0, 1])
+
+
 class _SignalEvaluatorMixin:
     """Mixin providing cross-sectional information-coefficient (IC) metrics.
 
@@ -75,14 +102,9 @@ class _SignalEvaluatorMixin:
             mask = np.isfinite(signal) & np.isfinite(fwd_ret)
             n_valid = int(mask.sum())
 
-            if n_valid < 2:
-                ic_values.append(float("nan"))
-            elif use_rank:
-                corr, _ = spearmanr(signal[mask], fwd_ret[mask])
-                ic_values.append(float(corr))
-            else:
-                ic_values.append(float(np.corrcoef(signal[mask], fwd_ret[mask])[0, 1]))
-
+            ic_values.append(
+                _correlate(signal[mask], fwd_ret[mask], use_rank=use_rank) if n_valid >= 2 else float("nan")
+            )
             ic_dates.append(dates[t])
 
         return pl.DataFrame({"date": ic_dates, col_name: pl.Series(ic_values, dtype=pl.Float64)})

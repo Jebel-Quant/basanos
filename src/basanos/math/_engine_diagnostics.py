@@ -104,6 +104,30 @@ class _DiagnosticsMixin:
 
         return pl.DataFrame({"date": self.prices["date"], "effective_rank": pl.Series(ranks, dtype=pl.Float64)})
 
+    @staticmethod
+    def _residual_for_row(matrix: np.ndarray, expected_mu: np.ndarray, t: object) -> float:
+        """Return the solver residual for a single timestamp.
+
+        Returns ``0.0`` for an all-zero signal (no solve performed) and
+        ``NaN`` when the matrix is singular or the solution has no finite
+        entries.
+        """
+        if np.allclose(expected_mu, 0.0):
+            return 0.0
+        try:
+            x = solve(matrix, expected_mu)
+        except SingularMatrixError:
+            # The covariance matrix is degenerate — residual is undefined.
+            _logger.warning(
+                "solver_residual: SingularMatrixError at t=%s - covariance matrix is degenerate; residual set to NaN.",
+                t,
+            )
+            return float(np.nan)
+        finite_x = np.isfinite(x)
+        if not finite_x.any():
+            return float(np.nan)
+        return float(np.linalg.norm(matrix[np.ix_(finite_x, finite_x)] @ x[finite_x] - expected_mu[finite_x]))
+
     @property
     def solver_residual(self: _EngineProtocol) -> pl.DataFrame:
         r"""Per-timestamp solver residual ``‖C·x - μ‖₂``.
@@ -128,31 +152,34 @@ class _DiagnosticsMixin:
             if bundle is None:
                 residuals.append(float(np.nan))
                 continue
-            matrix = bundle.matrix
             expected_mu = np.nan_to_num(mu_np[i][mask])
-            if np.allclose(expected_mu, 0.0):
-                residuals.append(0.0)
-                continue
-            try:
-                x = solve(matrix, expected_mu)
-            except SingularMatrixError:
-                # The covariance matrix is degenerate — residual is undefined.
-                _logger.warning(
-                    "solver_residual: SingularMatrixError at t=%s - covariance matrix is "
-                    "degenerate; residual set to NaN.",
-                    t,
-                )
-                residuals.append(float(np.nan))
-                continue
-            finite_x = np.isfinite(x)
-            if not finite_x.any():
-                residuals.append(float(np.nan))
-                continue
-            residuals.append(
-                float(np.linalg.norm(matrix[np.ix_(finite_x, finite_x)] @ x[finite_x] - expected_mu[finite_x]))
-            )
+            residuals.append(_DiagnosticsMixin._residual_for_row(bundle.matrix, expected_mu, t))
 
         return pl.DataFrame({"date": self.prices["date"], "residual": pl.Series(residuals, dtype=pl.Float64)})
+
+    @staticmethod
+    def _utilisation_for_row(
+        matrix: np.ndarray, expected_mu: np.ndarray, t: object, mu_tol: float
+    ) -> np.ndarray | None:
+        """Return the per-asset utilisation ratios for a single timestamp.
+
+        Returns an all-zero vector for an all-zero signal (no solve performed)
+        and ``None`` when the matrix is singular (utilisation left as ``NaN``).
+        """
+        if np.allclose(expected_mu, 0.0):
+            return np.zeros_like(expected_mu)
+        try:
+            x = solve(matrix, expected_mu)
+        except SingularMatrixError:
+            # The covariance matrix is degenerate — utilisation is undefined.
+            _logger.warning(
+                "signal_utilisation: SingularMatrixError at t=%s - covariance matrix is "
+                "degenerate; utilisation set to NaN.",
+                t,
+            )
+            return None
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(np.abs(expected_mu) > mu_tol, x / expected_mu, np.nan)
 
     @property
     def signal_utilisation(self: _EngineProtocol) -> pl.DataFrame:
@@ -189,23 +216,9 @@ class _DiagnosticsMixin:
         for i, t, mask, bundle in self._iter_matrices():
             if bundle is None:
                 continue
-            matrix = bundle.matrix
             expected_mu = np.nan_to_num(mu_np[i][mask])
-            if np.allclose(expected_mu, 0.0):
-                util_np[i, mask] = 0.0
-                continue
-            try:
-                x = solve(matrix, expected_mu)
-            except SingularMatrixError:
-                # The covariance matrix is degenerate — utilisation is undefined.
-                _logger.warning(
-                    "signal_utilisation: SingularMatrixError at t=%s - covariance matrix is "
-                    "degenerate; utilisation set to NaN.",
-                    t,
-                )
-                continue
-            with np.errstate(divide="ignore", invalid="ignore"):
-                ratio = np.where(np.abs(expected_mu) > _mu_tol, x / expected_mu, np.nan)
-            util_np[i, mask] = ratio
+            ratio = _DiagnosticsMixin._utilisation_for_row(bundle.matrix, expected_mu, t, _mu_tol)
+            if ratio is not None:
+                util_np[i, mask] = ratio
 
         return self.prices.with_columns([pl.lit(util_np[:, j]).alias(asset) for j, asset in enumerate(assets)])

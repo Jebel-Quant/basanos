@@ -61,14 +61,19 @@ def _constraint_str(field_info: object) -> str:
     return ", ".join(parts) if parts else "—"
 
 
+def _fmt_float(v: float) -> str:
+    """Format a float config value for compact display."""
+    if v == int(v) and abs(v) >= 1e4:
+        return f"{v:.2e}"
+    if abs(v) < 0.01 and v != 0.0:
+        return f"{v:.2e}"
+    return f"{v:g}"
+
+
 def _fmt_value(v: object) -> str:
     """Format a config field value for display."""
     if isinstance(v, float):
-        if v == int(v) and abs(v) >= 1e4:
-            return f"{v:.2e}"
-        if abs(v) < 0.01 and v != 0.0:
-            return f"{v:.2e}"
-        return f"{v:g}"
+        return _fmt_float(v)
     return str(v)
 
 

@@ -58,6 +58,16 @@ _STDLIB_RECORD_ATTRS: frozenset[str] = frozenset(
 )
 
 
+def _serialise_mapping(value: dict[Any, Any]) -> dict[Any, Any]:
+    """Recursively coerce each value of a mapping into serialisable form."""
+    return {k: _to_serialisable(v) for k, v in value.items()}
+
+
+def _serialise_sequence(value: list[Any] | tuple[Any, ...]) -> list[Any]:
+    """Recursively coerce each element of a sequence into serialisable form."""
+    return [_to_serialisable(v) for v in value]
+
+
 def _to_serialisable(value: Any) -> Any:
     """Recursively coerce *value* into a JSON-serialisable form.
 
@@ -77,9 +87,9 @@ def _to_serialisable(value: Any) -> Any:
     if isinstance(value, float) and not math.isfinite(value):
         return str(value)
     if isinstance(value, dict):
-        return {k: _to_serialisable(v) for k, v in value.items()}
+        return _serialise_mapping(value)
     if isinstance(value, (list, tuple)):
-        return [_to_serialisable(v) for v in value]
+        return _serialise_sequence(value)
     return value
 
 

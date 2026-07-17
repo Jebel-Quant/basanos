@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import math
 import pathlib
+import warnings
 from datetime import date, timedelta
 from unittest.mock import patch
 
@@ -1747,6 +1748,42 @@ class TestICNaNHandling:
         ic_vals = eng.ic()["ic"].to_list()
         # With only one valid asset pair, every IC value must be NaN
         for v in ic_vals:
+            assert v is None or (isinstance(v, float) and math.isnan(v))
+
+    def test_constant_signal_returns_nan_without_warnings(self) -> None:
+        """A constant (zero-variance) signal must yield NaN IC/rank-IC silently.
+
+        ``np.corrcoef`` and ``scipy.stats.spearmanr`` both emit warnings and
+        return NaN for constant input; the IC path short-circuits that expected
+        degenerate case, so no numpy 'invalid value encountered in divide' nor
+        scipy ``ConstantInputWarning`` must escape (regression test for #588).
+        """
+        n = 12
+        start = date(2020, 1, 1)
+        dates = pl.date_range(start=start, end=start + timedelta(days=n - 1), interval="1d", eager=True)
+        rng = np.random.default_rng(11)
+        p_a = 100.0 + np.cumsum(rng.normal(0.0, 0.5, n))
+        p_b = 200.0 + np.cumsum(rng.normal(0.0, 0.7, n))
+        prices = pl.DataFrame(
+            {"date": dates, "A": pl.Series(p_a, dtype=pl.Float64), "B": pl.Series(p_b, dtype=pl.Float64)}
+        )
+        # Both signal columns are constant → every cross-section is degenerate.
+        mu = pl.DataFrame(
+            {
+                "date": dates,
+                "A": pl.Series(np.full(n, 0.3), dtype=pl.Float64),
+                "B": pl.Series(np.full(n, 0.3), dtype=pl.Float64),
+            }
+        )
+        cfg = BasanosConfig(vola=3, corr=5, clip=3.0, shrink=0.5, aum=1e6)
+        eng = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any leaked warning fails the test
+            ic_vals = eng.ic()["ic"].to_list()
+            rank_ic_vals = eng.rank_ic()["rank_ic"].to_list()
+
+        for v in ic_vals + rank_ic_vals:
             assert v is None or (isinstance(v, float) and math.isnan(v))
 
 
