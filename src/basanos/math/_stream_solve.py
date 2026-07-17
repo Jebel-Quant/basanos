@@ -26,6 +26,58 @@ from ._stream_state import _StreamState
 _logger = logging.getLogger(__name__)
 
 
+def _fit_sliding_factor_model(
+    cfg: BasanosConfig,
+    state: _StreamState,
+    mask: np.ndarray,
+    date: Any,
+) -> FactorModel | None:
+    """Fit a truncated factor model on the masked rolling window; ``None`` on SVD failure."""
+    sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
+    sw_ret_buf = cast(np.ndarray, state.sw_ret_buf)
+    window_ret = np.where(
+        np.isfinite(sw_ret_buf[:, mask]),
+        sw_ret_buf[:, mask],
+        0.0,
+    )
+    n_sub = int(mask.sum())
+    k_eff = min(sw_config.n_factors, sw_config.window, n_sub)
+    if sw_config.max_components is not None:
+        k_eff = min(k_eff, sw_config.max_components)
+    try:
+        return FactorModel.from_returns(window_ret, k=k_eff)
+    except (np.linalg.LinAlgError, ValueError) as exc:
+        _logger.debug("Sliding window SVD failed at date=%s: %s", date, exc)
+        return None
+
+
+def _woodbury_normalised(
+    fm: FactorModel,
+    expected_mu: np.ndarray,
+    cfg: BasanosConfig,
+    date: Any,
+) -> np.ndarray | None:
+    """Woodbury-solve and normalise; ``None`` on solve failure or degenerate denominator."""
+    try:
+        x = fm.solve(expected_mu)
+        denom_val = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
+    except (SingularMatrixError, np.linalg.LinAlgError) as exc:
+        _logger.warning("Woodbury solve failed at date=%s: %s", date, exc)
+        return None
+
+    if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
+        _logger.warning(
+            "Positions zeroed at date=%s (sliding_window): normalisation "
+            "denominator degenerate (denom=%s, denom_tol=%s).",
+            date,
+            denom_val,
+            cfg.denom_tol,
+        )
+        return None
+
+    return cast("np.ndarray", x / denom_val)
+
+
 def solve_sliding_window_position(
     *,
     cfg: BasanosConfig,
@@ -39,26 +91,11 @@ def solve_sliding_window_position(
     """Solve one step in SlidingWindow mode and return cash position + status."""
     new_cash_pos = np.full(n_assets, np.nan, dtype=float)
     status = SolveStatus.DEGENERATE
-    sw_config = cast(SlidingWindowConfig, cfg.covariance_config)
     if not mask.any():
         return new_cash_pos, status
 
-    win_w = sw_config.window
-    win_k = sw_config.n_factors
-    sw_ret_buf = cast(np.ndarray, state.sw_ret_buf)
-    window_ret = np.where(
-        np.isfinite(sw_ret_buf[:, mask]),
-        sw_ret_buf[:, mask],
-        0.0,
-    )
-    n_sub = int(mask.sum())
-    k_eff = min(win_k, win_w, n_sub)
-    if sw_config.max_components is not None:
-        k_eff = min(k_eff, sw_config.max_components)
-    try:
-        fm = FactorModel.from_returns(window_ret, k=k_eff)
-    except (np.linalg.LinAlgError, ValueError) as exc:
-        _logger.debug("Sliding window SVD failed at date=%s: %s", date, exc)
+    fm = _fit_sliding_factor_model(cfg, state, mask, date)
+    if fm is None:
         new_cash_pos[mask] = 0.0
         return new_cash_pos, status
 
@@ -67,29 +104,13 @@ def solve_sliding_window_position(
         new_cash_pos[mask] = 0.0
         return new_cash_pos, SolveStatus.ZERO_SIGNAL
 
-    try:
-        x = fm.solve(expected_mu)
-        denom_val = float(np.sqrt(max(0.0, float(np.dot(expected_mu, x)))))
-    except (SingularMatrixError, np.linalg.LinAlgError) as exc:
-        _logger.warning("Woodbury solve failed at date=%s: %s", date, exc)
+    risk_pos = _woodbury_normalised(fm, expected_mu, cfg, date)
+    if risk_pos is None:
         new_cash_pos[mask] = 0.0
         return new_cash_pos, status
 
-    if not np.isfinite(denom_val) or denom_val <= cfg.denom_tol:
-        _logger.warning(
-            "Positions zeroed at date=%s (sliding_window): normalisation "
-            "denominator degenerate (denom=%s, denom_tol=%s).",
-            date,
-            denom_val,
-            cfg.denom_tol,
-        )
-        new_cash_pos[mask] = 0.0
-        return new_cash_pos, status
-
-    risk_pos = x / denom_val
-    vola_sub = vola_vec[mask]
     with np.errstate(invalid="ignore"):
-        new_cash_pos[mask] = risk_pos / vola_sub
+        new_cash_pos[mask] = risk_pos / vola_vec[mask]
     return new_cash_pos, SolveStatus.VALID
 
 

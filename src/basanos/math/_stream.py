@@ -275,6 +275,22 @@ class BasanosStream:
             vola=np.full(n_assets, np.nan),
         )
 
+    @staticmethod
+    def _apply_step_turnover(
+        cfg: BasanosConfig,
+        status: SolveStatus,
+        new_cash_pos: np.ndarray,
+        mask: np.ndarray,
+        prev_cash_pos: np.ndarray,
+    ) -> None:
+        """Cap the active-asset position change in place when a turnover limit is set."""
+        if cfg.max_turnover is not None and status == SolveStatus.VALID:
+            new_cash_pos[mask] = _SolveMixin._apply_turnover_constraint(
+                new_cash_pos[mask],
+                prev_cash_pos[mask],
+                cfg.max_turnover,
+            )
+
     def step(
         self,
         new_prices: np.ndarray | dict[str, float],
@@ -430,12 +446,7 @@ class BasanosStream:
             )
 
         # ── Apply turnover constraint ─────────────────────────────────────────
-        if cfg.max_turnover is not None and status == SolveStatus.VALID:
-            new_cash_pos[mask] = _SolveMixin._apply_turnover_constraint(
-                new_cash_pos[mask],
-                state.prev_cash_pos[mask],
-                cfg.max_turnover,
-            )
+        self._apply_step_turnover(cfg, status, new_cash_pos, mask, state.prev_cash_pos)
 
         # ── Persist updated state ───────────────────────────────────────────
         state.persist(

@@ -65,12 +65,20 @@ readable and independently testable:
 
 * `_config` — `BasanosConfig` and all
   covariance-mode configuration classes.
+* `_engine_validation` — free functions that validate the
+  ``prices`` / ``mu`` / ``cfg`` inputs (re-exported here).
+* `_engine_core` — the `_CoreDataMixin` providing the
+  core data-access properties (``assets``, ``ret_adj``, ``vola``, ``cor``,
+  ``cor_tensor``).
 * `_engine_solve` — private helpers providing the
   ``_iter_matrices`` and ``_iter_solve`` generators (per-timestamp solve
   logic).
 * `_engine_diagnostics` — private helpers providing
   matrix-quality diagnostics (condition number, effective rank, solver
   residual, signal utilisation).
+* `_engine_performance` — the `_PerformanceMixin` providing the
+  portfolio-Sharpe sweep helpers (``sharpe_at_shrink``,
+  ``sharpe_at_window_factors``, ``naive_sharpe``).
 * `_engine_ic` — private helpers providing signal
   evaluation metrics (IC, Rank IC, ICIR, and summary statistics).
 * This module — `BasanosEngine`, a single flat class that wires
@@ -78,23 +86,11 @@ readable and independently testable:
 """
 
 import dataclasses
-import datetime
-import logging
 
 import numpy as np
 import polars as pl
-from cvx.linalg import cov_to_corr
-from cvx.linalg.covariance.ewm_cov import ewm_covariance
 from jquantstats import Portfolio
 
-from ..exceptions import (
-    ColumnMismatchError,
-    ExcessiveNullsError,
-    MissingDateColumnError,
-    MonotonicPricesError,
-    NonPositivePricesError,
-    ShapeMismatchError,
-)
 from ._config import (
     BasanosConfig,
     CovarianceConfig,
@@ -103,120 +99,19 @@ from ._config import (
     SlidingWindowConfig,
 )
 from ._config_report import ConfigReport
+from ._engine_core import _CoreDataMixin as _CoreDataMixin
 from ._engine_diagnostics import _DiagnosticsMixin as _DiagnosticsMixin
 from ._engine_ic import _SignalEvaluatorMixin as _SignalEvaluatorMixin
+from ._engine_performance import _PerformanceMixin as _PerformanceMixin
 from ._engine_solve import _SolveMixin as _SolveMixin
-from ._signal import vol_adj
-
-_logger = logging.getLogger(__name__)
-
-
-def _validate_required_date_columns(prices: pl.DataFrame, mu: pl.DataFrame) -> None:
-    """Ensure both input frames expose the required ``date`` column."""
-    if "date" not in prices.columns:
-        raise MissingDateColumnError("prices")
-    if "date" not in mu.columns:
-        raise MissingDateColumnError("mu")
-
-
-def _validate_shape_and_column_sets(prices: pl.DataFrame, mu: pl.DataFrame) -> None:
-    """Ensure prices and signals are shape- and schema-compatible."""
-    if prices.shape != mu.shape:
-        raise ShapeMismatchError(prices.shape, mu.shape)
-    if not set(prices.columns) == set(mu.columns):
-        raise ColumnMismatchError(prices.columns, mu.columns)
-
-
-def _numeric_assets(prices: pl.DataFrame) -> list[str]:
-    """Return numeric asset columns, excluding the ``date`` column."""
-    return [c for c in prices.columns if c != "date" and prices[c].dtype.is_numeric()]
-
-
-def _validate_positive_prices(prices: pl.DataFrame, assets: list[str]) -> None:
-    """Ensure all finite/non-null prices are strictly positive."""
-    for asset in assets:
-        col = prices[asset].drop_nulls()
-        if col.len() > 0 and (col <= 0).any():
-            raise NonPositivePricesError(asset)
-
-
-def _validate_null_fraction(prices: pl.DataFrame, assets: list[str], max_nan_fraction: float) -> None:
-    """Reject asset columns whose null fraction exceeds configuration bounds."""
-    n_rows = prices.height
-    if n_rows == 0:
-        return
-    for asset in assets:
-        nan_frac = prices[asset].null_count() / n_rows
-        if nan_frac > max_nan_fraction:
-            raise ExcessiveNullsError(asset, nan_frac, max_nan_fraction)
-
-
-def _validate_non_monotonic_prices(prices: pl.DataFrame, assets: list[str]) -> None:
-    """Reject monotonic asset series that indicate malformed synthetic data."""
-    for asset in assets:
-        col = prices[asset].drop_nulls()
-        if col.len() > 2:
-            diffs = col.diff().drop_nulls()
-            if (diffs >= 0).all() or (diffs <= 0).all():
-                raise MonotonicPricesError(asset)
-
-
-def _warn_short_sliding_window_data(prices: pl.DataFrame, cfg: "BasanosConfig") -> None:
-    """Emit a warning when data is too short relative to the configured SW window."""
-    if cfg.covariance_mode == CovarianceMode.sliding_window and cfg.window is not None:
-        n_rows = prices.height
-        w: int = cfg.window
-        if n_rows < 2 * w:
-            _logger.warning(
-                "Dataset length (%d rows) is less than 2 * window (%d). "
-                "The first %d timestamps will yield zero positions during warm-up; "
-                "consider using a longer history or reducing 'window'.",
-                n_rows,
-                2 * w,
-                w - 1,
-            )
-
-
-def _validate_inputs(prices: pl.DataFrame, mu: pl.DataFrame, cfg: "BasanosConfig") -> None:
-    """Validate ``prices``, ``mu``, and ``cfg`` for use with `BasanosEngine`.
-
-    Checks that both DataFrames contain a ``'date'`` column, share identical
-    shapes and column sets, contain no non-positive prices, no excessive NaN
-    fractions, and no monotonically non-varying price series.  Also emits a
-    warning when the dataset is too short relative to a configured
-    sliding-window size.
-
-    Args:
-        prices: DataFrame of price levels per asset over time.
-        mu: DataFrame of expected-return signals aligned with ``prices``.
-        cfg: Engine configuration instance.
-
-    Raises:
-        MissingDateColumnError: If ``'date'`` is absent from either frame.
-        ShapeMismatchError: If ``prices`` and ``mu`` have different shapes.
-        ColumnMismatchError: If the column sets of the two frames differ.
-        NonPositivePricesError: If any asset contains a non-positive price.
-        ExcessiveNullsError: If any asset column exceeds ``cfg.max_nan_fraction``.
-        MonotonicPricesError: If any asset price series is monotonically
-            non-decreasing or non-increasing.
-
-    Warns:
-        UserWarning (via logging): If ``cfg.covariance`` is a
-            `SlidingWindowConfig` and
-            ``len(prices) < 2 * cfg.covariance.window``, a warning is emitted
-            via the module logger rather than an exception.  This is a
-            deliberate soft boundary — callers may intentionally supply data
-            shorter than the full warm-up period.  During warm-up the first
-            ``window - 1`` timestamps will yield zero positions.
-    """
-    _validate_required_date_columns(prices, mu)
-    _validate_shape_and_column_sets(prices, mu)
-    assets = _numeric_assets(prices)
-    _validate_positive_prices(prices, assets)
-    _validate_null_fraction(prices, assets, cfg.max_nan_fraction)
-    _validate_non_monotonic_prices(prices, assets)
-    _warn_short_sliding_window_data(prices, cfg)
-
+from ._engine_validation import _numeric_assets as _numeric_assets
+from ._engine_validation import _validate_inputs as _validate_inputs
+from ._engine_validation import _validate_non_monotonic_prices as _validate_non_monotonic_prices
+from ._engine_validation import _validate_null_fraction as _validate_null_fraction
+from ._engine_validation import _validate_positive_prices as _validate_positive_prices
+from ._engine_validation import _validate_required_date_columns as _validate_required_date_columns
+from ._engine_validation import _validate_shape_and_column_sets as _validate_shape_and_column_sets
+from ._engine_validation import _warn_short_sliding_window_data as _warn_short_sliding_window_data
 
 # ---------------------------------------------------------------------------
 # Re-export config symbols so ``from basanos.math.optimizer import …`` keeps
@@ -233,7 +128,7 @@ __all__ = [
 
 
 @dataclasses.dataclass(frozen=True)
-class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
+class BasanosEngine(_CoreDataMixin, _DiagnosticsMixin, _PerformanceMixin, _SignalEvaluatorMixin, _SolveMixin):
     """Engine to compute correlation matrices and optimize risk positions.
 
     Encapsulates price data and configuration to build EWM-based
@@ -328,112 +223,10 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         _validate_inputs(self.prices, self.mu, self.cfg)
 
     # ------------------------------------------------------------------
-    # Core data-access properties
+    # Core data-access properties — inherited from _CoreDataMixin
     # ------------------------------------------------------------------
-
-    @property
-    def assets(self) -> list[str]:
-        """List asset column names (numeric columns excluding 'date')."""
-        return [c for c in self.prices.columns if c != "date" and self.prices[c].dtype.is_numeric()]
-
-    @property
-    def ret_adj(self) -> pl.DataFrame:
-        """Return per-asset volatility-adjusted log returns clipped by cfg.clip.
-
-        Uses an EWMA volatility estimate with lookback ``cfg.vola`` to
-        standardize log returns for each numeric asset column.
-        """
-        return self.prices.with_columns(
-            [vol_adj(pl.col(asset), vola=self.cfg.vola, clip=self.cfg.clip) for asset in self.assets]
-        )
-
-    @property
-    def vola(self) -> pl.DataFrame:
-        """Per-asset EWMA volatility of percentage returns.
-
-        Computes percent changes for each numeric asset column and applies an
-        exponentially weighted standard deviation using the lookback specified
-        by ``cfg.vola``. The result is a DataFrame aligned with ``self.prices``
-        whose numeric columns hold per-asset volatility estimates.
-        """
-        return self.prices.with_columns(
-            pl.col(asset)
-            .pct_change()
-            .ewm_std(com=self.cfg.vola - 1, adjust=True, min_samples=self.cfg.vola)
-            .alias(asset)
-            for asset in self.assets
-        )
-
-    @property
-    def cor(self) -> dict[datetime.date, np.ndarray]:
-        """Compute per-timestamp EWM correlation matrices.
-
-        Builds volatility-adjusted returns for all assets, computes an
-        exponentially weighted correlation using a pure NumPy implementation
-        (with window ``cfg.corr``), and returns a mapping from each timestamp
-        to the corresponding correlation matrix as a NumPy array.
-
-        Returns:
-            dict: Mapping ``date -> np.ndarray`` of shape (n_assets, n_assets).
-
-        Performance:
-            Delegates to ``ewm_covariance`` from ``cvx.linalg``.
-            For large *N* or *T*, prefer ``cor_tensor`` to keep a single
-            contiguous array rather than building a Python dict.
-        """
-        assets = list(self.assets)
-        n = len(assets)
-        span = 2 * self.cfg.corr + 1
-        cov_dict = ewm_covariance(
-            self.ret_adj,
-            assets=assets,
-            index_col="date",
-            window=span,
-            warmup=self.cfg.corr,
-        )
-        nan_mat = np.full((n, n), np.nan)
-        return {
-            date: cov_to_corr(cov_dict[date], self.cfg.min_corr_denom) if date in cov_dict else nan_mat.copy()
-            for date in self.prices["date"].to_list()
-        }
-
-    @property
-    def cor_tensor(self) -> np.ndarray:
-        """Return all correlation matrices stacked as a 3-D tensor.
-
-        Converts the per-timestamp correlation dict (see `cor`) into a
-        single contiguous NumPy array so that the full history can be saved to
-        a flat ``.npy`` file with `save` and reloaded with
-        `load`.
-
-        Returns:
-            np.ndarray: Array of shape ``(T, N, N)`` where *T* is the number of
-            timestamps and *N* the number of assets.  ``tensor[t]`` is the
-            correlation matrix for the *t*-th date (same ordering as
-            ``self.prices["date"]``).
-
-        Examples:
-            >>> import tempfile, pathlib
-            >>> import numpy as np
-            >>> import polars as pl
-            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
-            >>> dates = pl.Series("date", list(range(100)))
-            >>> rng0 = np.random.default_rng(0).lognormal(size=100)
-            >>> rng1 = np.random.default_rng(1).lognormal(size=100)
-            >>> prices = pl.DataFrame({"date": dates, "A": rng0, "B": rng1})
-            >>> rng2 = np.random.default_rng(2).normal(size=100)
-            >>> rng3 = np.random.default_rng(3).normal(size=100)
-            >>> mu = pl.DataFrame({"date": dates, "A": rng2, "B": rng3})
-            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
-            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-            >>> tensor = engine.cor_tensor
-            >>> with tempfile.TemporaryDirectory() as td:
-            ...     path = pathlib.Path(td) / "cor.npy"
-            ...     np.save(path, tensor)
-            ...     loaded = np.load(path)
-            >>> np.testing.assert_array_equal(tensor, loaded)
-        """
-        return np.stack(list(self.cor.values()), axis=0)
+    # (assets, ret_adj, vola, cor, cor_tensor)
+    # Implementations live in _engine_core.py.
 
     # ------------------------------------------------------------------
     # Internal solve helpers — inherited from _SolveMixin
@@ -595,144 +388,11 @@ class BasanosEngine(_DiagnosticsMixin, _SignalEvaluatorMixin, _SolveMixin):
         scaled = cp.with_columns(pl.col(a) * self.cfg.position_scale for a in assets)
         return Portfolio.from_cash_position(self.prices, scaled, aum=self.cfg.aum, cost_per_unit=self.cfg.cost_per_unit)
 
-    def sharpe_at_shrink(self, shrink: float) -> float:
-        r"""Return the annualised portfolio Sharpe ratio for the given shrinkage weight.
-
-        Constructs a new `BasanosEngine` with all parameters identical to
-        ``self`` except that ``cfg.shrink`` is replaced by ``shrink``, then
-        returns the annualised Sharpe ratio of the resulting portfolio.
-
-        This is the canonical single-argument callable required by the benchmarks
-        specification: ``f(λ) → Sharpe``.  Use it to sweep λ across ``[0, 1]``
-        and measure whether correlation adjustment adds value over the
-        signal-proportional baseline (λ = 0) or the unregularised limit (λ = 1).
-
-        Corner cases:
-            * **λ = 0** — the shrunk matrix equals the identity, so the
-              optimiser treats all assets as uncorrelated and positions are
-              purely signal-proportional (no correlation adjustment).
-            * **λ = 1** — the raw EWMA correlation matrix is used without
-              shrinkage.
-
-        Args:
-            shrink: Retention weight λ ∈ [0, 1].  See
-                `shrink` for full documentation.
-
-        Returns:
-            Annualised Sharpe ratio of the portfolio returns as a ``float``.
-            Returns ``float("nan")`` when the Sharpe ratio cannot be computed
-            (e.g. zero-variance returns).
-
-        Raises:
-            ValidationError: When ``shrink`` is outside [0, 1] (delegated to
-                `BasanosConfig` field validation).
-
-        Examples:
-            >>> import numpy as np
-            >>> import polars as pl
-            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
-            >>> dates = pl.Series("date", list(range(200)))
-            >>> rng = np.random.default_rng(0)
-            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
-            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
-            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
-            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-            >>> s = engine.sharpe_at_shrink(0.5)
-            >>> isinstance(s, float)
-            True
-        """
-        new_cfg = self.cfg.replace(shrink=shrink)
-        engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
-        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
-
-    def sharpe_at_window_factors(self, window: int, n_factors: int) -> float:
-        r"""Return the annualised portfolio Sharpe ratio for the given sliding-window parameters.
-
-        Constructs a new `BasanosEngine` with ``covariance_mode`` set to
-        ``"sliding_window"`` and the supplied ``window`` / ``n_factors``, keeping
-        all other configuration identical to ``self``.
-
-        Use this method to sweep ``(W, k)`` and compare the sliding-window
-        estimator against the EWMA baseline (via `sharpe_at_shrink`).
-
-        Args:
-            window: Rolling window length $W \geq 1$.
-                Rule of thumb: $W \geq 2 \cdot n_{\text{assets}}$.
-            n_factors: Number of latent factors $k \geq 1$.
-
-        Returns:
-            Annualised Sharpe ratio of the portfolio returns as a ``float``.
-            Returns ``float("nan")`` when the Sharpe ratio cannot be computed
-            (e.g. not enough history to fill the first window).
-
-        Raises:
-            ValidationError: When ``window`` or ``n_factors`` fail field
-                constraints (delegated to `BasanosConfig`).
-
-        Examples:
-            >>> import numpy as np
-            >>> import polars as pl
-            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
-            >>> dates = pl.Series("date", list(range(200)))
-            >>> rng = np.random.default_rng(0)
-            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
-            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
-            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
-            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-            >>> s = engine.sharpe_at_window_factors(window=40, n_factors=2)
-            >>> isinstance(s, float)
-            True
-        """
-        new_cfg = self.cfg.replace(
-            covariance_config=SlidingWindowConfig(window=window, n_factors=n_factors),
-        )
-        engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
-        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
-
-    @property
-    def naive_sharpe(self) -> float:
-        r"""Sharpe ratio of the naïve equal-weight signal (μ = 1 for every asset/timestamp).
-
-        Replaces the expected-return signal ``mu`` with a constant matrix of
-        ones, then runs the optimiser with the current configuration and returns
-        the annualised Sharpe ratio of the resulting portfolio.
-
-        This provides the baseline answer to *"does the signal add value?"*:
-        a real signal should produce a higher Sharpe than the naïve benchmark.
-        Combined with `sharpe_at_shrink`, this yields a three-way
-        comparison:
-
-        +--------------------+----------------------------------------------+
-        | Benchmark          | What it measures                             |
-        +====================+==============================================+
-        | ``naive_sharpe``   | No signal skill; pure correlation routing   |
-        +--------------------+----------------------------------------------+
-        | ``sharpe_at_shrink(0.0)`` | Signal skill, no correlation adj.  |
-        +--------------------+----------------------------------------------+
-        | ``sharpe_at_shrink(cfg.shrink)`` | Signal + correlation adj.  |
-        +--------------------+----------------------------------------------+
-
-        Returns:
-            Annualised Sharpe ratio of the equal-weight portfolio as a ``float``.
-            Returns ``float("nan")`` when the Sharpe ratio cannot be computed.
-
-        Examples:
-            >>> import numpy as np
-            >>> import polars as pl
-            >>> from basanos.math.optimizer import BasanosConfig, BasanosEngine
-            >>> dates = pl.Series("date", list(range(200)))
-            >>> rng = np.random.default_rng(0)
-            >>> prices = pl.DataFrame({"date": dates, "A": rng.lognormal(size=200), "B": rng.lognormal(size=200)})
-            >>> mu = pl.DataFrame({"date": dates, "A": rng.normal(size=200), "B": rng.normal(size=200)})
-            >>> cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.5, aum=1e6)
-            >>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-            >>> s = engine.naive_sharpe
-            >>> isinstance(s, float)
-            True
-        """
-        naive_mu = self.mu.with_columns(pl.lit(1.0).alias(asset) for asset in self.assets)
-        engine = BasanosEngine(prices=self.prices, mu=naive_mu, cfg=self.cfg)
-        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+    # ------------------------------------------------------------------
+    # Performance sweeps — inherited from _PerformanceMixin
+    # ------------------------------------------------------------------
+    # (sharpe_at_shrink, sharpe_at_window_factors, naive_sharpe)
+    # Implementations live in _engine_performance.py.
 
     # ------------------------------------------------------------------
     # Reporting
