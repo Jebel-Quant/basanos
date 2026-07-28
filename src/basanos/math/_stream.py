@@ -53,6 +53,12 @@ from ._stream_state import StepResult as StepResult
 from ._stream_state import _StreamState
 from .optimizer import BasanosEngine
 
+# Number of leading rows for which ``vol_adj`` cannot produce a value: row 0
+# has no log return, and row 1 has a single observation, for which the
+# bias-corrected EWMA std is undefined.  The correlation buffers seeded from
+# ``ret_adj`` therefore carry this many NaN prefix rows.
+_RET_ADJ_LEAD_IN = 2
+
 
 class BasanosStream:
     """Incremental (streaming) optimiser backed by a single `_StreamState`.
@@ -260,9 +266,20 @@ class BasanosStream:
 
     @staticmethod
     def _warmup_threshold(cfg: BasanosConfig) -> int:
-        """Return the step count at which warmup ends for the configured mode."""
+        """Return the step count at which warmup ends for the configured mode.
+
+        The sliding-window threshold adds ``_RET_ADJ_LEAD_IN`` so that
+        ``sw_ret_buf`` holds no NaN rows once warmup ends — ``ret_adj`` only
+        starts at row 2, and ``_fit_sliding_factor_model`` would otherwise
+        zero-fill the remaining NaN row into a fabricated observation.
+
+        EwmaShrink needs no such adjustment: ``ewm_covariance`` counts non-null
+        rows itself, so an under-warmed buffer yields a NaN correlation matrix
+        and a ``degenerate`` status — matching what `BasanosEngine` reports
+        for the same row.
+        """
         if isinstance(cfg.covariance_config, SlidingWindowConfig):
-            return cfg.covariance_config.window
+            return cfg.covariance_config.window + _RET_ADJ_LEAD_IN
         return cfg.corr
 
     @staticmethod
@@ -329,11 +346,15 @@ class BasanosStream:
         # calls when the warmup batch was shorter than cfg.corr (not enough rows
         # to populate the EWM correlation matrix).
         #
-        # SlidingWindowConfig: in_warmup is True for the first (window - n_rows)
-        # calls when the warmup batch was shorter than the window.  During this
-        # period sw_ret_buf still contains NaN-padded prefix rows; each step
-        # shifts one NaN out and appends a real row, so the buffer is fully
-        # populated with real data exactly when in_warmup becomes False.
+        # SlidingWindowConfig: in_warmup is True for the first
+        # (window + _RET_ADJ_LEAD_IN - n_rows) calls when the warmup batch was
+        # shorter than that.  During this period sw_ret_buf still contains NaN
+        # rows — both the NaN padding and the ret_adj lead-in; each step shifts
+        # one NaN out and appends a real row, so the buffer is fully populated
+        # with real data exactly when in_warmup becomes False.  This matters
+        # because _fit_sliding_factor_model zero-fills non-finite entries, so a
+        # residual NaN row would silently enter the covariance estimate as a
+        # fabricated all-zero observation.
         #
         # In both modes all accumulators are still updated during warmup so that
         # the state is ready the moment the warmup period ends.
@@ -375,8 +396,9 @@ class BasanosStream:
         pct_count = state.pct_count + fin_pct.astype(int)
 
         # ── Compute vol-adjusted return (for the correlation IIR input) ─────
-        log_vol = _ewm_std_from_state(vola_s_x, vola_s_x2, vola_s_w, vola_s_w2, vola_count, min_samples=1)
-        # Divide; std == 0 yields ±inf → clipped to ±cfg.clip (matches Polars)
+        log_vol = _ewm_std_from_state(vola_s_x, vola_s_x2, vola_s_w, vola_s_w2, vola_count, min_samples=2)
+        # min_samples=2 mirrors vol_adj: a single observation has no defined
+        # bias-corrected std, so log_vol is NaN and vol_adj_val stays NaN.
         with np.errstate(divide="ignore", invalid="ignore"):
             vol_adj_val = np.where(
                 fin_log,

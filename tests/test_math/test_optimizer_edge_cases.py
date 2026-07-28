@@ -21,6 +21,7 @@ from unittest.mock import patch
 import numpy as np
 import polars as pl
 import pytest
+from conftest import first_valid_row
 from cvx.linalg import SingularMatrixError
 
 from basanos.math import BasanosConfig, BasanosEngine
@@ -178,14 +179,14 @@ class TestSingleAsset:
 
     def test_condition_number_is_one_after_warmup(self, engine: BasanosEngine) -> None:
         """For N=1 the correlation matrix is the scalar 1.0; κ must equal 1.0."""
-        warmup = engine.cfg.corr
+        warmup = first_valid_row(engine.cfg.corr)
         kappas = engine.condition_number["condition_number"].slice(warmup).drop_nulls().to_numpy()
         assert len(kappas) > 0, "No finite condition-number values found after warmup"
         np.testing.assert_allclose(kappas, 1.0, atol=1e-9)
 
     def test_effective_rank_is_one_after_warmup(self, engine: BasanosEngine) -> None:
         """For N=1 the effective rank of a 1×1 matrix is always 1.0."""
-        warmup = engine.cfg.corr
+        warmup = first_valid_row(engine.cfg.corr)
         ranks = engine.effective_rank["effective_rank"].slice(warmup).drop_nulls().to_numpy()
         assert len(ranks) > 0, "No finite effective-rank values found after warmup"
         np.testing.assert_allclose(ranks, 1.0, atol=1e-9)
