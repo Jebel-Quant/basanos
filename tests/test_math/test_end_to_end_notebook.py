@@ -211,9 +211,9 @@ class TestPositionStatus:
         assert actual.issubset(known), f"Unexpected status codes: {actual - known}"
 
     def test_valid_row_count(self, notebook_engine: BasanosEngine) -> None:
-        """With the fixed seed and default config, exactly 1 200 rows must be 'valid'."""
+        """With the fixed seed and default config, exactly 1 199 rows must be 'valid'."""
         valid_n = notebook_engine.position_status.filter(pl.col("status") == "valid").height
-        assert valid_n == 1_200
+        assert valid_n == 1_199
 
     def test_has_valid_rows_in_tail(self, notebook_engine: BasanosEngine) -> None:
         """After EWMA convergence, the final 200 rows must include 'valid' rows."""
@@ -281,7 +281,7 @@ class TestNAV:
     def test_final_nav_concrete(self, notebook_portfolio: Any) -> None:
         """Final NAV must match the deterministic expected value (fixed seed 2024)."""
         final = notebook_portfolio.nav_accumulated["NAV_accumulated"][-1]
-        assert final == pytest.approx(30_557_566.430894211, rel=1e-4)
+        assert final == pytest.approx(29_864_233.118707150, rel=1e-4)
 
     def test_nav_starts_near_aum(self, notebook_portfolio: Any, notebook_cfg: BasanosConfig) -> None:
         """On day 1 there are no realised P&L, so NAV must be close to AUM."""

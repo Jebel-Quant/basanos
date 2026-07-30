@@ -13,6 +13,18 @@ import pytest
 from jquantstats import Portfolio
 
 
+def first_valid_row(corr: int) -> int:
+    """Return the index of the first row with a valid correlation matrix.
+
+    ``vol_adj`` needs two log returns before it can produce a value: row 0 has
+    no return at all, and row 1 has a single observation, for which the
+    bias-corrected EWMA std is undefined.  ``ret_adj`` therefore starts at
+    row 2, and ``ewm_covariance(warmup=corr)`` — which counts non-null rows —
+    emits its first matrix at row ``corr + 1`` rather than row ``corr``.
+    """
+    return corr + 1
+
+
 @pytest.fixture(scope="session")
 def resource_dir():
     """Fixture that provides the path to the test resources directory."""

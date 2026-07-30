@@ -25,6 +25,7 @@ from unittest.mock import patch
 import numpy as np
 import polars as pl
 import pytest
+from conftest import first_valid_row
 from cvx.linalg import SingularMatrixError
 
 from basanos.exceptions import (
@@ -1232,7 +1233,7 @@ class TestDiagnostics:
         prices, mu = _make_prices_mu(80)
         cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.0, aum=1e6)
         engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-        warmup = cfg.corr
+        warmup = first_valid_row(cfg.corr)
         cn = engine.condition_number["condition_number"].slice(warmup).drop_nulls()
         np.testing.assert_allclose(cn.to_numpy(), 1.0, atol=1e-10)
 
@@ -1249,7 +1250,7 @@ class TestDiagnostics:
 
     def test_effective_rank_bounded_after_warmup(self, engine: BasanosEngine) -> None:
         """Effective rank must be in (0, n_assets] after the warmup window."""
-        warmup = engine.cfg.corr
+        warmup = first_valid_row(engine.cfg.corr)
         n_assets = len(engine.assets)
         er = engine.effective_rank["effective_rank"].slice(warmup).drop_nulls()
         assert (er > 0).all()
@@ -1261,7 +1262,7 @@ class TestDiagnostics:
         n_assets = 2
         cfg = BasanosConfig(vola=10, corr=20, clip=3.0, shrink=0.0, aum=1e6)
         engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-        warmup = cfg.corr
+        warmup = first_valid_row(cfg.corr)
         er = engine.effective_rank["effective_rank"].slice(warmup).drop_nulls()
         np.testing.assert_allclose(er.to_numpy(), float(n_assets), atol=1e-10)
 
@@ -1304,7 +1305,7 @@ class TestDiagnostics:
 
     def test_solver_residual_near_zero_after_warmup(self, engine: BasanosEngine) -> None:
         """For a well-conditioned system the residual should be near machine epsilon."""
-        warmup = engine.cfg.corr
+        warmup = first_valid_row(engine.cfg.corr)
         res = engine.solver_residual["residual"].slice(warmup).drop_nulls()
         np.testing.assert_array_less(res.to_numpy(), 1e-10)
 

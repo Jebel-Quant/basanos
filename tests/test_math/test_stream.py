@@ -44,6 +44,7 @@ from basanos.math import (
 # _StreamState, _ewm_std_from_state, and _ewm_vol_accumulators_from_batch are
 # imported from the private modules to enable isolation testing of the state
 # extraction logic independently of the public API.
+from basanos.math._stream import _RET_ADJ_LEAD_IN
 from basanos.math._stream_math import _ewm_std_from_state, _ewm_vol_accumulators_from_batch
 from basanos.math._stream_state import _REQUIRED_KEYS, _StreamState
 from basanos.math._stream_state import StepResult as StepResultDirect
@@ -1425,15 +1426,17 @@ def test_sw_warmup_status_when_buffer_not_full():
 
 
 def test_sw_short_warmup_all_nan_steps_return_warmup_then_transition():
-    """All window-n_rows steps return 'warmup'; the next step is non-warmup.
+    """All warmup steps return 'warmup'; the next step is non-warmup.
 
     When the warmup batch has fewer rows than the sliding window, the rolling
-    buffer contains NaN-padded prefix rows.  Each step shifts one NaN row out
-    and appends a real row.  The buffer is fully populated with real data
-    exactly when step_count reaches window — the same point in_warmup becomes
-    False.  This test asserts that:
+    buffer contains NaN rows: the NaN padding plus the two-row ``ret_adj``
+    lead-in (row 0 has no return, row 1 has a single observation).  Each step
+    shifts one NaN row out and appends a real row.  The buffer is fully
+    populated with real data exactly when step_count reaches
+    ``window + 2`` — the same point in_warmup becomes False.  This test
+    asserts that:
 
-    1. All ``window - n_rows`` warmup steps return ``status="warmup"``.
+    1. All ``window + 2 - n_rows`` warmup steps return ``status="warmup"``.
     2. Cash positions are NaN during that period.
     3. The first post-warmup step returns a non-warmup status.
     4. After the transition the buffer contains no NaN rows.
@@ -1454,7 +1457,8 @@ def test_sw_short_warmup_all_nan_steps_return_warmup_then_transition():
     prices_np = prices.select(assets).to_numpy()
     mu_np = mu.select(assets).to_numpy()
 
-    nan_pad_steps = window - n_rows  # 5 steps should all be "warmup"
+    # NaN padding (window - n_rows) plus the two-row ret_adj lead-in.
+    nan_pad_steps = window + _RET_ADJ_LEAD_IN - n_rows  # 7 steps should all be "warmup"
 
     for i in range(nan_pad_steps):
         result = stream.step(prices_np[n_rows + i], mu_np[n_rows + i], prices["date"][n_rows + i])

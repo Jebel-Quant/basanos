@@ -131,11 +131,17 @@ def shrink2id(matrix: np.ndarray, lamb: float = 1.0) -> np.ndarray:
     return matrix * lamb + (1 - lamb) * np.eye(N=matrix.shape[0])
 
 
-def vol_adj(x: pl.Expr, vola: int, clip: float, min_samples: int = 1) -> pl.Expr:
+def vol_adj(x: pl.Expr, vola: int, clip: float, min_samples: int = 2) -> pl.Expr:
     """Compute clipped, volatility-adjusted log returns per column.
 
     - ``vola`` controls the EWM std smoothing (converted to alpha internally).
     - ``clip`` applies symmetric clipping to the standardized returns.
+
+    ``min_samples`` defaults to ``2`` because a bias-corrected standard
+    deviation is undefined for a single observation.  Requiring two samples
+    keeps the first return row null rather than dividing by a degenerate
+    zero volatility (which would clip to ``±clip`` and feed a fabricated
+    value into the downstream EWMA correlation warmup).
 
     Args:
         x: Polars expression (price series) to transform.

@@ -34,6 +34,7 @@ from datetime import date, timedelta
 import numpy as np
 import polars as pl
 import pytest
+from conftest import first_valid_row
 
 from basanos.math import BasanosConfig, BasanosEngine
 from basanos.math._engine_solve import MatrixBundle, SolveStatus, _SolveMixin
@@ -161,7 +162,7 @@ def test_2asset_diagonal_shrink_zero_first_valid_row() -> None:
     vola_span = 5
     corr_span = 10
     n = corr_span + 5  # a few rows beyond warmup
-    first_valid = corr_span  # first row with non-NaN correlation
+    first_valid = first_valid_row(corr_span)  # first row with non-NaN correlation
 
     mu_override = np.zeros((n, 2))
     mu_override[first_valid, :] = [3.0, 4.0]
@@ -285,10 +286,13 @@ def test_ewma_warmup_phase_structure() -> None:
     assert np.all(np.isnan(actual[:vola_span])), f"Rows 0..{vola_span - 1} must be NaN (EWMA-vola warmup)"
 
     # ── Phase 2: zero during EWMA-corr warmup ─────────────────────────────
-    assert np.all(actual[vola_span:corr_span] == 0.0), f"Rows {vola_span}..{corr_span - 1} must be 0 (EWMA-corr warmup)"
+    first_valid = first_valid_row(corr_span)
+    assert np.all(actual[vola_span:first_valid] == 0.0), (
+        f"Rows {vola_span}..{first_valid - 1} must be 0 (EWMA-corr warmup)"
+    )
 
     # ── Phase 3: first valid row matches golden fixture ────────────────────
-    first_valid = corr_span
+    assert np.all(np.isfinite(golden[first_valid])), f"Golden row {first_valid} must be finite (first valid row)"
     np.testing.assert_allclose(actual[first_valid], golden[first_valid], rtol=1e-12, atol=1e-11)
 
     # ── Full array matches golden (NaN == NaN) ────────────────────────────

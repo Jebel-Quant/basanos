@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 import pytest
+from conftest import first_valid_row
 
 from basanos.math import BasanosEngine
 
@@ -188,7 +189,7 @@ class TestConditionNumberEwma:
 
     def test_post_warmup_has_finite_positive_values(self, ewma_engine: BasanosEngine) -> None:
         """Condition numbers after warmup must be finite and ≥ 1."""
-        warmup_n = ewma_engine.cfg.corr
+        warmup_n = first_valid_row(ewma_engine.cfg.corr)
         vals = ewma_engine.condition_number.slice(warmup_n)["condition_number"].drop_nulls().to_list()
         assert len(vals) > 0, "No finite condition numbers found after warmup"
         assert all(v >= 1.0 - 1e-9 for v in vals), "condition_number < 1 found"
