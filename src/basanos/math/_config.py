@@ -496,7 +496,7 @@ class BasanosConfig(BaseModel):
         max_nan_fraction: float | None = None,
         covariance_config: "CovarianceConfig | None" = None,
         cost_per_unit: float | None = None,
-        max_turnover: float | None | _SentinelType = _SENTINEL,
+        max_turnover: float | _SentinelType | None = _SENTINEL,
     ) -> "BasanosConfig":
         """Return a new `BasanosConfig` with selected fields replaced.
 
