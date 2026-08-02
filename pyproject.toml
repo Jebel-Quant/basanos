@@ -112,3 +112,39 @@ no-matching-overload = "error"
 [[tool.mypy.overrides]]
 module = ["cvx.*", "scipy.*", "plotly.*"]
 ignore_missing_imports = true
+
+# Moved here from .rhiza/.cfg.toml: bump-my-version searches only
+# .bumpversion.toml, .bumpversion.cfg, setup.cfg and pyproject.toml, so a table
+# under .rhiza/ was never auto-discovered. It fell back to `git describe`, which
+# is how a release can be offered a version that was already published.
+[tool.bumpversion]
+# No current_version and no [[tool.bumpversion.files]] entry for the project
+# version: bump-my-version reads and rewrites PEP 621 [project].version
+# natively, and duplicating the string is what lets the two drift apart.
+allow_dirty = false
+# /rhiza:release commits and tags itself, so the regenerated CHANGELOG.md lands
+# in the bump commit. A bare `bump-my-version bump` would add a second commit
+# and a duplicate tag.
+commit = false
+tag = false
+# Retained from the previous config so pre-release bumps (0.8.0-rc.1,
+# 0.8.0-alpha.2, ...) keep parsing and serializing as they did before.
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)(?:[-]?(?P<release>[a-z]+)[\\.]?(?P<pre_n>\\d+))?(?:\\+build\\.(?P<build_n>\\d+))?"
+serialize = [
+    "{major}.{minor}.{patch}-{release}.{pre_n}+build.{build_n}",
+    "{major}.{minor}.{patch}+build.{build_n}",
+    "{major}.{minor}.{patch}-{release}.{pre_n}",
+    "{major}.{minor}.{patch}",
+]
+
+[tool.bumpversion.parts.release]
+optional_value = "prod"
+values = [
+    "dev",
+    "alpha",
+    "a", # PEP 440 short form for alpha
+    "beta",
+    "b", # PEP 440 short form for beta
+    "rc",
+    "prod",
+]
