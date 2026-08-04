@@ -49,11 +49,8 @@ test = [
     "pytest-xdist>=3.0",
     "hypothesis>=6.150.0",
 ]
-lint = [
-    "pre-commit>=4.0",
-    "deptry>=0.22",
-    "ty>=0.0.30",
-]
+# There is no `lint` group: pre-commit/prek and deptry run through uvx, and `typecheck`
+# injects `--with ty`, so nothing would resolve one from the project environment.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/basanos"]
