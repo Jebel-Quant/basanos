@@ -58,6 +58,7 @@ ALLOWED_ORPHANS: frozenset[str] = frozenset(
         "numerical_regression",  # pinned numerical outputs
         "numerical_stability",  # degenerate-input robustness
         "paper_example",  # reproduces the reference paper example
+        "rhiza_packaging",  # template-shipped: declared vs. installed version
         "shim",  # analytics compatibility shim
     }
 )
