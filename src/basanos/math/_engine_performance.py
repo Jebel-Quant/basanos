@@ -3,9 +3,14 @@
 Provides the Sharpe-ratio sweep helpers (`sharpe_at_shrink`,
 `sharpe_at_window_factors`, `naive_sharpe`) as a reusable mixin so that
 ``optimizer.py`` stays focused on the position-solving facade.  Each helper
-rebuilds a sibling engine with a modified configuration, so it constructs a new
-`BasanosEngine` via a deferred import (avoiding a circular import at module
-load time).
+rebuilds a sibling engine with a modified configuration.
+
+The sibling is built from ``type(source)`` rather than by importing
+`BasanosEngine`, so this module has **no runtime dependency on
+``optimizer.py``** — the only import of it is under ``TYPE_CHECKING``, the same
+pattern `_config_report` uses. That keeps the dependency edge one-way
+(``optimizer`` → ``_engine_performance``) instead of a cycle papered over by
+function-local imports.
 
 Classes in this module are **private implementation details**.  The public API
 is `BasanosEngine`, which inherits from `_PerformanceMixin`.
@@ -13,14 +18,48 @@ is `BasanosEngine`, which inherits from `_PerformanceMixin`.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import polars as pl
 
 from ._config import SlidingWindowConfig
 
 if TYPE_CHECKING:
+    from ._config import BasanosConfig
     from ._engine_protocol import _EngineProtocol
+    from .optimizer import BasanosEngine
+
+
+def _rebuilt_sharpe(
+    source: _EngineProtocol,
+    *,
+    prices: pl.DataFrame,
+    mu: pl.DataFrame,
+    cfg: BasanosConfig,
+) -> float:
+    """Return the annualised Sharpe ratio of an engine rebuilt from *source*.
+
+    Constructs a sibling of ``source`` — same concrete class, supplied
+    ``prices`` / ``mu`` / ``cfg`` — and returns its portfolio Sharpe ratio,
+    or ``float("nan")`` when the ratio cannot be computed.
+
+    ``type(source)`` is used instead of importing `BasanosEngine`
+    directly: the concrete class is always the one that mixed this helper in, so
+    naming it at runtime would buy nothing and would make ``optimizer.py`` and
+    this module mutually dependent.
+
+    Args:
+        source: The engine whose class and identity the sibling inherits.
+        prices: Price panel for the rebuilt engine.
+        mu: Expected-return panel for the rebuilt engine.
+        cfg: Configuration for the rebuilt engine.
+
+    Returns:
+        Annualised Sharpe ratio of the rebuilt portfolio as a ``float``.
+    """
+    engine_cls = cast("type[BasanosEngine]", type(source))
+    engine = engine_cls(prices=prices, mu=mu, cfg=cfg)
+    return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
 
 
 class _PerformanceMixin:
@@ -76,11 +115,8 @@ class _PerformanceMixin:
             >>> isinstance(s, float)
             True
         """
-        from .optimizer import BasanosEngine  # deferred to avoid a circular import
-
         new_cfg = self.cfg.replace(shrink=shrink)
-        engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
-        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+        return _rebuilt_sharpe(self, prices=self.prices, mu=self.mu, cfg=new_cfg)
 
     def sharpe_at_window_factors(self: _EngineProtocol, window: int, n_factors: int) -> float:
         r"""Return the annualised portfolio Sharpe ratio for the given sliding-window parameters.
@@ -120,13 +156,10 @@ class _PerformanceMixin:
             >>> isinstance(s, float)
             True
         """
-        from .optimizer import BasanosEngine  # deferred to avoid a circular import
-
         new_cfg = self.cfg.replace(
             covariance_config=SlidingWindowConfig(window=window, n_factors=n_factors),
         )
-        engine = BasanosEngine(prices=self.prices, mu=self.mu, cfg=new_cfg)
-        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+        return _rebuilt_sharpe(self, prices=self.prices, mu=self.mu, cfg=new_cfg)
 
     @property
     def naive_sharpe(self: _EngineProtocol) -> float:
@@ -169,8 +202,5 @@ class _PerformanceMixin:
             >>> isinstance(s, float)
             True
         """
-        from .optimizer import BasanosEngine  # deferred to avoid a circular import
-
         naive_mu = self.mu.with_columns(pl.lit(1.0).alias(asset) for asset in self.assets)
-        engine = BasanosEngine(prices=self.prices, mu=naive_mu, cfg=self.cfg)
-        return float(engine.portfolio.stats.sharpe().get("returns") or float("nan"))
+        return _rebuilt_sharpe(self, prices=self.prices, mu=naive_mu, cfg=self.cfg)
