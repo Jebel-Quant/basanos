@@ -37,7 +37,7 @@ Most systematic strategies produce a raw signal vector μ — one number per ass
 
 Basanos treats position sizing as a **linear system**:
 
-```
+```text
 C · x = μ
 ```
 
