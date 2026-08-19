@@ -55,6 +55,57 @@ test = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/basanos"]
 
+[tool.rhiza-task]
+# Settings for the task runner that replaced the synced make layer in rhiza v1.4.0.
+# Read as layer 4 of rhiza-task's resolution order (dataclass defaults -> .rhiza/.env ->
+# rhiza.toml -> pyproject.toml -> RHIZA_* environment -> CLI flags). Only entries that
+# differ from the CLI's own defaults belong here; `uvx rhiza-task print <setting>` shows
+# what one resolves to, which is also how each value below was checked against 0.3.1.
+
+# This repo keeps its Marimo notebooks in book/marimo/notebooks, not the CLI default of
+# docs/notebooks. `book` exports them to docs/notebooks/*.html, which is what mkdocs.yml's
+# nav references, and rhiza_marimo.yml reads this setting to build its notebook matrix.
+#
+# The setting is load-bearing rather than tidy: it lived in `.rhiza/.env`, which v1.4.2 no
+# longer ships (jebel-quant/rhiza#1545) and this sync therefore deleted. Without it here,
+# `marimo` and `book` resolve to an empty docs/notebooks and skip every notebook -- a green
+# gate measuring nothing.
+marimo-folder = "book/marimo/notebooks"
+
+# The retired python.mk had `TYPECHECKER ?= both`; the CLI defaults to `ty` alone, so a bare
+# migration would have dropped `mypy --strict` from this repo's typecheck gate -- the one the
+# README describes, and the reason [tool.mypy] and its scientific-dependency overrides are
+# in this file at all. `both` is also stricter here than it was under make: the shell `case`
+# let mypy's exit status win, so a ty failure could pass, where the CLI raises on each run.
+typechecker = "both"
+
+# The retired quality.mk pinned `RHIZA_CHECKS_VERSION ?= 0.2.1` and installed
+# `pytest-rhiza==$(RHIZA_CHECKS_VERSION)` from PyPI. rhiza-task 0.3.1 defaults to a *git*
+# ref one patch behind (`... @ git+https://github.com/Jebel-Quant/pytest-rhiza@v0.2.0`), so
+# a bare migration would have both downgraded the conformance checks -- the drift the pin
+# exists to prevent -- and swapped a released wheel for a clone. Pinned exactly rather than
+# floored: a gate that moves under you is not a gate. Bumping it is a separate decision.
+pytest-rhiza = "pytest-rhiza==0.2.1"
+
+# Not set, on purpose:
+#   source-folder / tests-folder -- `src` and `tests` are already this repo's layout, and
+#       were what `.rhiza/.env` restated.
+#   coverage-fail-under -- the CLI default is 90, which is exactly [tool.coverage.report]'s
+#       `fail_under` below. Worth knowing they are two settings and not one: the `test` task
+#       passes `--cov-fail-under=<setting>` on the command line, which outranks the config
+#       file, so raising the bar means raising it in *both* places or the config file starts
+#       claiming a threshold nothing enforces.
+#   mkdocs-extra-packages -- the retired root Makefile carried
+#       `MKDOCS_EXTRA_PACKAGES = --with 'mkdocstrings[python]'` for the API reference under
+#       docs/api/; rhiza-task 0.3.1 makes `mkdocstrings[python]` the default, so the
+#       override is now redundant rather than lost. Restore it here if that ever changes.
+#   ci-os-matrix -- the single-OS default is what this repo wants, and `rhiza_ci.yml`
+#       exports the variable *empty* for consumers so their own configuration can answer
+#       (jebel-quant/rhiza#1526, #1545). Pinning it here would be a decision, not a
+#       migration.
+#   layers / rhiza-checks -- `python` is detected from pyproject.toml, and the five checks
+#       derived from it are the same set quality.mk's `RHIZA_CHECKS` accumulated.
+
 [tool.deptry]
 # Explicit module name map so deptry doesn't need to inspect installed packages
 
