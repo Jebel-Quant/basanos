@@ -1,5 +1,5 @@
 repository: jebel-quant/rhiza
-ref: "v1.3.4"
+ref: "v1.4.2"
 
 profiles:
   - github-project
@@ -7,7 +7,43 @@ profiles:
 templates:
   - legal
 
+# Destination paths the sync must not deliver -- where a file lands in *this* repo, not
+# where it sits in the template clone. A directory entry covers everything beneath it.
+#
+# The three entries that stood here until v1.4.2 were spelled
+# `bundles/github/.github/workflows/...`, a clone-relative form `normalise_excludes` never
+# matched: it takes each entry as written and only tidies separators. That is how
+# `rhiza_fuzzing.yml` came to sit in `.github/workflows` while this file claimed it was
+# excluded, and why `rhiza_weekly.yml` and `rhiza_scorecard.yml` are no longer listed --
+# they were never actually declined, so keeping them would be a new decision dressed up as
+# a spelling fix. Both stay synced.
 exclude:
-  - bundles/github/.github/workflows/rhiza_fuzzing.yml
-  - bundles/github/.github/workflows/rhiza_weekly.yml
-  - bundles/github/.github/workflows/rhiza_scorecard.yml
+  # The two opt-in workflows, neither opted into here. `rhiza_mutation.yml` is gated in the
+  # caller on the repository variable MUTATION_ENABLED, so the job never starts;
+  # `rhiza_fuzzing.yml` needs FUZZING_ENABLED plus a `.clusterfuzzlite/` config this repo
+  # does not have, and its gate sits *inside* the reusable workflow, so it starts on every
+  # pull request and every push to main in order to skip -- a green check whose only
+  # content is that it had nothing to do.
+  #
+  # Declining them is a judgement about this package. basanos takes numeric arrays and a
+  # Pydantic config, with no parser and no untrusted byte stream for a fuzzer to reach; and
+  # the assertion-strength question mutation testing answers is one the coverage gate plus
+  # the Hypothesis property suites in `tests/` already answer far more cheaply than a
+  # full mutation run over the optimizer.
+  - .github/workflows/rhiza_mutation.yml
+  - .github/workflows/rhiza_fuzzing.yml
+
+  # The template's PAT_TOKEN and release-secret walkthrough. It documents secrets a
+  # consumer configures once in the GitHub UI, addressed to whoever set the repository up
+  # rather than to anyone reading the tree. Upstream is where it belongs, and where it stays.
+  - .github/CONFIG.md
+
+  # The discussion and issue forms: multi-field forms with required textareas, arriving at a
+  # template tag, for a repository whose issues and discussions are opened by the person who
+  # wrote the code. The friction lands entirely on the one contributor a form's structure was
+  # never meant to discipline, and a required "steps to reproduce" box is not what makes a
+  # one-line note about a covariance estimator easier to file. Both stay enabled and
+  # free-form. Recorded here rather than simply deleted, because a deletion alone is undone
+  # by the next sync.
+  - .github/DISCUSSION_TEMPLATE
+  - .github/ISSUE_TEMPLATE
