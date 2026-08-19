@@ -1,6 +1,6 @@
 <div align="center" markdown="1">
 
-# <img src="https://raw.githubusercontent.com/Jebel-Quant/rhiza/main/.rhiza/assets/rhiza-logo.svg" alt="Rhiza Logo" width="30" style="vertical-align: middle;"> Basanos
+# Basanos
 
 **Correlation-aware portfolio optimization and analytics for Python.**
 
