@@ -38,12 +38,3 @@ exclude:
   # rather than to anyone reading the tree. Upstream is where it belongs, and where it stays.
   - .github/CONFIG.md
 
-  # The discussion and issue forms: multi-field forms with required textareas, arriving at a
-  # template tag, for a repository whose issues and discussions are opened by the person who
-  # wrote the code. The friction lands entirely on the one contributor a form's structure was
-  # never meant to discipline, and a required "steps to reproduce" box is not what makes a
-  # one-line note about a covariance estimator easier to file. Both stay enabled and
-  # free-form. Recorded here rather than simply deleted, because a deletion alone is undone
-  # by the next sync.
-  - .github/DISCUSSION_TEMPLATE
-  - .github/ISSUE_TEMPLATE
