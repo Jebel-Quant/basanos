@@ -18,21 +18,6 @@ templates:
 # they were never actually declined, so keeping them would be a new decision dressed up as
 # a spelling fix. Both stay synced.
 exclude:
-  # The two opt-in workflows, neither opted into here. `rhiza_mutation.yml` is gated in the
-  # caller on the repository variable MUTATION_ENABLED, so the job never starts;
-  # `rhiza_fuzzing.yml` needs FUZZING_ENABLED plus a `.clusterfuzzlite/` config this repo
-  # does not have, and its gate sits *inside* the reusable workflow, so it starts on every
-  # pull request and every push to main in order to skip -- a green check whose only
-  # content is that it had nothing to do.
-  #
-  # Declining them is a judgement about this package. basanos takes numeric arrays and a
-  # Pydantic config, with no parser and no untrusted byte stream for a fuzzer to reach; and
-  # the assertion-strength question mutation testing answers is one the coverage gate plus
-  # the Hypothesis property suites in `tests/` already answer far more cheaply than a
-  # full mutation run over the optimizer.
-  - .github/workflows/rhiza_mutation.yml
-  - .github/workflows/rhiza_fuzzing.yml
-
   # The template's PAT_TOKEN and release-secret walkthrough. It documents secrets a
   # consumer configures once in the GitHub UI, addressed to whoever set the repository up
   # rather than to anyone reading the tree. Upstream is where it belongs, and where it stays.
