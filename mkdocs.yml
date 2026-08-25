@@ -34,7 +34,6 @@ nav:
       - Demo: notebooks/demo.html
       - Diagnostics: notebooks/diagnostics.html
       - End to End: notebooks/end_to_end.html
-      - EWM Benchmark: notebooks/ewm_benchmark.html
       - Factor Model Guide: notebooks/factor_model_guide.html
       - Shrinkage Guide: notebooks/shrinkage_guide.html
   - CI/CD:
