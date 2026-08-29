@@ -60,6 +60,7 @@ ALLOWED_ORPHANS: frozenset[str] = frozenset(
         "paper_example",  # reproduces the reference paper example
         "rhiza_packaging",  # template-shipped: declared vs. installed version
         "shim",  # analytics compatibility shim
+        "test_layout",  # this checker, run from tests/test_test_layout.py
     }
 )
 
