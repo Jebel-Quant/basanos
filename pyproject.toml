@@ -150,10 +150,16 @@ exclude = ["book"]
 # by test_optimizer.py, test_optimizer_property.py and test_optimizer_edge_cases.py),
 # and whole-pipeline suites (*_notebook, numerical regression/stability, the
 # paper-example walkthrough) map to no single source file. Parity is still
-# enforced, by scripts/check_test_layout.py via `make test-layout` (a prerequisite
-# of `make test`), and per-module coverage by the full-coverage pytest gate. This
-# table tells generic mirror-checkers not to re-derive a convention this repo does
-# not use.
+# enforced, by scripts/check_test_layout.py, and per-module coverage by the
+# full-coverage pytest gate. This table tells generic mirror-checkers not to
+# re-derive a convention this repo does not use.
+#
+# The script runs from tests/test_test_layout.py, i.e. inside the `test` gate --
+# one of the four jobs the required CI gate aggregates. It used to run from
+# `make test-layout`, a prerequisite of `make test`; rhiza v1.4 retired the synced
+# make layer and CI now invokes the gates through rhiza-task, so that target is
+# gone and a repo-local make target would not run in CI. An opt-out is only honest
+# while the mechanism it names still runs -- hence the test.
 #
 # Keep the `reason` value free of literal `%` signs: radon reads every [tool.*]
 # table in this file through configparser, which treats `%` as interpolation
