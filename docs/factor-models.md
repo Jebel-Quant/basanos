@@ -46,8 +46,8 @@ import numpy as np
 returns = np.random.default_rng(0).normal(size=(200, 5))
 fm = FactorModel.from_returns(returns, k=2)
 
-fm.n_assets    # 5
-fm.n_factors   # 2
+fm.n_assets  # 5
+fm.n_factors  # 2
 fm.covariance  # reconstructed (5, 5) covariance matrix
 ```
 
@@ -83,12 +83,12 @@ from basanos.math import BasanosConfig, BasanosEngine, SlidingWindowConfig
 
 cfg = BasanosConfig(
     vola=16,
-    corr=32,    # unused in sliding_window mode but still required
+    corr=32,  # unused in sliding_window mode but still required
     clip=3.5,
-    shrink=0.5, # unused in sliding_window mode
+    shrink=0.5,  # unused in sliding_window mode
     aum=1e6,
     covariance_config=SlidingWindowConfig(
-        window=60,    # rolling window length W; rule of thumb: W >= 2 * n_assets
+        window=60,  # rolling window length W; rule of thumb: W >= 2 * n_assets
         n_factors=2,  # number of latent factors k; fewer = stronger regularisation
     ),
 )
