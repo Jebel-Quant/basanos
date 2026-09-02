@@ -105,31 +105,35 @@ dates = pl.date_range(
 )
 rng = np.random.default_rng(42)
 
-prices = pl.DataFrame({
-    "date": dates,
-    "AAPL":  100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
-    "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
-})
+prices = pl.DataFrame(
+    {
+        "date": dates,
+        "AAPL": 100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
+        "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
+    }
+)
 
 # Expected-return signals in [-1, 1] (e.g. from a forecasting model)
-mu = pl.DataFrame({
-    "date": dates,
-    "AAPL":  np.tanh(rng.normal(0, 0.5, n_days)),
-    "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
-})
+mu = pl.DataFrame(
+    {
+        "date": dates,
+        "AAPL": np.tanh(rng.normal(0, 0.5, n_days)),
+        "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
+    }
+)
 
 # Mode 1 — EWMA with shrinkage (default)
 cfg = BasanosConfig(
-    vola=16,    # EWMA lookback for volatility (days)
-    corr=32,    # EWMA lookback for correlation (days, must be >= vola)
-    clip=3.5,   # Clipping threshold for vol-adjusted returns
-    shrink=0.5, # Shrinkage intensity towards identity [0, 1]
-    aum=1e6,    # Assets under management
+    vola=16,  # EWMA lookback for volatility (days)
+    corr=32,  # EWMA lookback for correlation (days, must be >= vola)
+    clip=3.5,  # Clipping threshold for vol-adjusted returns
+    shrink=0.5,  # Shrinkage intensity towards identity [0, 1]
+    aum=1e6,  # Assets under management
 )
 
-engine    = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 positions = engine.cash_position  # pl.DataFrame of optimized cash positions
-portfolio = engine.portfolio      # Portfolio object for analytics
+portfolio = engine.portfolio  # Portfolio object for analytics
 ```
 
 ### Factor Model Mode
@@ -149,18 +153,22 @@ dates = pl.date_range(
 )
 rng = np.random.default_rng(42)
 
-prices = pl.DataFrame({
-    "date": dates,
-    "AAPL":  100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
-    "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
-    "MSFT":  200.0 + np.cumsum(rng.normal(0, 1.5, n_days)),
-})
-mu = pl.DataFrame({
-    "date": dates,
-    "AAPL":  np.tanh(rng.normal(0, 0.5, n_days)),
-    "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
-    "MSFT":  np.tanh(rng.normal(0, 0.5, n_days)),
-})
+prices = pl.DataFrame(
+    {
+        "date": dates,
+        "AAPL": 100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
+        "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
+        "MSFT": 200.0 + np.cumsum(rng.normal(0, 1.5, n_days)),
+    }
+)
+mu = pl.DataFrame(
+    {
+        "date": dates,
+        "AAPL": np.tanh(rng.normal(0, 0.5, n_days)),
+        "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
+        "MSFT": np.tanh(rng.normal(0, 0.5, n_days)),
+    }
+)
 
 # Mode 2 — Sliding-window factor model (no shrinkage required)
 cfg = BasanosConfig(
@@ -170,12 +178,12 @@ cfg = BasanosConfig(
     shrink=0.5,  # only used if covariance_mode is ewma_shrink; ignored here
     aum=1e6,
     covariance_config=SlidingWindowConfig(
-        window=60,    # rolling window length W (rows); rule of thumb: W >= 2 * n_assets
+        window=60,  # rolling window length W (rows); rule of thumb: W >= 2 * n_assets
         n_factors=2,  # number of latent factors k; fewer = stronger regularisation
     ),
 )
 
-engine    = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
 positions = engine.cash_position
 ```
 
@@ -194,36 +202,40 @@ dates = pl.date_range(
 )
 rng = np.random.default_rng(42)
 
-prices = pl.DataFrame({
-    "date": dates,
-    "AAPL":  100.0 * np.cumprod(1 + rng.normal(0.001, 0.020, n_days)),
-    "GOOGL": 150.0 * np.cumprod(1 + rng.normal(0.001, 0.025, n_days)),
-})
+prices = pl.DataFrame(
+    {
+        "date": dates,
+        "AAPL": 100.0 * np.cumprod(1 + rng.normal(0.001, 0.020, n_days)),
+        "GOOGL": 150.0 * np.cumprod(1 + rng.normal(0.001, 0.025, n_days)),
+    }
+)
 
-positions = pl.DataFrame({
-    "date": dates,
-    "AAPL":  np.full(n_days, 10_000.0),
-    "GOOGL": np.full(n_days, 15_000.0),
-})
+positions = pl.DataFrame(
+    {
+        "date": dates,
+        "AAPL": np.full(n_days, 10_000.0),
+        "GOOGL": np.full(n_days, 15_000.0),
+    }
+)
 
 portfolio = Portfolio.from_cash_position(prices=prices, cash_position=positions, aum=1e6)
 
 # Performance metrics
-nav      = portfolio.nav_accumulated   # Cumulative additive NAV
-returns  = portfolio.returns           # Daily returns scaled by AUM
-drawdown = portfolio.drawdown          # Distance from high-water mark
+nav = portfolio.nav_accumulated  # Cumulative additive NAV
+returns = portfolio.returns  # Daily returns scaled by AUM
+drawdown = portfolio.drawdown  # Distance from high-water mark
 
 # Statistics
-stats  = portfolio.stats
+stats = portfolio.stats
 sharpe = stats.sharpe()["returns"]
-vol    = stats.volatility()["returns"]
+vol = stats.volatility()["returns"]
 ```
 
 ### Visualizations
 
 ```python
-fig = portfolio.plots.snapshot()                          # NAV + drawdown dashboard
-fig = portfolio.plots.lead_lag_ir_plot(start=-10, end=20) # Sharpe across position lags
+fig = portfolio.plots.snapshot()  # NAV + drawdown dashboard
+fig = portfolio.plots.lead_lag_ir_plot(start=-10, end=20)  # Sharpe across position lags
 fig = portfolio.plots.lagged_performance_plot(lags=[0, 1, 2, 3, 4])
 fig = portfolio.plots.correlation_heatmap()
 # fig.show()
@@ -303,7 +315,13 @@ cfg.report.save("output/config_report")  # → output/config_report.html
 n = 100
 _dates = pl.date_range(pl.date(2023, 1, 1), pl.date(2023, 1, 1) + pl.duration(days=n - 1), eager=True)
 _rng = np.random.default_rng(0)
-_prices = pl.DataFrame({"date": _dates, "AAPL": 100.0 + np.cumsum(_rng.normal(0, 1.0, n)), "GOOGL": 150.0 + np.cumsum(_rng.normal(0, 1.2, n))})
+_prices = pl.DataFrame(
+    {
+        "date": _dates,
+        "AAPL": 100.0 + np.cumsum(_rng.normal(0, 1.0, n)),
+        "GOOGL": 150.0 + np.cumsum(_rng.normal(0, 1.2, n)),
+    }
+)
 _mu = pl.DataFrame({"date": _dates, "AAPL": np.tanh(_rng.normal(0, 0.5, n)), "GOOGL": np.tanh(_rng.normal(0, 0.5, n))})
 cfg_engine = BasanosEngine(prices=_prices, mu=_mu, cfg=cfg)
 cfg_engine.config_report.save("output/config_with_sweep")
