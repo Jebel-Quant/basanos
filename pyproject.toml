@@ -79,6 +79,32 @@ marimo-folder = "book/marimo/notebooks"
 # let mypy's exit status win, so a ty failure could pass, where the CLI raises on each run.
 typechecker = "both"
 
+# Pinned to the last release that agrees with `mypy --strict` about this repo's mixin
+# layout. rhiza v1.7.2 resolved `ty` unpinned, so CI silently tracked whatever was
+# newest; v1.8.0 (via rhiza-task 1.7.0) both pins it and defaults the pin to 0.0.78,
+# which is where the verdict changed -- on source this PR does not touch:
+#
+#   ty 0.0.77  -> All checks passed!
+#   ty 0.0.78  -> Found 13 diagnostics   (0.0.79 likewise)
+#
+# All 13 reduce to one claim: `BasanosEngine` is not assignable to `_EngineProtocol`
+# because "protocol member `_ic_series` is incompatible". It is assignable. The two
+# bound methods are the same type -- `(use_rank: bool, h: int = 1) -> DataFrame` --
+# and the only asymmetry is that the mixin annotates `self: _EngineProtocol`, the
+# idiom every mixin in `_engine_*.py` uses to type `self.mu`, `self.cor` et al. That
+# makes conformance recursive (the protocol member is supplied by a method whose
+# `self` is the protocol), which mypy resolves co-inductively and 0.0.78 does not --
+# it rewrote exactly this area ("optimize recursive protocol checks", "treat captured
+# bound-method receivers covariantly") and shipped at least one acknowledged protocol
+# regression of the same family, astral-sh/ty#4459.
+#
+# So: a tool release changed, not this code, and `mypy --strict` -- the stricter half
+# of `typechecker = "both"` -- still passes clean. Pinning keeps `ty` enforced at full
+# strength on the rule set that was green rather than muting a rule or dropping a
+# checker. Revisit when a release resolves the recursive case; `ty_version = ""` goes
+# back to newest-available.
+ty_version = "==0.0.77"
+
 # The retired quality.mk pinned `RHIZA_CHECKS_VERSION ?= 0.2.1` and installed
 # `pytest-rhiza==$(RHIZA_CHECKS_VERSION)` from PyPI. rhiza-task 0.3.1 defaults to a *git*
 # ref one patch behind (`... @ git+https://github.com/Jebel-Quant/pytest-rhiza@v0.2.0`), so
