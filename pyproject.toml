@@ -127,8 +127,15 @@ ty_version = "==0.0.77"
 # ref one patch behind (`... @ git+https://github.com/Jebel-Quant/pytest-rhiza@v0.2.0`), so
 # a bare migration would have both downgraded the conformance checks -- the drift the pin
 # exists to prevent -- and swapped a released wheel for a clone. Pinned exactly rather than
-# floored: a gate that moves under you is not a gate. Bumping it is a separate decision.
-pytest-rhiza = "pytest-rhiza==0.2.1"
+# floored: a gate that moves under you is not a gate.
+#
+# 0.6.0 is required by this repo's dynamic [project].version, not merely available: it is
+# the first release whose test_pyproject accepts a version derived from the VCS. Under
+# 0.2.1 three of its assertions read `[project].version` as the empty string and fail --
+# the required-field check, the semver shape, and the tag-agreement one -- because they
+# predate `dynamic = ["version"]` being a thing a rhiza project could do. 0.6.0 skips each
+# with a reason instead. jquantstats, which made this move first, pins the same version.
+pytest-rhiza = "pytest-rhiza==0.6.0"
 
 # Not set, on purpose:
 #   source-folder / tests-folder -- `src` and `tests` are already this repo's layout, and
