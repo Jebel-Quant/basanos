@@ -1,10 +1,27 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+# Supplies the `version` that [project] declares dynamic, from `git describe`. Two
+# consequences worth knowing:
+#   * The build needs the tag to be visible. hatch-vcs does not fail without it -- it
+#     falls back to a dev version like 0.7.4.dev3+g<sha> -- so rhiza_release.yml checks
+#     the built distribution's filename against the tag, and its checkout uses
+#     fetch-depth: 0. An sdist carries the resolved number in PKG-INFO, so building from
+#     one needs no git.
+#   * Between tags the local version is the *next* patch as a dev release
+#     (guess-next-dev, the default), which is why nothing pins a fallback-version here:
+#     a wrong-looking version must surface as a release failure, not as a plausible
+#     constant.
+[tool.hatch.version]
+source = "vcs"
 
 [project]
 name = "basanos"
-version = "0.7.3"
+# Derived from the git tag by hatch-vcs (see [tool.hatch.version]) rather than written
+# here, so the tag is the single source of truth and a release is `git tag` alone -- no
+# bump commit, and no way for a number in this file to disagree with what was tagged.
+dynamic = ["version"]
 description = "Correlation-aware portfolio optimization and analytics for Python."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -216,8 +233,12 @@ ignore_missing_imports = true
 # is how a release can be offered a version that was already published.
 [tool.bumpversion]
 # No current_version and no [[tool.bumpversion.files]] entry for the project
-# version: bump-my-version reads and rewrites PEP 621 [project].version
-# natively, and duplicating the string is what lets the two drift apart.
+# version: [project].version is dynamic, derived from the git tag by hatch-vcs, so
+# there is no number in any file for a bump to rewrite. bump-my-version resolves the
+# current version from the newest reachable tag instead — the same answer hatch-vcs
+# gives — and still proposes the right next number, it just no longer writes it.
+# Adding an entry would fail rather than no-op: a `search` pattern that occurs zero
+# times is an error, and check-bumpversion-config reports it at commit time.
 allow_dirty = false
 # /rhiza:release commits and tags itself, so the regenerated CHANGELOG.md lands
 # in the bump commit. A bare `bump-my-version bump` would add a second commit
