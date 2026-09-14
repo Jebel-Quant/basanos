@@ -14,15 +14,46 @@ permissions:
 jobs:
   link-check:
     runs-on: ubuntu-latest
+
+    # Both lychee passes below check the same links the same way, so the argument
+    # list lives here rather than being written out twice and drifting.
+    env:
+      LYCHEE_ARGS: >-
+        --verbose
+        --no-progress
+        --accept 200,206,429
+        README.md
+
     steps:
       - uses: actions/checkout@v6
 
+      # lychee's own --max-retries cannot cover a transient 5xx here, so the retry
+      # is built out of two passes. `RetryExt for ErrorKind`
+      # (lychee-lib/src/retry.rs) retries a *rejected status code* only when it is
+      # 429; the is_server_error() branch above it applies to reqwest's own errors,
+      # not to a response that arrived intact and failed the --accept list. A 503
+      # from codefactor.io is therefore ErrorKind::RejectedStatusCode(503) and fails
+      # on the first response, no matter what --max-retries says.
+      #
+      # A 5xx is also never the failure this job exists to find: a README link to a
+      # page that is genuinely gone answers 404, which still fails on the first pass
+      # and again on the second. So the first pass reports without deciding, and
+      # only a repeat of the failure -- after a pause long enough to outlive a
+      # badge-host blip -- goes red.
       - name: Check links in README.md
+        id: link-check
         uses: lycheeverse/lychee-action@v2
         with:
-          args: >-
-            --verbose
-            --no-progress
-            --accept 200,206,429
-            README.md
+          args: ${{ env.LYCHEE_ARGS }}
+          fail: false
+
+      - name: Wait before re-checking
+        if: steps.link-check.outputs.exit_code != '0'
+        run: sleep 30
+
+      - name: Re-check links in README.md
+        if: steps.link-check.outputs.exit_code != '0'
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: ${{ env.LYCHEE_ARGS }}
           fail: true
