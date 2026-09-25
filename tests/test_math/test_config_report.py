@@ -247,3 +247,12 @@ def test_to_html_lambda_sweep_unavailable_on_error(engine: BasanosEngine) -> Non
     assert 'class="chart-unavailable"' in html
     assert "Lambda sweep unavailable" in html
     assert "sweep failed" in html
+
+
+def test_to_html_lambda_sweep_error_message_is_escaped(engine: BasanosEngine) -> None:
+    """The fallback notice escapes the exception text; it is rendered with ``| safe``."""
+    msg = "<script>alert('x')</script> & more"
+    with patch("basanos.math._config_report._lambda_sweep_fig", side_effect=RuntimeError(msg)):
+        html = engine.config_report.to_html()
+    assert "<script>alert(" not in html
+    assert "&lt;script&gt;alert(&#x27;x&#x27;)&lt;/script&gt; &amp; more" in html
