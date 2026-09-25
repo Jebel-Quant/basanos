@@ -16,6 +16,7 @@ Examples:
 from __future__ import annotations
 
 import dataclasses
+import html
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -302,7 +303,7 @@ class ConfigReport:
                 sweep_div = _figure_div(fig, include_plotlyjs="cdn")
                 sweep_section = f'<div class="chart-card">{sweep_div}</div>'
             except Exception as exc:  # noqa: BLE001 - optional chart: any rendering failure degrades to a placeholder
-                sweep_section = f'<p class="chart-unavailable">Lambda sweep unavailable: {exc}</p>'
+                sweep_section = f'<p class="chart-unavailable">Lambda sweep unavailable: {html.escape(str(exc))}</p>'
         else:
             sweep_section = (
                 '<p class="chart-unavailable" style="padding:1.5rem;">'
