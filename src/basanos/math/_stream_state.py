@@ -15,7 +15,7 @@ import dataclasses
 
 import numpy as np
 
-from ._engine_solve import SolveStatus
+from ._engine_solve_base import SolveStatus
 
 #: Increment this when the ``save`` archive layout changes in
 #: a backward-incompatible way.  ``load`` asserts the stored

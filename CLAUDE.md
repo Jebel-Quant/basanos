@@ -13,7 +13,8 @@ Everything lives under `src/basanos/`, and the package is deliberately
 front-loaded with private modules — the public surface is small:
 
 - `math/optimizer.py` — the entry point. The `_engine_*` modules behind it split
-  one large solver into named concerns: `_engine_core`, `_engine_solve` and
+  one large solver into named concerns: `_engine_base` (the validated batch core
+  that `BasanosEngine` and the stream warmup share), `_engine_core`, `_engine_solve` and
   `_engine_solve_base` (the solve itself), `_engine_validation`,
   `_engine_diagnostics`, `_engine_ic`, `_engine_performance`, and
   `_engine_protocol` (the interface the others agree on).

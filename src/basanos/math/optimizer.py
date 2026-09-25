@@ -65,6 +65,10 @@ readable and independently testable:
 
 * `_config` — `BasanosConfig` and all
   covariance-mode configuration classes.
+* `_engine_base` — `_BatchCore`, the validated ``prices`` / ``mu`` /
+  ``cfg`` dataclass composing `_CoreDataMixin`, `_SolveMixin` and
+  `_SignalEvaluatorMixin`.
+  `BasanosEngine` subclasses it; the streaming warmup builds it directly.
 * `_engine_validation` — free functions that validate the
   ``prices`` / ``mu`` / ``cfg`` inputs (re-exported here).
 * `_engine_core` — the `_CoreDataMixin` providing the
@@ -99,6 +103,7 @@ from ._config import (
     SlidingWindowConfig,
 )
 from ._config_report import ConfigReport
+from ._engine_base import _BatchCore as _BatchCore
 from ._engine_core import _CoreDataMixin as _CoreDataMixin
 from ._engine_diagnostics import _DiagnosticsMixin as _DiagnosticsMixin
 from ._engine_ic import _SignalEvaluatorMixin as _SignalEvaluatorMixin
@@ -128,7 +133,7 @@ __all__ = [
 
 
 @dataclasses.dataclass(frozen=True)
-class BasanosEngine(_CoreDataMixin, _DiagnosticsMixin, _PerformanceMixin, _SignalEvaluatorMixin, _SolveMixin):
+class BasanosEngine(_BatchCore, _DiagnosticsMixin, _PerformanceMixin):
     """Engine to compute correlation matrices and optimize risk positions.
 
     Encapsulates price data and configuration to build EWM-based
@@ -214,13 +219,11 @@ class BasanosEngine(_CoreDataMixin, _DiagnosticsMixin, _PerformanceMixin, _Signa
         ['date', 'leverage']
     """
 
-    prices: pl.DataFrame
-    mu: pl.DataFrame
-    cfg: BasanosConfig
-
-    def __post_init__(self) -> None:
-        """Validate inputs by delegating to `_validate_inputs`."""
-        _validate_inputs(self.prices, self.mu, self.cfg)
+    # ------------------------------------------------------------------
+    # Fields and validation — inherited from _BatchCore
+    # ------------------------------------------------------------------
+    # (prices, mu, cfg, __post_init__ -> _validate_inputs)
+    # Defined in _engine_base.py, which BasanosStream also builds on.
 
     # ------------------------------------------------------------------
     # Core data-access properties — inherited from _CoreDataMixin

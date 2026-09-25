@@ -45,13 +45,13 @@ import polars as pl
 
 from ..exceptions import MissingDateColumnError
 from ._config import BasanosConfig, EwmaShrinkConfig, SlidingWindowConfig
+from ._engine_base import _BatchCore
 from ._engine_solve import SolveStatus, _SolveMixin
 from ._stream_io import load_stream_archive, save_stream_archive
 from ._stream_math import _ewm_std_from_state, _ewm_vol_accumulators_from_batch, _resolve_step_vector
 from ._stream_solve import solve_ewma_position, solve_sliding_window_position
 from ._stream_state import StepResult as StepResult
 from ._stream_state import _StreamState
-from .optimizer import BasanosEngine
 
 # Number of leading rows for which ``vol_adj`` cannot produce a value: row 0
 # has no log return, and row 1 has a single observation, for which the
@@ -138,8 +138,8 @@ class BasanosStream:
     ) -> BasanosStream:
         """Build a `BasanosStream` from a historical warmup batch.
 
-        Runs `BasanosEngine` on the full warmup batch
-        exactly once and extracts the minimal IIR-filter state required for
+        Runs the batch solve (`_BatchCore`, the base of `BasanosEngine`)
+        on the full warmup batch exactly once and extracts the minimal IIR-filter state required for
         subsequent `step` calls.  After this call, each `step`
         advances the optimiser in O(N^2) time without touching the warmup
         data again.
@@ -182,8 +182,8 @@ class BasanosStream:
         if "date" not in prices.columns:
             raise MissingDateColumnError("prices")
 
-        # 2. Build the engine on the full warmup batch ----------------------
-        engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+        # 2. Build the batch core on the full warmup batch ------------------
+        engine = _BatchCore(prices=prices, mu=mu, cfg=cfg)
         assets = engine.assets
         n_assets = len(assets)
         n_rows = prices.height
