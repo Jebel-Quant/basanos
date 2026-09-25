@@ -21,6 +21,9 @@ front-loaded with private modules — the public surface is small:
   `_stream_math`, `_stream_solve`, `_stream_io`.
 - `math/_config.py`, `_config_report.py` — the pydantic config and its HTML
   report, rendered from `templates/config_report.html` on `templates/_base.html`.
+- `math/_covariance_config.py` — the covariance-mode sub-configs
+  (`CovarianceMode`, `EwmaShrinkConfig`, `SlidingWindowConfig`), re-exported
+  from `_config.py`.
 - `math/_factor_model.py`, `_signal.py` — the factor model and signal handling.
 - `analytics/` — the reporting shim; `exceptions.py`, `_logging.py` and
   `_deprecation.py` are the cross-cutting utilities.
