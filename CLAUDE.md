@@ -88,7 +88,7 @@ every task the pinned CLI knows, plus anything `local.mk` adds.
 - `make deps` — deptry unused/missing dependency analysis
 - `make security` — the bandit scan
 - `make license` — fail on GPL/LGPL/AGPL
-- `make rhiza-test` — the rhiza repository checks, from `pytest-rhiza==0.2.1`
+- `make rhiza-test` — the rhiza repository checks, from `pytest-rhiza==0.6.0`
 - `make benchmark` — the performance benchmarks
 - `make marimo` — the notebook editor, rooted at `book/marimo/notebooks`
 - `make all` — the gate set CI runs
