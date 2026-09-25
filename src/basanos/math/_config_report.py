@@ -294,10 +294,11 @@ class ConfigReport:
         params_html = _params_table_html(cfg)
 
         # ── Lambda sweep ───────────────────────────────────────────────────
-        has_engine = self.engine is not None
-        if has_engine:
+        engine = self.engine
+        has_engine = engine is not None
+        if engine is not None:
             try:
-                fig = _lambda_sweep_fig(self.engine)  # type: ignore[arg-type]
+                fig = _lambda_sweep_fig(engine)
                 sweep_div = _figure_div(fig, include_plotlyjs="cdn")
                 sweep_section = f'<div class="chart-card">{sweep_div}</div>'
             except Exception as exc:  # noqa: BLE001 - optional chart: any rendering failure degrades to a placeholder
