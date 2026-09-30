@@ -92,171 +92,172 @@ conda install -c conda-forge basanos
 
 ### Portfolio Optimization
 
-```python
-import numpy as np
-import polars as pl
-from basanos.math import BasanosConfig, BasanosEngine
+```pycon
+>>> import numpy as np
+>>> import polars as pl
+>>> from basanos.math import BasanosConfig, BasanosEngine
 
-n_days = 100
-dates = pl.date_range(
-    pl.date(2023, 1, 1),
-    pl.date(2023, 1, 1) + pl.duration(days=n_days - 1),
-    eager=True,
-)
-rng = np.random.default_rng(42)
+>>> n_days = 100
+>>> dates = pl.date_range(
+...     pl.date(2023, 1, 1),
+...     pl.date(2023, 1, 1) + pl.duration(days=n_days - 1),
+...     eager=True,
+... )
+>>> rng = np.random.default_rng(42)
 
-prices = pl.DataFrame(
-    {
-        "date": dates,
-        "AAPL": 100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
-        "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
-    }
-)
+>>> prices = pl.DataFrame(
+...     {
+...         "date": dates,
+...         "AAPL": 100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
+...         "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
+...     }
+... )
 
-# Expected-return signals in [-1, 1] (e.g. from a forecasting model)
-mu = pl.DataFrame(
-    {
-        "date": dates,
-        "AAPL": np.tanh(rng.normal(0, 0.5, n_days)),
-        "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
-    }
-)
+>>> # Expected-return signals in [-1, 1] (e.g. from a forecasting model)
+>>> mu = pl.DataFrame(
+...     {
+...         "date": dates,
+...         "AAPL": np.tanh(rng.normal(0, 0.5, n_days)),
+...         "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
+...     }
+... )
 
-# Mode 1 — EWMA with shrinkage (default)
-cfg = BasanosConfig(
-    vola=16,  # EWMA lookback for volatility (days)
-    corr=32,  # EWMA lookback for correlation (days, must be >= vola)
-    clip=3.5,  # Clipping threshold for vol-adjusted returns
-    shrink=0.5,  # Shrinkage intensity towards identity [0, 1]
-    aum=1e6,  # Assets under management
-)
+>>> # Mode 1 — EWMA with shrinkage (default)
+>>> cfg = BasanosConfig(
+...     vola=16,  # EWMA lookback for volatility (days)
+...     corr=32,  # EWMA lookback for correlation (days, must be >= vola)
+...     clip=3.5,  # Clipping threshold for vol-adjusted returns
+...     shrink=0.5,  # Shrinkage intensity towards identity [0, 1]
+...     aum=1e6,  # Assets under management
+... )
 
-engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-positions = engine.cash_position  # pl.DataFrame of optimized cash positions
-portfolio = engine.portfolio  # Portfolio object for analytics
+>>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+>>> positions = engine.cash_position  # pl.DataFrame of optimized cash positions
+>>> portfolio = engine.portfolio  # Portfolio object for analytics
 ```
 
 ### Factor Model Mode
 
 Use `SlidingWindowConfig` to switch to the sliding-window factor model. See the [Factor Models guide](https://jebel-quant.github.io/basanos/factor-models/) for a full explanation of the approach and how to choose `window` and `n_factors`.
 
-```python
-import numpy as np
-import polars as pl
-from basanos.math import BasanosConfig, BasanosEngine, SlidingWindowConfig
+```pycon
+>>> import numpy as np
+>>> import polars as pl
+>>> from basanos.math import BasanosConfig, BasanosEngine, SlidingWindowConfig
 
-n_days = 200
-dates = pl.date_range(
-    pl.date(2023, 1, 1),
-    pl.date(2023, 1, 1) + pl.duration(days=n_days - 1),
-    eager=True,
-)
-rng = np.random.default_rng(42)
+>>> n_days = 200
+>>> dates = pl.date_range(
+...     pl.date(2023, 1, 1),
+...     pl.date(2023, 1, 1) + pl.duration(days=n_days - 1),
+...     eager=True,
+... )
+>>> rng = np.random.default_rng(42)
 
-prices = pl.DataFrame(
-    {
-        "date": dates,
-        "AAPL": 100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
-        "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
-        "MSFT": 200.0 + np.cumsum(rng.normal(0, 1.5, n_days)),
-    }
-)
-mu = pl.DataFrame(
-    {
-        "date": dates,
-        "AAPL": np.tanh(rng.normal(0, 0.5, n_days)),
-        "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
-        "MSFT": np.tanh(rng.normal(0, 0.5, n_days)),
-    }
-)
+>>> prices = pl.DataFrame(
+...     {
+...         "date": dates,
+...         "AAPL": 100.0 + np.cumsum(rng.normal(0, 1.0, n_days)),
+...         "GOOGL": 150.0 + np.cumsum(rng.normal(0, 1.2, n_days)),
+...         "MSFT": 200.0 + np.cumsum(rng.normal(0, 1.5, n_days)),
+...     }
+... )
+>>> mu = pl.DataFrame(
+...     {
+...         "date": dates,
+...         "AAPL": np.tanh(rng.normal(0, 0.5, n_days)),
+...         "GOOGL": np.tanh(rng.normal(0, 0.5, n_days)),
+...         "MSFT": np.tanh(rng.normal(0, 0.5, n_days)),
+...     }
+... )
 
-# Mode 2 — Sliding-window factor model (no shrinkage required)
-cfg = BasanosConfig(
-    vola=16,
-    corr=32,
-    clip=3.5,
-    shrink=0.5,  # only used if covariance_mode is ewma_shrink; ignored here
-    aum=1e6,
-    covariance_config=SlidingWindowConfig(
-        window=60,  # rolling window length W (rows); rule of thumb: W >= 2 * n_assets
-        n_factors=2,  # number of latent factors k; fewer = stronger regularisation
-    ),
-)
+>>> # Mode 2 — Sliding-window factor model (no shrinkage required)
+>>> cfg = BasanosConfig(
+...     vola=16,
+...     corr=32,
+...     clip=3.5,
+...     shrink=0.5,  # only used if covariance_mode is ewma_shrink; ignored here
+...     aum=1e6,
+...     covariance_config=SlidingWindowConfig(
+...         window=60,  # rolling window length W (rows); rule of thumb: W >= 2 * n_assets
+...         n_factors=2,  # number of latent factors k; fewer = stronger regularisation
+...     ),
+... )
 
-engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
-positions = engine.cash_position
+>>> engine = BasanosEngine(prices=prices, mu=mu, cfg=cfg)
+>>> positions = engine.cash_position
 ```
 
 ### Portfolio Analytics
 
-```python
-import numpy as np
-import polars as pl
-from jquantstats import Portfolio
+```pycon
+>>> import numpy as np
+>>> import polars as pl
+>>> from jquantstats import Portfolio
 
-n_days = 60
-dates = pl.date_range(
-    pl.date(2023, 1, 1),
-    pl.date(2023, 1, 1) + pl.duration(days=n_days - 1),
-    eager=True,
-)
-rng = np.random.default_rng(42)
+>>> n_days = 60
+>>> dates = pl.date_range(
+...     pl.date(2023, 1, 1),
+...     pl.date(2023, 1, 1) + pl.duration(days=n_days - 1),
+...     eager=True,
+... )
+>>> rng = np.random.default_rng(42)
 
-prices = pl.DataFrame(
-    {
-        "date": dates,
-        "AAPL": 100.0 * np.cumprod(1 + rng.normal(0.001, 0.020, n_days)),
-        "GOOGL": 150.0 * np.cumprod(1 + rng.normal(0.001, 0.025, n_days)),
-    }
-)
+>>> prices = pl.DataFrame(
+...     {
+...         "date": dates,
+...         "AAPL": 100.0 * np.cumprod(1 + rng.normal(0.001, 0.020, n_days)),
+...         "GOOGL": 150.0 * np.cumprod(1 + rng.normal(0.001, 0.025, n_days)),
+...     }
+... )
 
-positions = pl.DataFrame(
-    {
-        "date": dates,
-        "AAPL": np.full(n_days, 10_000.0),
-        "GOOGL": np.full(n_days, 15_000.0),
-    }
-)
+>>> positions = pl.DataFrame(
+...     {
+...         "date": dates,
+...         "AAPL": np.full(n_days, 10_000.0),
+...         "GOOGL": np.full(n_days, 15_000.0),
+...     }
+... )
 
-portfolio = Portfolio.from_cash_position(prices=prices, cash_position=positions, aum=1e6)
+>>> portfolio = Portfolio.from_cash_position(prices=prices, cash_position=positions, aum=1e6)
 
-# Performance metrics
-nav = portfolio.nav_accumulated  # Cumulative additive NAV
-returns = portfolio.returns  # Daily returns scaled by AUM
-drawdown = portfolio.drawdown  # Distance from high-water mark
+>>> # Performance metrics
+>>> nav = portfolio.nav_accumulated  # Cumulative additive NAV
+>>> returns = portfolio.returns  # Daily returns scaled by AUM
+>>> drawdown = portfolio.drawdown  # Distance from high-water mark
 
-# Statistics
-stats = portfolio.stats
-sharpe = stats.sharpe()["returns"]
-vol = stats.volatility()["returns"]
+>>> # Statistics
+>>> stats = portfolio.stats
+>>> sharpe = stats.sharpe()["returns"]
+>>> vol = stats.volatility()["returns"]
 ```
 
 ### Visualizations
 
-```python
-fig = portfolio.plots.snapshot()  # NAV + drawdown dashboard
-fig = portfolio.plots.lead_lag_ir_plot(start=-10, end=20)  # Sharpe across position lags
-fig = portfolio.plots.lagged_performance_plot(lags=[0, 1, 2, 3, 4])
-fig = portfolio.plots.correlation_heatmap()
-# fig.show()
+```pycon
+>>> fig = portfolio.plots.snapshot()  # NAV + drawdown dashboard
+>>> fig = portfolio.plots.lead_lag_ir_plot(start=-10, end=20)  # Sharpe across position lags
+>>> fig = portfolio.plots.lagged_performance_plot(lags=[0, 1, 2, 3, 4])
+>>> fig = portfolio.plots.correlation_heatmap()
+>>> # fig.show()
 ```
 
 ### Generating Reports
 
 `portfolio.report` returns a `Report` facade that produces a self-contained, dark-themed HTML document with a performance-statistics table and multiple interactive Plotly charts.
 
-```python
-report = portfolio.report
+```pycon
+>>> report = portfolio.report
 
-# Render to a string (e.g. to serve via an API or display in a notebook)
-html_str = report.to_html()
+>>> # Render to a string (e.g. to serve via an API or display in a notebook)
+>>> html_str = report.to_html()
 
-# Or save directly to disk — a .html extension is added automatically
-saved_path = report.to_html(path="output/report")
-# → saves to output/report.html
+>>> # Or save directly to disk — a .html extension is added automatically
+>>> saved_path = report.to_html(path="output/report")
+>>> # → saves to output/report.html
 
-# Customize the page title
-report.to_html(path="output/my_report.html", title="My Strategy Report")
+>>> # Customize the page title
+>>> report.to_html(path="output/my_report.html", title="My Strategy Report").as_posix()
+'output/my_report.html'
 ```
 
 The generated report contains the following sections:
@@ -277,17 +278,17 @@ The generated report contains the following sections:
 
 `Portfolio` exposes two methods for understanding how trading costs erode strategy edge:
 
-```python
-# Net-of-cost daily returns (5 bps one-way cost)
-adj_returns = portfolio.cost_adjusted_returns(cost_bps=5)
+```pycon
+>>> # Net-of-cost daily returns (5 bps one-way cost)
+>>> adj_returns = portfolio.cost_adjusted_returns(cost_bps=5)
 
-# Sharpe ratio sweep from 0 to 20 bps
-impact = portfolio.trading_cost_impact(max_bps=20)
-# Returns a pl.DataFrame with columns: cost_bps (Int64), sharpe (Float64)
+>>> # Sharpe ratio sweep from 0 to 20 bps
+>>> impact = portfolio.trading_cost_impact(max_bps=20)
+>>> # Returns a pl.DataFrame with columns: cost_bps (Int64), sharpe (Float64)
 
-# Interactive Plotly chart — Sharpe vs cost
-fig = portfolio.plots.trading_cost_impact_plot(max_bps=20)
-# fig.show()
+>>> # Interactive Plotly chart — Sharpe vs cost
+>>> fig = portfolio.plots.trading_cost_impact_plot(max_bps=20)
+>>> # fig.show()
 ```
 
 ### Config Reports
@@ -300,31 +301,33 @@ fig = portfolio.plots.trading_cost_impact_plot(max_bps=20)
 
 When accessed from `BasanosEngine`, the report additionally includes an **interactive lambda-sweep chart** — the annualised Sharpe ratio as the shrinkage parameter λ is swept across [0, 1].
 
-```python
-import numpy as np
-import polars as pl
-from basanos.math import BasanosConfig, BasanosEngine
+```pycon
+>>> import numpy as np
+>>> import polars as pl
+>>> from basanos.math import BasanosConfig, BasanosEngine
 
-cfg = BasanosConfig(vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6)
+>>> cfg = BasanosConfig(vola=16, corr=32, clip=3.5, shrink=0.5, aum=1e6)
 
-# Config-only report (no lambda sweep)
-html_str = cfg.report.to_html()
-cfg.report.save("output/config_report")  # → output/config_report.html
+>>> # Config-only report (no lambda sweep)
+>>> html_str = cfg.report.to_html()
+>>> cfg.report.save("output/config_report").as_posix()
+'output/config_report.html'
 
-# Engine report (includes lambda-sweep chart)
-n = 100
-_dates = pl.date_range(pl.date(2023, 1, 1), pl.date(2023, 1, 1) + pl.duration(days=n - 1), eager=True)
-_rng = np.random.default_rng(0)
-_prices = pl.DataFrame(
-    {
-        "date": _dates,
-        "AAPL": 100.0 + np.cumsum(_rng.normal(0, 1.0, n)),
-        "GOOGL": 150.0 + np.cumsum(_rng.normal(0, 1.2, n)),
-    }
-)
-_mu = pl.DataFrame({"date": _dates, "AAPL": np.tanh(_rng.normal(0, 0.5, n)), "GOOGL": np.tanh(_rng.normal(0, 0.5, n))})
-cfg_engine = BasanosEngine(prices=_prices, mu=_mu, cfg=cfg)
-cfg_engine.config_report.save("output/config_with_sweep")
+>>> # Engine report (includes lambda-sweep chart)
+>>> n = 100
+>>> _dates = pl.date_range(pl.date(2023, 1, 1), pl.date(2023, 1, 1) + pl.duration(days=n - 1), eager=True)
+>>> _rng = np.random.default_rng(0)
+>>> _prices = pl.DataFrame(
+...     {
+...         "date": _dates,
+...         "AAPL": 100.0 + np.cumsum(_rng.normal(0, 1.0, n)),
+...         "GOOGL": 150.0 + np.cumsum(_rng.normal(0, 1.2, n)),
+...     }
+... )
+>>> _mu = pl.DataFrame({"date": _dates, "AAPL": np.tanh(_rng.normal(0, 0.5, n)), "GOOGL": np.tanh(_rng.normal(0, 0.5, n))})
+>>> cfg_engine = BasanosEngine(prices=_prices, mu=_mu, cfg=cfg)
+>>> cfg_engine.config_report.save("output/config_with_sweep").as_posix()
+'output/config_with_sweep.html'
 ```
 
 ## Notebooks
