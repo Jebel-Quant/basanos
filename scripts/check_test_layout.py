@@ -58,6 +58,7 @@ ALLOWED_ORPHANS: frozenset[str] = frozenset(
         "numerical_regression",  # pinned numerical outputs
         "numerical_stability",  # degenerate-input robustness
         "paper_example",  # reproduces the reference paper example
+        "readme",  # runs the README's pycon examples as doctests
         "rhiza_packaging",  # template-shipped: declared vs. installed version
         "shim",  # analytics compatibility shim
         "test_layout",  # this checker, run from tests/test_test_layout.py
