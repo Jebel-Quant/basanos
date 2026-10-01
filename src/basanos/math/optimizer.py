@@ -70,7 +70,7 @@ readable and independently testable:
   `_SignalEvaluatorMixin`.
   `BasanosEngine` subclasses it; the streaming warmup builds it directly.
 * `_engine_validation` — free functions that validate the
-  ``prices`` / ``mu`` / ``cfg`` inputs (re-exported here).
+  ``prices`` / ``mu`` / ``cfg`` inputs.
 * `_engine_core` — the `_CoreDataMixin` providing the
   core data-access properties (``assets``, ``ret_adj``, ``vola``, ``cor``,
   ``cor_tensor``).
@@ -103,20 +103,9 @@ from ._config import (
     SlidingWindowConfig,
 )
 from ._config_report import ConfigReport
-from ._engine_base import _BatchCore as _BatchCore
-from ._engine_core import _CoreDataMixin as _CoreDataMixin
-from ._engine_diagnostics import _DiagnosticsMixin as _DiagnosticsMixin
-from ._engine_ic import _SignalEvaluatorMixin as _SignalEvaluatorMixin
-from ._engine_performance import _PerformanceMixin as _PerformanceMixin
-from ._engine_solve import _SolveMixin as _SolveMixin
-from ._engine_validation import _numeric_assets as _numeric_assets
-from ._engine_validation import _validate_inputs as _validate_inputs
-from ._engine_validation import _validate_non_monotonic_prices as _validate_non_monotonic_prices
-from ._engine_validation import _validate_null_fraction as _validate_null_fraction
-from ._engine_validation import _validate_positive_prices as _validate_positive_prices
-from ._engine_validation import _validate_required_date_columns as _validate_required_date_columns
-from ._engine_validation import _validate_shape_and_column_sets as _validate_shape_and_column_sets
-from ._engine_validation import _warn_short_sliding_window_data as _warn_short_sliding_window_data
+from ._engine_base import _BatchCore
+from ._engine_diagnostics import _DiagnosticsMixin
+from ._engine_performance import _PerformanceMixin
 
 # ---------------------------------------------------------------------------
 # Re-export config symbols so ``from basanos.math.optimizer import …`` keeps

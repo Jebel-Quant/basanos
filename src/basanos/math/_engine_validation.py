@@ -1,9 +1,7 @@
 """Input validation for `BasanosEngine`.
 
 Extracted from ``optimizer.py`` so the engine facade stays focused on the
-core position-solving logic.  Every name defined here is re-exported from
-``optimizer`` so existing callers (and tests that import ``_validate_inputs`` /
-``_validate_null_fraction`` from ``basanos.math.optimizer``) are unaffected.
+core position-solving logic.
 """
 
 from __future__ import annotations
