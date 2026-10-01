@@ -38,7 +38,8 @@ from basanos.exceptions import (
 )
 from basanos.math import BasanosConfig, BasanosEngine
 from basanos.math._engine_solve import SolveStatus, _SolveMixin
-from basanos.math.optimizer import SlidingWindowConfig, _validate_inputs, _validate_null_fraction
+from basanos.math._engine_validation import _validate_inputs, _validate_null_fraction
+from basanos.math.optimizer import SlidingWindowConfig
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
 
