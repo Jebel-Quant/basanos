@@ -8,7 +8,7 @@ the per-timestamp solve logic independently readable and testable.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 import logging
 from collections.abc import Generator
 from typing import TYPE_CHECKING, cast
@@ -45,7 +45,7 @@ class _SolveMixin(_SolvePrimitivesMixin):
     @staticmethod
     def _compute_position(
         i: int,
-        t: datetime.date,
+        t: dt.date,
         mask: np.ndarray,
         expected_mu: np.ndarray,
         bundle: MatrixBundle,
@@ -155,7 +155,7 @@ class _SolveMixin(_SolvePrimitivesMixin):
     def _iter_matrices_ewma(
         self: _EngineProtocol,
         prices_num: np.ndarray,
-        dates: list[datetime.date],
+        dates: list[dt.date],
     ) -> Generator[MatrixYield, None, None]:
         """Yield per-timestamp `MatrixYield` for the `EwmaShrinkConfig` path.
 
@@ -176,7 +176,7 @@ class _SolveMixin(_SolvePrimitivesMixin):
     def _iter_matrices_sliding(
         self: _EngineProtocol,
         prices_num: np.ndarray,
-        dates: list[datetime.date],
+        dates: list[dt.date],
     ) -> Generator[MatrixYield, None, None]:
         """Yield per-timestamp `MatrixYield` for the `SlidingWindowConfig` path.
 
@@ -206,7 +206,7 @@ class _SolveMixin(_SolvePrimitivesMixin):
 
     @staticmethod
     def _batched_solve_group(
-        group: list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]],
+        group: list[tuple[int, dt.date, np.ndarray, np.ndarray, np.ndarray]],
         denom_tol: float,
     ) -> dict[int, SolveYield]:
         """Solve a batch of linear systems sharing the same active-asset mask.
@@ -254,7 +254,7 @@ class _SolveMixin(_SolvePrimitivesMixin):
 
     @staticmethod
     def _sequential_solve_group(
-        group: list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]],
+        group: list[tuple[int, dt.date, np.ndarray, np.ndarray, np.ndarray]],
         denom_tol: float,
     ) -> dict[int, SolveYield]:
         """Row-by-row fallback used when a batched solve hits a singular matrix.
@@ -317,7 +317,7 @@ class _SolveMixin(_SolvePrimitivesMixin):
         matrix_yields: list[MatrixYield],
     ) -> tuple[
         dict[int, SolveYield],
-        dict[bytes, list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]]],
+        dict[bytes, list[tuple[int, dt.date, np.ndarray, np.ndarray, np.ndarray]]],
     ]:
         """Split rows into resolved early-exits and mask-grouped solve candidates.
 
@@ -328,7 +328,7 @@ class _SolveMixin(_SolvePrimitivesMixin):
         """
         early_results: dict[int, SolveYield] = {}
         # mask.tobytes() → list of (i, t, mask, expected_mu, matrix)
-        solve_groups: dict[bytes, list[tuple[int, datetime.date, np.ndarray, np.ndarray, np.ndarray]]] = {}
+        solve_groups: dict[bytes, list[tuple[int, dt.date, np.ndarray, np.ndarray, np.ndarray]]] = {}
 
         for i, t, mask, bundle in matrix_yields:
             if bundle is None:

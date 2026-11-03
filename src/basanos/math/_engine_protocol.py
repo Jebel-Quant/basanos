@@ -77,7 +77,7 @@ Why this pattern?
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from collections.abc import Generator
 from typing import TYPE_CHECKING, Protocol
 
@@ -124,7 +124,7 @@ class _EngineProtocol(Protocol):
         ...
 
     @property
-    def cor(self) -> dict[datetime.date, np.ndarray]:
+    def cor(self) -> dict[dt.date, np.ndarray]:
         """Per-date correlation matrices."""
         ...
 
