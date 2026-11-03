@@ -14,7 +14,7 @@ the ``solve`` / ``inv_a_norm`` patch targets that live there are unchanged.
 from __future__ import annotations
 
 import dataclasses
-import datetime
+import datetime as dt
 import logging
 from enum import StrEnum
 from typing import TypeAlias, cast
@@ -70,11 +70,11 @@ class MatrixBundle:
 
 #: Yield type for `_iter_matrices`:
 #: ``(i, t, mask, bundle)`` where ``bundle`` is ``None`` during warmup/no-data.
-MatrixYield: TypeAlias = tuple[int, datetime.date, np.ndarray, MatrixBundle | None]
+MatrixYield: TypeAlias = tuple[int, dt.date, np.ndarray, MatrixBundle | None]
 
 #: Yield type for `_iter_solve`:
 #: ``(i, t, mask, pos_or_none, status)`` where ``pos_or_none`` is ``None`` only for warmup rows.
-SolveYield: TypeAlias = tuple[int, datetime.date, np.ndarray, np.ndarray | None, SolveStatus]
+SolveYield: TypeAlias = tuple[int, dt.date, np.ndarray, np.ndarray | None, SolveStatus]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -133,7 +133,7 @@ class _SolvePrimitivesMixin:
     @staticmethod
     def _row_early_check(
         i: int,
-        t: datetime.date,
+        t: dt.date,
         mask: np.ndarray,
         mu_row: np.ndarray,
     ) -> tuple[np.ndarray, SolveYield | None]:
@@ -168,7 +168,7 @@ class _SolvePrimitivesMixin:
     @staticmethod
     def _denom_guard_yield(
         i: int,
-        t: datetime.date,
+        t: dt.date,
         mask: np.ndarray,
         expected_mu: np.ndarray,
         pos_raw: np.ndarray,
@@ -248,7 +248,7 @@ class _SolvePrimitivesMixin:
     @staticmethod
     def _sliding_warmup_or_degenerate(
         i: int,
-        t: datetime.date,
+        t: dt.date,
         mask: np.ndarray,
         win_w: int,
     ) -> SolveYield:

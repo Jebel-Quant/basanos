@@ -10,7 +10,7 @@ is `BasanosEngine`, which inherits from `_CoreDataMixin`.
 
 from __future__ import annotations
 
-import datetime
+import datetime as dt
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -66,7 +66,7 @@ class _CoreDataMixin:
         )
 
     @property
-    def cor(self: _EngineProtocol) -> dict[datetime.date, np.ndarray]:
+    def cor(self: _EngineProtocol) -> dict[dt.date, np.ndarray]:
         """Compute per-timestamp EWM correlation matrices.
 
         Builds volatility-adjusted returns for all assets, computes an
