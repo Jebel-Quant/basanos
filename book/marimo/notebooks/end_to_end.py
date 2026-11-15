@@ -605,7 +605,7 @@ def cell_25():
         ### Next steps
 
         - Replace the synthetic data with real price data from a public source
-          (e.g. `yfinance`) and your own forecasting signal
+          (e.g. `polars-yahoo`) and your own forecasting signal
         - Switch to `SlidingWindowConfig` for the factor-model covariance mode
           (see `book/marimo/notebooks/ewm_benchmark.py`)
         - Tune `shrink` empirically using the interactive sweep in
