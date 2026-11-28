@@ -13,6 +13,16 @@ import pytest
 from jquantstats import Portfolio
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register repo-specific markers.
+
+    pytest.ini is template-owned and rewritten on every rhiza sync, so markers
+    only this repo uses are registered here, where a sync cannot drop them
+    (under --strict-markers an unregistered marker fails collection).
+    """
+    config.addinivalue_line("markers", "slow: marks tests as slow/realistic-scale (deselect with '-m \"not slow\"')")
+
+
 def first_valid_row(corr: int) -> int:
     """Return the index of the first row with a valid correlation matrix.
 
